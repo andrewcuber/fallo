@@ -206,7 +206,19 @@
 - What-If Simulator, Field Calendar, and Climate Analogues remain for future milestones.
 - No ET₀/ET꜀ calculation (insufficient humidity/radiation/wind inputs for FAO Penman-Monteith).
 - No income-stability scoring without real market-price data.
-- AI-generated rotation recommendations — architecture documented but not implemented.
+
+**Post-Milestone 3 — Constrained AI Rotation Infrastructure & Field-Specific UX Polish (2026-11-14):**
+- [x] **Constrained AI Generation & Deterministic Validation (`e74ceaf`, `c19a6d0`):**
+  - Added provisional climate-based agroecological group classifier (`lib/agro-classifier.ts`), authoritative compatibility rules and validator (`lib/rotation-validator.ts`), and AI orchestrator (`lib/rotation-generator.ts` + `/api/rotations/generate`).
+  - Enforced strict rejection of invalid proposals, preservation of soft agronomic warnings (Fusarium, SCN, low diversity), timeout/secret redaction in `OpenAICompatibleProvider`, and persistence in `FieldProvider`.
+- [x] **Field-Specific Rotation Lab & Progressive Disclosure:**
+  - Fixed React duplicate month key in `components/rotation/rotation-timeline.tsx`.
+  - Refined visual design with space-gray main content background (`#DCE2E9`), high-contrast white cards, and distinctive restrained accents on the bottom three homepage feature cards.
+  - Removed North Carolina Piedmont default labels from strategy overview cards and descriptions.
+  - Updated Rotation Lab (`/field/[id]/rotations`) to foreground the field's agroecological profile, verified local crop availability, and three field-specific strategy objectives (*Soil Health Building*, *Water Resilience*, *Crop Diversity & Pest Break*), treating static reference rotations strictly as secondary reference material where regionally applicable.
+  - Streamlined strategy overview cards (~10-second read) and strategy detail pages (`Sources & Methodology` and detailed factor rubrics collapsed by default; duplicate sections removed).
+- [x] **Long-Term Agroecological Grouping Architecture Recorded:**
+  - Documented the multi-factor direction (climate/temperature, rainfall seasonality, soil texture/drainage, water/irrigation assumptions, growing-season length/elevation) while preserving the honest provisional climate-based classifier until source-backed soil thresholds are integrated.
 
 **Inspection Checkpoint:**
 - Review scoring logic for scientific credibility. Verified: all scores labeled as heuristics; no invented agronomic weights; disease-sequence penalties are documented.

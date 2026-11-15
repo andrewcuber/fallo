@@ -856,7 +856,189 @@ function scoreClimateRiskResilience(strategy: RotationStrategy, climate: Climate
   };
 }
 
-// ─── Region applicability helper ──────────────────────────────────────
+// ─── Region applicability & field-context helpers ────────────────────
+
+export interface StrategyObjectiveDefinition {
+  archetype: "soil_health" | "water_resilience" | "crop_diversity";
+  name: string;
+  objective: string;
+}
+
+export const STRATEGY_OBJECTIVES: StrategyObjectiveDefinition[] = [
+  {
+    archetype: "soil_health",
+    name: "Soil Health Building",
+    objective:
+      "Prioritizes building soil organic matter, biological nitrogen credits, and continuous living cover between cash crops.",
+  },
+  {
+    archetype: "water_resilience",
+    name: "Water Resilience",
+    objective:
+      "Emphasizes drought-tolerant crops, reduces peak summer water demand, and protects soil moisture with seasonal cover.",
+  },
+  {
+    archetype: "crop_diversity",
+    name: "Crop Diversity & Pest Break",
+    objective:
+      "Maximizes botanical family diversity across three cash-crop families to break pest, weed, and disease cycles.",
+  },
+];
+
+/**
+ * Deterministically build 2–3 short field-specific context bullets for a strategy
+ * archetype using the field's actual climate and soil metrics (no AI call required).
+ */
+export function buildObjectiveFieldContextBullets(
+  archetype: string,
+  climate: ClimateData | null | undefined,
+  soil: SoilData | null | undefined
+): string[] {
+  const gsPrecip = climate?.stressMetrics.growingSeasonPrecip.avgTotalMm ?? null;
+  const springPrecip = climate?.stressMetrics.springPrecip.avgTotalMm ?? null;
+  const dryDays = climate?.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays ?? null;
+  const heatDays = climate?.stressMetrics.summerHeatDays.avgDaysAboveThreshold ?? null;
+  const annualTemp = climate?.fullRecord.avgAnnualTemp ?? null;
+  const annualPrecip = climate?.fullRecord.avgAnnualPrecip ?? null;
+
+  const om = soil?.aggregated.depth0_30cm.om ?? null;
+  const awc = soil?.aggregated.depth0_30cm.awc ?? null;
+  const ph = soil?.aggregated.depth0_30cm.ph ?? null;
+  const slope = soil?.aggregated.slope ?? null;
+  const drainage = soil?.aggregated.drainage ?? null;
+
+  if (archetype === "soil_health" || archetype === "soil_health_building") {
+    const b1 =
+      om !== null
+        ? `Targets topsoil organic matter (${om.toFixed(1)}% in 0–30 cm) with winter legume and grass residue.`
+        : "Builds topsoil organic matter and biological N supply with legume and high-residue covers.";
+    const b2 =
+      slope !== null && springPrecip !== null
+        ? `Protects ${slope.toFixed(1)}% slope during ${springPrecip.toFixed(0)} mm average spring rainfall.`
+        : slope !== null
+          ? `Protects ${slope.toFixed(1)}% field slope with living winter and spring cover.`
+          : "Maintains living roots through winter and spring transitions to limit erosion.";
+    const b3 = "Pairs biological nitrogen fixation ahead of high-demand summer cash crops.";
+    return [b1, b2, b3];
+  }
+
+  if (archetype === "water_resilience") {
+    const b1 =
+      gsPrecip !== null && dryDays !== null
+        ? `Adapts to ${gsPrecip.toFixed(0)} mm May–Aug rainfall and ${dryDays.toFixed(1)}-day average summer dry spells.`
+        : "Selects lower-water-demand summer crops to buffer against mid-season dry spells.";
+    const b2 =
+      heatDays !== null && awc !== null
+        ? `Accounts for ${heatDays.toFixed(1)} summer heat days (>35 °C) and ${awc.toFixed(2)} cm/cm topsoil AWC.`
+        : heatDays !== null
+          ? `Reduces reproductive heat exposure across ${heatDays.toFixed(1)} average summer heat days (>35 °C).`
+          : "Matches rooting depth and drought tolerance to field water-holding capacity.";
+    const b3 = "Uses persistent surface residue to reduce summer soil moisture evaporation.";
+    return [b1, b2, b3];
+  }
+
+  // Default / crop_diversity
+  const b1 = "Rotates across distinct botanical families over 3 years to disrupt pest and disease cycles.";
+  const b2 =
+    annualTemp !== null && annualPrecip !== null
+      ? `Balances cool- and warm-season windows for a ${annualTemp.toFixed(1)} °C, ${annualPrecip.toFixed(0)} mm/yr climate.`
+      : "Alternates summer and winter planting windows to suppress weed and pathogen buildup.";
+  const b3 =
+    drainage !== null && ph !== null
+      ? `Selects non-host break crops suited to ${drainage.toLowerCase()} soils (topsoil pH ${ph.toFixed(1)}).`
+      : "Avoids back-to-back host crops to limit soilborne disease and nematode pressure.";
+  return [b1, b2, b3];
+}
+
+/**
+ * Deterministically build 2–3 concise overview bullets for a StrategyCard.
+ * Combines the strategy's concrete 3-year crop structure with field-specific context.
+ */
+export function buildStrategyOverviewBullets(
+  strategy: RotationStrategy,
+  climate?: ClimateData | null,
+  soil?: SoilData | null
+): string[] {
+  const allSeasons = strategy.years.flatMap((y) => y.seasons);
+  const cropIds = allSeasons.map((s) => s.crop).filter((id) => id !== "winter_fallow");
+  const crops = cropIds.map((id) => getCrop(id)).filter((c): c is Crop => !!c);
+
+  // Per-year primary cash crops
+  const cashByYear = strategy.years
+    .map((y) => {
+      const cashNames = Array.from(
+        new Set(
+          y.seasons
+            .map((s) => getCrop(s.crop))
+            .filter((c): c is Crop => !!c && c.type === "cash")
+            .map((c) => c.commonName)
+        )
+      );
+      return cashNames.length > 0 ? `Y${y.year} ${cashNames.join("/")}` : null;
+    })
+    .filter((entry): entry is string => entry !== null);
+
+  const families = uniqueFamilies(cropIds);
+  const coverNames = Array.from(
+    new Set(crops.filter((c) => c.type === "cover").map((c) => c.commonName))
+  );
+
+  const bullets: string[] = [];
+
+  if (cashByYear.length > 0) {
+    bullets.push(`Cash sequence: ${cashByYear.join(" → ")}.`);
+  }
+
+  if (coverNames.length > 0) {
+    bullets.push(
+      `Covers & diversity: ${coverNames.slice(0, 3).join(", ")} (${families.length} botanical ${families.length === 1 ? "family" : "families"}).`
+    );
+  } else if (families.length > 0) {
+    bullets.push(
+      `Botanical diversity: ${families.length} ${families.length === 1 ? "family" : "families"} (${families.join(", ")}).`
+    );
+  }
+
+  if (climate || soil) {
+    const fieldContext = buildObjectiveFieldContextBullets(strategy.archetype, climate, soil);
+    if (fieldContext.length > 0) {
+      bullets.push(fieldContext[0]);
+    }
+  } else if (strategy.tradeoffs.advantages.length > 0) {
+    bullets.push(strategy.tradeoffs.advantages[0]);
+  }
+
+  return bullets.slice(0, 3);
+}
+
+/**
+ * Determine whether a static reference strategy template is genuinely applicable
+ * to the selected field's agroecological group and geographic region.
+ */
+export function isReferenceStrategyApplicable(
+  strategy: RotationStrategy,
+  agGroup: string | null | undefined,
+  regionTag: string | null | undefined
+): boolean {
+  if (!agGroup || agGroup === "unknown" || !regionTag) return false;
+  if (getUnsupportedCrops(strategy, regionTag).length > 0) return false;
+
+  const cropIds = strategy.years
+    .flatMap((y) => y.seasons)
+    .map((s) => s.crop)
+    .filter((id) => id !== "winter_fallow");
+
+  if (cropIds.length === 0) return false;
+
+  for (const id of cropIds) {
+    const crop = getCrop(id);
+    if (!crop) return false;
+    const groups = crop.applicableGroups ?? ["temperate_humid"];
+    if (!groups.includes(agGroup)) return false;
+  }
+
+  return true;
+}
 
 export function getUnsupportedCrops(strategy: RotationStrategy, regionTag?: string | null): string[] {
   if (!regionTag) return [];

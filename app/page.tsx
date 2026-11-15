@@ -151,10 +151,10 @@ export default function OverviewPage() {
             </CardHeader>
           </Card>
 
-          <Card className="h-full">
+          <Card className="h-full border-l-4 border-l-amber-500 bg-gradient-to-br from-white via-white to-amber-50/40">
             <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-secondary">
-                <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
+              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 border border-amber-500/20">
+                <SlidersHorizontal className="h-5 w-5 text-amber-600" />
               </div>
               <CardTitle>What-If Simulator</CardTitle>
               <CardDescription>
@@ -164,10 +164,10 @@ export default function OverviewPage() {
             </CardHeader>
           </Card>
 
-          <Card className="h-full">
+          <Card className="h-full border-l-4 border-l-emerald-500 bg-gradient-to-br from-white via-white to-emerald-50/40">
             <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-secondary">
-                <CalendarDays className="h-5 w-5 text-muted-foreground" />
+              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                <CalendarDays className="h-5 w-5 text-emerald-600" />
               </div>
               <CardTitle>Field Calendar</CardTitle>
               <CardDescription>
@@ -177,10 +177,10 @@ export default function OverviewPage() {
             </CardHeader>
           </Card>
 
-          <Card className="h-full">
+          <Card className="h-full border-l-4 border-l-indigo-500 bg-gradient-to-br from-white via-white to-indigo-50/40">
             <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-secondary">
-                <GitCompare className="h-5 w-5 text-muted-foreground" />
+              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+                <GitCompare className="h-5 w-5 text-indigo-600" />
               </div>
               <CardTitle>Climate Analogues</CardTitle>
               <CardDescription>

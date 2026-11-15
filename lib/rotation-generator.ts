@@ -382,11 +382,15 @@ export function buildSystemPrompt(
   ].join("\n");
 
   return `You are an agricultural planning assistant for the fallo app.
-Your role is to suggest 1–3 crop rotation strategies (each exactly 3 years) for a specific field.
+Your role is to suggest 3 field-specific crop rotation strategies (each covering 3 years: Soil Health, Water Resilience, and Crop Diversity) tailored to this field.
 
 ## COMPATIBILITY RULES (AUTHORITATIVE)
 ${formatCompatibilityRulesForPrompt()}
 
+- Propose up to 3 distinct strategy archetypes: "soil_health", "water_resilience", and "crop_diversity".
+- Keep each strategy's "description" to a single concise sentence stating its objective for this field.
+- Include 2–3 short, scannable "advantages" bullets grounded in the field's actual climate and soil metrics and the verified crop traits.
+- Do not assume or mention a default region (such as North Carolina) unless the field's actual coordinates and region tag place it there.
 - Consider the farmer's priorities when choosing crop emphasis.
 - Return ONLY valid JSON matching the requested schema.
 
@@ -413,23 +417,22 @@ ${cropSummaries}
 
 ## OUTPUT SCHEMA
 Return a JSON object with:
-- strategies: array of 1–3 strategy objects, each with id, name, archetype, description, regionExample, years (length 3), tradeoffs
+- strategies: array of 1–3 strategy objects, each with id, name, archetype ("soil_health" | "water_resilience" | "crop_diversity"), description (one concise sentence), years (length 3), tradeoffs
 - rationale: a short paragraph explaining how the priorities and climate/soil shaped the recommendation
 
 Strategy object shape:
 {
   "id": "snake_case_id",
   "name": "Human-readable name",
-  "archetype": "machine_tag",
-  "description": "1–2 sentence summary",
-  "regionExample": "Optional region example",
+  "archetype": "soil_health",
+  "description": "One concise sentence describing the objective for this field.",
   "years": [
     { "year": 1, "seasons": [
       { "season": "Fall", "crop": "crop_id", "activity": "Plant cover crop", "months": [9,10,11] }
     ]}
   ],
   "tradeoffs": {
-    "advantages": ["..."],
+    "advantages": ["Short field-specific advantage 1", "Short advantage 2"],
     "disadvantages": ["..."],
     "operational": ["..."],
     "warnings": ["..."]
@@ -467,6 +470,28 @@ function mergeValidationWarnings(
 // ─── Public API ───────────────────────────────────────────────────────
 
 /**
+ * Deterministically filter the verified crop catalog for a classified
+ * agroecological group and geographic region tag.
+ */
+export function getAvailableCropsForContext(
+  agGroup: AgGroup,
+  regionTag: string | null
+): string[] {
+  if (!isGroupSupported(agGroup)) return [];
+  return Object.values(cropLibrary)
+    .filter((c) => {
+      if (!c.applicableGroups || !c.applicableGroups.includes(agGroup)) {
+        return false;
+      }
+      if (regionTag && !c.supportedRegions.includes(regionTag)) {
+        return false;
+      }
+      return true;
+    })
+    .map((c) => c.id);
+}
+
+/**
  * Generate rotation proposals for a field.
  *
  * 1. Runs deterministic agricultural group classification.
@@ -493,19 +518,7 @@ export async function generateRotations(
 
   // 2. Filter crops strictly by supported agricultural group and geographic region (when known)
   const groupSupported = isGroupSupported(classification.group);
-  const availableCrops = groupSupported
-    ? Object.values(cropLibrary)
-        .filter((c) => {
-          if (!c.applicableGroups || !c.applicableGroups.includes(classification.group)) {
-            return false;
-          }
-          if (context.regionTag && !c.supportedRegions.includes(context.regionTag)) {
-            return false;
-          }
-          return true;
-        })
-        .map((c) => c.id)
-    : [];
+  const availableCrops = getAvailableCropsForContext(classification.group, context.regionTag);
 
   if (!groupSupported || availableCrops.length === 0) {
     const reason =

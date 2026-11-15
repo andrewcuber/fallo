@@ -4,8 +4,7 @@
       "id": "soil_health_building",
       "name": "Soil Health Building",
       "archetype": "soil_health",
-      "description": "An archetype that prioritizes building soil organic matter, reducing synthetic nitrogen inputs, and maintaining living cover through strategic legume integrations and diverse residue. The specific sequence below is a regional example adapted for the North Carolina Piedmont using documented NC State Extension crops; other regions would substitute locally adapted legumes and cash crops.",
-      "regionExample": "North Carolina Piedmont — crimson clover and hairy vetch are widely used winter legume covers in this region. Corn, soybean, and wheat are the dominant cash crops.",
+      "description": "Prioritizes building soil organic matter, biological nitrogen credits, and continuous living cover between cash crops.",
       "years": [
         {
           "year": 1,
@@ -174,8 +173,7 @@
       "id": "water_resilience",
       "name": "Water Resilience",
       "archetype": "water_resilience",
-      "description": "An archetype that emphasizes drought-tolerant crops, shifts water demand away from peak summer stress periods, and maintains soil coverage during vulnerable seasons. The specific sequence below is a regional example adapted for the North Carolina Piedmont; sorghum and sunflower substituting for corn and soybean is a documented strategy in water-limited environments.",
-      "regionExample": "North Carolina Piedmont — grain sorghum offers stronger drought tolerance than corn in this region, and sunflower can exploit deeper soil moisture with its taproot.",
+      "description": "Emphasizes drought-tolerant crops, reduces peak summer water demand, and protects soil moisture with seasonal cover.",
       "years": [
         {
           "year": 1,
@@ -183,7 +181,7 @@
             {
               "season": "pre_season",
               "crop": "winter_oat",
-              "activity": "Winter oat cover crop planted fall before Year 1; typically winter-kills in Piedmont, leaving moderate spring residue",
+              "activity": "Winter oat cover crop planted fall before Year 1; typically winter-kills, leaving moderate spring residue",
               "months": [
                 9,
                 10,
@@ -323,8 +321,7 @@
       "id": "crop_diversity",
       "name": "Crop Diversity & Pest Break",
       "archetype": "crop_diversity",
-      "description": "An archetype that maximizes botanical family diversity to break pest and disease cycles while maintaining soil coverage and balanced nutrient demands. By rotating across Poaceae, Asteraceae, and Fabaceae cash crops with complementary cover crops, this approach reduces the buildup of family-specific pests. The specific sequence below is a regional example for the North Carolina Piedmont; other regions would substitute locally adapted crops in the same three families.",
-      "regionExample": "North Carolina Piedmont — sunflower and grain sorghum are less common than corn/soybean in this region, but they are documented cash crops that add Asteraceae and additional Poaceae diversity to the rotation.",
+      "description": "Maximizes botanical family diversity across three cash-crop families to break pest, weed, and disease cycles.",
       "years": [
         {
           "year": 1,
@@ -368,7 +365,7 @@
             {
               "season": "fall",
               "crop": "winter_oat",
-              "activity": "Winter oat planted after corn harvest; establishes briefly before typical Piedmont winter-kill",
+              "activity": "Winter oat planted after corn harvest; establishes briefly before winter-kill",
               "months": [
                 10,
                 11

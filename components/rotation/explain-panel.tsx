@@ -1,26 +1,32 @@
 "use client";
 
 import { StrategyResult, FactorKey, FACTOR_LABELS } from "@/lib/rotation-scoring";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChevronDown, ChevronUp, BookOpen } from "lucide-react";
 import { useState } from "react";
 
 interface Props {
   factorScores: StrategyResult["factorScores"];
-  strategy: StrategyResult["strategy"];
+  strategy?: StrategyResult["strategy"];
 }
 
-function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: StrategyResult["factorScores"][FactorKey] }) {
+function FactorDetail({
+  factorKey,
+  score,
+}: {
+  factorKey: FactorKey;
+  score: StrategyResult["factorScores"][FactorKey];
+}) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
       <button
+        type="button"
         onClick={() => setOpen(!open)}
         className="flex items-center justify-between w-full px-3 py-2.5 text-left hover:bg-muted/50 transition-colors"
       >
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground">{FACTOR_LABELS[factorKey]}</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-foreground">{FACTOR_LABELS[factorKey]}</span>
           <span className="text-xs tabular-nums text-muted-foreground">
             {score.score !== null ? `${score.score}/100` : "unavailable"}
           </span>
@@ -33,10 +39,14 @@ function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: Strat
                 : "bg-red-50 text-red-700"
             }`}
           >
-            {score.coverage}
+            {score.coverage} coverage
           </span>
         </div>
-        {open ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+        {open ? (
+          <ChevronUp className="h-4 w-4 text-muted-foreground shrink-0" />
+        ) : (
+          <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+        )}
       </button>
 
       {open && (
@@ -45,10 +55,14 @@ function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: Strat
 
           {score.inputsUsed.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Inputs used</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                Inputs used
+              </p>
               <ul className="space-y-0.5">
                 {score.inputsUsed.map((input, i) => (
-                  <li key={i} className="text-[11px] text-muted-foreground">• {input}</li>
+                  <li key={i} className="text-[11px] text-muted-foreground">
+                    • {input}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -56,10 +70,14 @@ function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: Strat
 
           {score.positiveContributors.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1">Positive contributors</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1">
+                Positive contributors
+              </p>
               <ul className="space-y-0.5">
                 {score.positiveContributors.map((pos, i) => (
-                  <li key={i} className="text-[11px] text-emerald-700/90">+ {pos}</li>
+                  <li key={i} className="text-[11px] text-emerald-700/90">
+                    + {pos}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -67,10 +85,14 @@ function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: Strat
 
           {score.negativeContributors.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-accent-red/80 mb-1">Concerns</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-accent-red/80 mb-1">
+                Concerns
+              </p>
               <ul className="space-y-0.5">
                 {score.negativeContributors.map((neg, i) => (
-                  <li key={i} className="text-[11px] text-accent-red/70">− {neg}</li>
+                  <li key={i} className="text-[11px] text-accent-red/70">
+                    − {neg}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -78,17 +100,23 @@ function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: Strat
 
           {score.dataCoverageLimitations.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 mb-1">Coverage notes</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 mb-1">
+                Coverage notes
+              </p>
               <ul className="space-y-0.5">
                 {score.dataCoverageLimitations.map((lim, i) => (
-                  <li key={i} className="text-[11px] text-amber-700/80">• {lim}</li>
+                  <li key={i} className="text-[11px] text-amber-700/80">
+                    • {lim}
+                  </li>
                 ))}
               </ul>
             </div>
           )}
 
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Rubric</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+              Scoring rubric
+            </p>
             <p className="text-[11px] text-muted-foreground leading-relaxed">{score.rubric}</p>
           </div>
 
@@ -96,17 +124,17 @@ function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: Strat
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1">
                 <BookOpen className="h-3 w-3" />
-                Citations
+                Factor references
               </p>
               <ul className="space-y-0.5">
                 {score.citations.map((cite, i) => (
-                  <li key={i} className="text-[11px]">
+                  <li key={i} className="text-[11px] break-words">
                     {cite.url ? (
                       <a
                         href={cite.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-electric hover:underline underline-offset-2"
+                        className="text-electric hover:underline underline-offset-2 break-words"
                       >
                         {cite.text}
                       </a>
@@ -124,7 +152,7 @@ function FactorDetail({ factorKey, score }: { factorKey: FactorKey; score: Strat
   );
 }
 
-export function ExplainPanel({ factorScores, strategy }: Props) {
+export function ExplainPanel({ factorScores }: Props) {
   const keys: FactorKey[] = [
     "waterSuitability",
     "nitrogenContribution",
@@ -134,56 +162,16 @@ export function ExplainPanel({ factorScores, strategy }: Props) {
   ];
 
   return (
-    <div className="space-y-3">
-      <div>
-        <p className="text-sm font-semibold text-foreground">How the scores work</p>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          These are decision-support heuristics, not validated yield predictions. Expand each factor for the full rubric.
-        </p>
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">
+        Scores are decision-support heuristics (0–100), not calibrated yield predictions. Select any factor to inspect its inputs, contributors, and rubric.
+      </p>
+
+      <div className="space-y-2">
+        {keys.map((key) => (
+          <FactorDetail key={key} factorKey={key} score={factorScores[key]} />
+        ))}
       </div>
-
-      {keys.map((key) => (
-        <FactorDetail key={key} factorKey={key} score={factorScores[key]} />
-      ))}
-
-      {/* Rotation tradeoffs */}
-      <Card className="border-dashed">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-xs font-semibold text-foreground">Tradeoffs for this strategy</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-xs">
-          {strategy.tradeoffs.advantages.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wide text-emerald-700 font-semibold mb-1">Advantages</p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
-                {strategy.tradeoffs.advantages.slice(0, 4).map((a, i) => (
-                  <li key={i}>{a}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {strategy.tradeoffs.disadvantages.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wide text-accent-red/80 font-semibold mb-1">Disadvantages</p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
-                {strategy.tradeoffs.disadvantages.slice(0, 4).map((d, i) => (
-                  <li key={i}>{d}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {strategy.tradeoffs.operational.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1">Operational notes</p>
-              <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
-                {strategy.tradeoffs.operational.map((o, i) => (
-                  <li key={i}>{o}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

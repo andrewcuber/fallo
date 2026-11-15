@@ -22,6 +22,18 @@
 - Climate Fingerprint requires 10–20 year baseline + separate recent 3-year window.
 - Do **not** compute a single generic "soil health score." Present properties individually with uncertainty.
 - Do **not** present arbitrary rotation scores as validated. Label every score as a heuristic.
+- Do **not** show a fixed regional rotation (e.g., North Carolina Piedmont) as a personalized recommendation for fields elsewhere.
+
+## Long-Term Agroecological Grouping & Field-Specific Rotation Direction
+- **Agroecological Classification (`lib/agro-classifier.ts`):** Fields are classified into agroecological groups (`temperate_humid`, `semi_arid_temperate`, `subtropical_humid`, `temperate_mediterranean`, `unknown`). Long-term classification will incorporate:
+  1. Climate and temperature patterns
+  2. Rainfall and seasonality
+  3. Soil texture, AWC, and drainage
+  4. Water availability and irrigation assumptions
+  5. Growing-season length and elevation
+- **Current Provisional State:** Until source-backed quantitative soil thresholds are established, `classifyAgGroup()` remains an honest, provisional climate-driven classifier that records soil properties for context/confidence without inventing soil thresholds or claiming full validation.
+- **Separation of Concerns:** Keep agroecological similarity (`applicableGroups`) distinct from geographic, regulatory, or practical regional crop availability (`supportedRegions` + `lib/region.ts`).
+- **Authoritative Deterministic Validation (`lib/rotation-validator.ts`):** AI-assisted proposals (`lib/rotation-generator.ts`, `/api/rotations/generate`) may only arrange verified catalog crops for the field's group and region. Every proposal must pass `validateProposal()` (backed by `ROTATION_COMPATIBILITY_RULES`) before being scored, displayed, or persisted.
 
 ## Architecture Reminders
 - Next.js 15 (App Router) + TypeScript + Tailwind CSS 3.4 + shadcn/ui primitives.

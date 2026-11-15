@@ -22,7 +22,7 @@ export function RotationTimeline({ strategy }: Props) {
             bg = crop?.type === "cover" ? "bg-cyan/40" : "bg-electric/40";
           }
           return (
-            <div key={m} className="flex-1 flex flex-col items-center gap-0.5">
+            <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
               <div className={`h-2 w-full rounded-sm ${bg}`} />
               <span className="text-[9px] text-muted-foreground tabular-nums">{m}</span>
             </div>

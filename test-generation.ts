@@ -24,6 +24,7 @@ import {
 import {
   generateRotations,
   buildSystemPrompt,
+  getAvailableCropsForContext,
   GenerationRequestSchema,
   OpenAICompatibleProvider,
   type AIProviderClient,
@@ -34,6 +35,11 @@ import {
   type SoilData,
   type FarmerPriorities,
   DEFAULT_PRIORITIES,
+  strategies as staticStrategies,
+  STRATEGY_OBJECTIVES,
+  buildObjectiveFieldContextBullets,
+  buildStrategyOverviewBullets,
+  isReferenceStrategyApplicable,
   mergeAndRankStrategies,
   resolveScoredStrategyById,
   rankStrategyResults,
@@ -1021,6 +1027,65 @@ test("resolveScoredStrategyById resolves generated strategies first, falls back 
     "us_southeast"
   );
   assert.equal(afterClear, null);
+});
+
+test("Static reference strategies have concise one-sentence descriptions without North Carolina default labels", () => {
+  assert.equal(staticStrategies.length, 3);
+  for (const s of staticStrategies) {
+    assert.equal(s.regionExample, undefined);
+    assert.ok(!s.description.toLowerCase().includes("north carolina"));
+    assert.ok(!s.description.toLowerCase().includes("piedmont"));
+  }
+});
+
+test("buildObjectiveFieldContextBullets and buildStrategyOverviewBullets produce 2–3 deterministic field-specific bullets", () => {
+  const climate = makeClimate();
+  const soil = makeSoil();
+
+  assert.equal(STRATEGY_OBJECTIVES.length, 3);
+  for (const obj of STRATEGY_OBJECTIVES) {
+    const bullets = buildObjectiveFieldContextBullets(obj.archetype, climate, soil);
+    assert.equal(bullets.length, 3);
+    assert.ok(bullets.every((b) => b.length > 10 && b.length < 140));
+  }
+
+  // Soil health bullet incorporates OM and slope when available
+  const shBullets = buildObjectiveFieldContextBullets("soil_health", climate, soil);
+  assert.ok(shBullets[0].includes("1.5%"));
+  assert.ok(shBullets[1].includes("4.0%"));
+
+  // Water resilience bullet incorporates May-Aug rainfall and dry spells
+  const wrBullets = buildObjectiveFieldContextBullets("water_resilience", climate, soil);
+  assert.ok(wrBullets[0].includes("420 mm"));
+  assert.ok(wrBullets[0].includes("5.0-day"));
+
+  // Strategy overview bullets summarize cash sequence + cover diversity + field context
+  const cardBullets = buildStrategyOverviewBullets(staticStrategies[0], climate, soil);
+  assert.equal(cardBullets.length, 3);
+  assert.ok(cardBullets[0].startsWith("Cash sequence:"));
+  assert.ok(cardBullets[1].includes("botanical families"));
+});
+
+test("isReferenceStrategyApplicable and getAvailableCropsForContext gate regional applicability strictly", () => {
+  const seCrops = getAvailableCropsForContext("temperate_humid", "us_southeast");
+  assert.equal(seCrops.length, 11);
+
+  const neCrops = getAvailableCropsForContext("temperate_humid", "us_northeast");
+  assert.ok(neCrops.length > 0 && neCrops.length < 11);
+  assert.ok(!neCrops.includes("grain_sorghum"));
+
+  assert.equal(getAvailableCropsForContext("unknown", "us_southeast").length, 0);
+  assert.equal(getAvailableCropsForContext("subtropical_humid", "us_southeast").length, 0);
+
+  // Reference templates are applicable to temperate_humid + us_southeast
+  for (const s of staticStrategies) {
+    assert.equal(isReferenceStrategyApplicable(s, "temperate_humid", "us_southeast"), true);
+    assert.equal(isReferenceStrategyApplicable(s, "semi_arid_temperate", "us_southeast"), false);
+    assert.equal(isReferenceStrategyApplicable(s, "unknown", "us_southeast"), false);
+    assert.equal(isReferenceStrategyApplicable(s, "temperate_humid", null), false);
+    // All 3 static reference templates include at least one crop not in us_northeast (pearl_millet, grain_sorghum, or sunflower)
+    assert.equal(isReferenceStrategyApplicable(s, "temperate_humid", "us_northeast"), false);
+  }
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────
