@@ -3,11 +3,14 @@
     {
       "id": "field_corn",
       "commonName": "Field Corn",
+      "synonyms": ["Maize", "Grain Maize", "Corn"],
       "scientificName": "Zea mays",
       "family": "Poaceae",
       "type": "cash",
       "waterDemand": "high",
       "droughtTolerance": "moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "high",
         "demandCategory": "High N requirement: typical rate 150–200 lb N/acre for grain production in the Southeast, depending on yield goal and soil organic matter.",
@@ -21,18 +24,15 @@
       "rootSystem": "Fibrous, relatively shallow compared with taproot crops.",
       "sensitivePeriods": {
         "pollinationSilking": {
-          "months": [
-            7,
-            8
-          ],
-          "note": "Pollination and silking typically occur in July–August in the North Carolina Piedmont. Heat stress above 35 °C and moisture deficits during this window can reduce kernel set.",
-          "source": "NC State Extension Corn Production Guide"
+          "months": [7, 8],
+          "note": "Pollination and silking typically occur in July–August in Northern Hemisphere temperate regions (January–February in Southern Hemisphere). Heat stress above 35 °C and moisture deficits during this window can reduce kernel set.",
+          "source": "NC State Extension Corn Production Guide / FAO Crop Calendar"
         }
       },
       "growingWindow": {
-        "planting": "April–May",
-        "harvest": "September–October",
-        "description": "Full-season corn in the NC Piedmont is typically planted mid-April to early May and harvested September–October."
+        "planting": "April–May (NH) / October–November (SH) / Rainy onset (Tropics)",
+        "harvest": "September–October (NH) / March–May (SH)",
+        "description": "Warm-season cereal grain planted in spring (April–May in Northern Hemisphere, October–November in Southern Hemisphere Pampas/Cerrado, or onset of rains in tropical highlands/subhumid zones)."
       },
       "diseasePestNotes": [
         "Corn residue can harbor Fusarium species that may affect subsequent small-grain crops.",
@@ -44,25 +44,47 @@
           "url": "https://content.ces.ncsu.edu/corn-production-guide"
         },
         {
-          "citation": "USDA NASS Crop Production",
-          "url": "https://www.nass.usda.gov/Publications/"
+          "citation": "FAO Crop Calendar & CIMMYT Maize Agronomy",
+          "url": "https://cropcalendar.apps.fao.org/"
+        },
+        {
+          "citation": "Chinese Academy of Agricultural Sciences (CAAS) Maize Systems",
+          "url": "https://www.caas.cn/en/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_great_plains",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "sa_pampas_cerrado",
+        "europe_temperate_med",
+        "ssa_east_southern_humid",
+        "se_asia_monsoon"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "subtropical_humid",
+        "continental",
+        "tropical_subhumid",
+        "tropical_humid",
+        "tropical_monsoon",
+        "highland_montane"
+      ]
     },
     {
       "id": "soybean",
       "commonName": "Soybean",
+      "synonyms": ["Soya Bean", "Soy"],
       "scientificName": "Glycine max",
       "family": "Fabaceae",
       "type": "cash",
       "waterDemand": "moderate_to_high",
       "droughtTolerance": "moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "moderate",
         "demandCategory": "Fixes atmospheric N via Bradyrhizobium symbiosis when effectively nodulated. Most fixed N is sequestered in crop biomass and removed with grain harvest.",
@@ -81,18 +103,15 @@
       "rootSystem": "Taproot with extensive lateral branching.",
       "sensitivePeriods": {
         "podFill": {
-          "months": [
-            8,
-            9
-          ],
-          "note": "Pod fill and seed development typically occur August–September. Moisture stress and prolonged heat can reduce seed size and yield.",
-          "source": "NC State Extension Soybean Production Guide"
+          "months": [8, 9],
+          "note": "Pod fill and seed development typically occur August–September in Northern Hemisphere (February–March in Southern Hemisphere). Moisture stress and prolonged heat can reduce seed size and yield.",
+          "source": "NC State Extension Soybean Production Guide / EMBRAPA Soja"
         }
       },
       "growingWindow": {
-        "planting": "May–June",
-        "harvest": "October–November",
-        "description": "Full-season soybean in the NC Piedmont is typically planted May–June and harvested October–November."
+        "planting": "May–June (NH) / October–December (SH)",
+        "harvest": "October–November (NH) / March–May (SH)",
+        "description": "Warm-season oilseed legume planted May–June in North America, China, and Europe, or October–December in South American Pampas/Cerrado."
       },
       "diseasePestNotes": [
         "Soybean cyst nematode (SCN, Heterodera glycines) can build populations in continuous or frequent soybean rotations.",
@@ -103,23 +122,47 @@
         {
           "citation": "NC State Extension Soybean Production Guide",
           "url": "https://content.ces.ncsu.edu/north-carolina-soybean-production-guide"
+        },
+        {
+          "citation": "CAAS Institute of Crop Sciences & EMBRAPA Soybean Systems",
+          "url": "https://www.embrapa.br/en/soja"
+        },
+        {
+          "citation": "IITA Tropical Soybean Improvement Program",
+          "url": "https://www.iita.org/cropsnew/soybean/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_great_plains",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "sa_pampas_cerrado",
+        "europe_temperate_med",
+        "ssa_east_southern_humid",
+        "se_asia_monsoon"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "subtropical_humid",
+        "continental",
+        "tropical_subhumid",
+        "tropical_humid"
+      ]
     },
     {
       "id": "soft_red_winter_wheat",
       "commonName": "Soft Red Winter Wheat",
+      "synonyms": ["Winter Wheat", "Common Winter Wheat"],
       "scientificName": "Triticum aestivum",
       "family": "Poaceae",
       "type": "cash",
       "waterDemand": "moderate",
       "droughtTolerance": "moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "moderate",
         "demandCategory": "Moderate N requirement; timing is important (split applications in spring).",
@@ -133,18 +176,15 @@
       "rootSystem": "Fibrous root system that develops in fall and resumes growth in spring.",
       "sensitivePeriods": {
         "grainFill": {
-          "months": [
-            5,
-            6
-          ],
-          "note": "Grain filling and maturity occur in May–June for winter wheat in the NC Piedmont.",
-          "source": "NC State Extension Small Grain Production Guide"
+          "months": [5, 6],
+          "note": "Grain filling and maturity occur in May–June for Northern Hemisphere winter wheat (October–November in Southern Hemisphere).",
+          "source": "NC State Extension Small Grain Production Guide / FAO Crop Calendar"
         }
       },
       "growingWindow": {
-        "planting": "October–November",
-        "harvest": "June",
-        "description": "Winter wheat is planted in the fall (October–November), winters over, and is harvested the following June in the NC Piedmont."
+        "planting": "October–November (NH) / May–June (SH)",
+        "harvest": "May–June (NH) / November–December (SH)",
+        "description": "Planted in autumn (October–November in US, North China Plain, and Europe; May–June in South America), vernalizes over winter, and harvests in early summer."
       },
       "diseasePestNotes": [
         "Fusarium head blight (scab) risk can increase when wheat follows corn or sorghum due to shared Fusarium inoculum in residue.",
@@ -154,23 +194,45 @@
         {
           "citation": "NC State Extension Small Grain Production Guide",
           "url": "https://content.ces.ncsu.edu/small-grain-production"
+        },
+        {
+          "citation": "CAAS North China Plain Winter Wheat–Summer Maize Double-Cropping Guide",
+          "url": "https://www.caas.cn/en/"
+        },
+        {
+          "citation": "CIMMYT Global Wheat Program",
+          "url": "https://www.cimmyt.org/work/wheat-research/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_great_plains",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "south_asia_indo_gangetic"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "subtropical_humid",
+        "temperate_mediterranean",
+        "continental"
+      ]
     },
     {
       "id": "grain_sorghum",
       "commonName": "Grain Sorghum",
+      "synonyms": ["Milo", "Temperate Sorghum"],
       "scientificName": "Sorghum bicolor",
       "family": "Poaceae",
       "type": "cash",
       "waterDemand": "moderate",
       "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "moderate",
         "demandCategory": "Moderate N requirement, generally somewhat less per unit yield than corn.",
@@ -184,18 +246,15 @@
       "rootSystem": "Fibrous, deep rooting capacity under drought stress.",
       "sensitivePeriods": {
         "grainFill": {
-          "months": [
-            8,
-            9
-          ],
-          "note": "Grain filling typically occurs in August–September. Sorghum is more drought-resilient than corn during this period.",
+          "months": [8, 9],
+          "note": "Grain filling typically occurs in August–September in Northern Hemisphere. Sorghum is more drought-resilient than corn during this period.",
           "source": "NC State Extension Sorghum Production"
         }
       },
       "growingWindow": {
-        "planting": "May–June",
-        "harvest": "September–October",
-        "description": "Grain sorghum in the NC Piedmont is typically planted May–June and harvested September–October."
+        "planting": "May–June (NH) / October–November (SH)",
+        "harvest": "September–October (NH) / March–April (SH)",
+        "description": "Warm-season drought-tolerant cereal planted May–June in North America, China, and Mediterranean/MENA, or October–November in Australia and South America."
       },
       "diseasePestNotes": [
         "Fusarium head blight risk to subsequent wheat should be considered.",
@@ -205,23 +264,46 @@
         {
           "citation": "NC State Extension Sorghum Production",
           "url": "https://content.ces.ncsu.edu/sorghum-production"
+        },
+        {
+          "citation": "USDA ARS & University of Nevada Extension Water-Limited Grain Systems",
+          "url": "https://extension.unr.edu/agriculture/crops.aspx"
+        },
+        {
+          "citation": "GRDC Australia Northern Region Sorghum Guide",
+          "url": "https://grdc.com.au/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
         "us_great_plains",
-        "us_southwest"
+        "us_southwest",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid"
       ],
-      "applicableGroups": ["temperate_humid", "semi_arid_temperate"]
+      "applicableGroups": [
+        "temperate_humid",
+        "semi_arid_temperate",
+        "subtropical_humid",
+        "temperate_mediterranean",
+        "arid",
+        "continental"
+      ]
     },
     {
       "id": "sunflower",
       "commonName": "Sunflowers",
+      "synonyms": ["Oilseed Sunflower"],
       "scientificName": "Helianthus annuus",
       "family": "Asteraceae",
       "type": "cash",
       "waterDemand": "low_to_moderate",
       "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "moderate",
         "demandCategory": "Moderate N requirement; deep taproot can scavenge nutrients from lower soil profiles.",
@@ -235,18 +317,15 @@
       "rootSystem": "Deep taproot that can extend below the typical corn root zone.",
       "sensitivePeriods": {
         "flowering": {
-          "months": [
-            7,
-            8
-          ],
-          "note": "Flowering typically occurs in July–August. Heat stress and moisture deficits can reduce oil content in oil-type varieties.",
+          "months": [7, 8],
+          "note": "Flowering typically occurs in July–August in Northern Hemisphere. Heat stress and moisture deficits can reduce oil content in oil-type varieties.",
           "source": "USDA NASS Sunflower Production"
         }
       },
       "growingWindow": {
-        "planting": "May–June",
-        "harvest": "September–October",
-        "description": "Sunflowers in the NC Piedmont are typically planted May–June and harvested September–October."
+        "planting": "May–June (NH) / October–November (SH)",
+        "harvest": "September–October (NH) / February–March (SH)",
+        "description": "Deep-rooted broadleaf oilseed planted May–June in Northern Hemisphere or October–November in Southern Hemisphere."
       },
       "diseasePestNotes": [
         "Sclerotinia head rot and white mold are concerns; sunflower and soybean can both be hosts associated with Sclerotinia sclerotiorum.",
@@ -260,23 +339,46 @@
         {
           "citation": "NC State Extension Plant Pathology — Sclerotinia",
           "url": "https://content.ces.ncsu.edu/sclerotinia-stem-rot-of-soybean"
+        },
+        {
+          "citation": "FAO Crop Calendar — Sunflower (Helianthus annuus)",
+          "url": "https://cropcalendar.apps.fao.org/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
         "us_great_plains",
-        "us_midwest"
+        "us_midwest",
+        "us_southwest",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid",
+        "ssa_east_southern_humid"
       ],
-      "applicableGroups": ["temperate_humid", "semi_arid_temperate"]
+      "applicableGroups": [
+        "temperate_humid",
+        "semi_arid_temperate",
+        "temperate_mediterranean",
+        "subtropical_humid",
+        "continental",
+        "tropical_savanna",
+        "tropical_subhumid",
+        "highland_montane"
+      ]
     },
     {
       "id": "cereal_rye",
       "commonName": "Cereal Rye",
+      "synonyms": ["Winter Rye", "Rye Cover Crop"],
       "scientificName": "Secale cereale",
       "family": "Poaceae",
       "type": "cover",
       "waterDemand": "low",
       "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low",
         "demandCategory": "Nitrogen scavenger. Can temporarily immobilize available nitrogen due to high C:N ratio in residue.",
@@ -290,9 +392,9 @@
       },
       "rootSystem": "Dense, fibrous root system that scavenges available nutrients.",
       "growingWindow": {
-        "planting": "September–October",
-        "termination": "March–April",
-        "description": "Winter cover crop planted September–October and terminated mid-March to mid-April in the NC Piedmont."
+        "planting": "September–October (NH) / April–May (SH)",
+        "termination": "March–April (NH) / September–October (SH)",
+        "description": "Winter-hardy cereal cover crop planted in autumn and terminated in spring prior to cash crop planting."
       },
       "diseasePestNotes": [
         "Generally low disease concerns, but can host some nematodes if grown continuously.",
@@ -302,23 +404,42 @@
         {
           "citation": "NC State Extension Organic Grains — Cover Crops",
           "url": "https://organiccommodities.ces.ncsu.edu/organicgrains-cover-crops/"
+        },
+        {
+          "citation": "USDA NRCS Cover Crop Termination Guidelines",
+          "url": "https://www.nrcs.usda.gov/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_great_plains",
+        "us_southwest",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "semi_arid_temperate",
+        "temperate_mediterranean",
+        "continental",
+        "subtropical_humid"
+      ]
     },
     {
       "id": "crimson_clover",
       "commonName": "Crimson Clover",
+      "synonyms": ["Italian Clover"],
       "scientificName": "Trifolium incarnatum",
       "family": "Fabaceae",
       "type": "cover",
       "waterDemand": "moderate",
       "droughtTolerance": "low_to_moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low",
         "demandCategory": "Legume cover crop that can contribute nitrogen to the following crop.",
@@ -336,9 +457,9 @@
       },
       "rootSystem": "Shallow taproot with some nitrogen fixation nodules.",
       "growingWindow": {
-        "planting": "September–October",
-        "termination": "March–April",
-        "description": "Winter legume cover crop planted September–October and terminated in spring before full bloom for maximum N contribution."
+        "planting": "September–October (NH) / April–May (SH)",
+        "termination": "March–April (NH) / September–October (SH)",
+        "description": "Winter legume cover crop planted in autumn and terminated in spring before full bloom for maximum N contribution."
       },
       "diseasePestNotes": [
         "Generally low disease pressure; provides break from grass-family diseases."
@@ -352,18 +473,30 @@
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_southwest",
+        "east_asia_china_subtropical",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "subtropical_humid",
+        "temperate_mediterranean"
+      ]
     },
     {
       "id": "hairy_vetch",
       "commonName": "Hairy Vetch",
+      "synonyms": ["Winter Vetch", "Fodder Vetch"],
       "scientificName": "Vicia villosa",
       "family": "Fabaceae",
       "type": "cover",
       "waterDemand": "moderate",
       "droughtTolerance": "moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low",
         "demandCategory": "Legume cover crop with high nitrogen-fixation potential.",
@@ -381,9 +514,9 @@
       },
       "rootSystem": "Deep taproot with N-fixing nodules.",
       "growingWindow": {
-        "planting": "September–October",
-        "termination": "April–May",
-        "description": "Winter legume cover crop planted September–October and typically terminated April–May in the NC Piedmont."
+        "planting": "September–October (NH) / April–May (SH)",
+        "termination": "April–May (NH) / September–October (SH)",
+        "description": "Winter-hardy legume cover crop planted September–October and terminated in spring across temperate, continental, and Mediterranean systems."
       },
       "diseasePestNotes": [
         "May harbor some pests if not rotated; generally beneficial as a break crop.",
@@ -393,23 +526,45 @@
         {
           "citation": "NC State Extension Winter Annual Cover Crops",
           "url": "https://content.ces.ncsu.edu/winter-annual-cover-crops"
+        },
+        {
+          "citation": "ICARDA & CAAS Cool-Season Legume Cover Systems",
+          "url": "https://www.icarda.org/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_great_plains",
+        "us_southwest",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "semi_arid_temperate",
+        "subtropical_humid",
+        "temperate_mediterranean",
+        "continental",
+        "highland_montane"
+      ]
     },
     {
       "id": "forage_radish",
       "commonName": "Forage Radish / Daikon",
+      "synonyms": ["Tillage Radish", "Oilseed Radish", "Daikon"],
       "scientificName": "Raphanus sativus",
       "family": "Brassicaceae",
       "type": "cover",
       "waterDemand": "low_to_moderate",
       "droughtTolerance": "moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low",
         "demandCategory": "Nitrogen scavenger; bio-drilling effect from deep taproot can improve compaction layers but does not fix atmospheric N.",
@@ -418,13 +573,13 @@
       "residue": {
         "quantity": "low",
         "persistence": "low",
-        "description": "Can winter-kill in the NC Piedmont, leaving minimal spring living cover. Tissue decomposes rapidly."
+        "description": "Can winter-kill in temperate zones, leaving minimal spring living cover. Tissue decomposes rapidly."
       },
       "rootSystem": "Deep taproot (bio-drill) that can penetrate compacted subsoil layers; typically winter-kills.",
       "growingWindow": {
-        "planting": "August–September",
-        "termination": "December–January (winter-kill)",
-        "description": "Planted late summer–early fall; typically winter-kills in the NC Piedmont. Leaves root channels that may improve water infiltration."
+        "planting": "August–September (NH) / March–April (SH)",
+        "termination": "December–January (winter-kill or mechanical)",
+        "description": "Planted late summer–early fall; penetrates compacted layers and scavenges residual profile nitrogen."
       },
       "diseasePestNotes": [
         "Can host clubroot if Brassica diseases are present in the field history.",
@@ -439,18 +594,34 @@
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_great_plains",
+        "us_southwest",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "semi_arid_temperate",
+        "subtropical_humid",
+        "temperate_mediterranean",
+        "continental"
+      ]
     },
     {
       "id": "pearl_millet",
       "commonName": "Pearl Millet",
+      "synonyms": ["Forage Pearl Millet", "Summer Millet Cover"],
       "scientificName": "Pennisetum glaucum",
       "family": "Poaceae",
       "type": "cover",
       "waterDemand": "low_to_moderate",
       "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low",
         "demandCategory": "Warm-season biomass producer and nutrient scavenger.",
@@ -463,9 +634,9 @@
       },
       "rootSystem": "Fibrous, dense root system that improves soil structure.",
       "growingWindow": {
-        "planting": "May–June",
-        "termination": "August–September",
-        "description": "Summer cover crop planted after small-grain harvest and terminated before fall planting."
+        "planting": "May–June (NH) / Rainy season (Tropics)",
+        "termination": "August–September (NH) / Post-rainy (Tropics)",
+        "description": "Warm-season drought-tolerant grass cover crop planted after small-grain harvest or as a rapid soil-building cover."
       },
       "diseasePestNotes": [
         "Generally resistant to many diseases that affect corn and sorghum.",
@@ -475,22 +646,43 @@
         {
           "citation": "NC State Extension Summer Annual Forages",
           "url": "https://content.ces.ncsu.edu/summer-annual-forages"
+        },
+        {
+          "citation": "ICRISAT Pearl Millet Agronomy",
+          "url": "https://www.icrisat.org/"
         }
       ],
       "supportedRegions": [
         "us_southeast",
-        "us_great_plains"
+        "us_great_plains",
+        "us_southwest",
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "sa_pampas_cerrado",
+        "south_asia_indo_gangetic",
+        "mena_mediterranean_arid"
       ],
-      "applicableGroups": ["temperate_humid", "semi_arid_temperate"]
+      "applicableGroups": [
+        "temperate_humid",
+        "semi_arid_temperate",
+        "subtropical_humid",
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "arid"
+      ]
     },
     {
       "id": "winter_oat",
       "commonName": "Winter Oat",
+      "synonyms": ["Cover Oat", "Forage Oat"],
       "scientificName": "Avena sativa",
       "family": "Poaceae",
       "type": "cover",
       "waterDemand": "moderate",
       "droughtTolerance": "low_to_moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low",
         "demandCategory": "Nitrogen scavenger; moderate C:N ratio compared with cereal rye.",
@@ -499,13 +691,13 @@
       "residue": {
         "quantity": "moderate",
         "persistence": "low_to_moderate",
-        "description": "Moderate biomass that winter-kills in the NC Piedmont, providing some spring residue cover but less persistent protection than rye."
+        "description": "Moderate biomass that winter-kills in colder temperate zones, providing spring residue cover."
       },
       "rootSystem": "Fibrous root system that provides some soil stabilization.",
       "growingWindow": {
-        "planting": "September–October",
-        "termination": "December–February (winter-kill)",
-        "description": "Winter cover crop that typically winter-kills in the NC Piedmont. Less spring biomass than cereal rye but may allow earlier spring field access."
+        "planting": "September–October (NH) / April–May (SH)",
+        "termination": "December–March",
+        "description": "Cool-season grass cover crop providing rapid autumn ground cover and erosion control."
       },
       "diseasePestNotes": [
         "Generally low disease pressure; can host some cereal diseases at low levels.",
@@ -520,9 +712,1422 @@
       "supportedRegions": [
         "us_southeast",
         "us_midwest",
-        "us_northeast"
+        "us_northeast",
+        "us_southwest",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid"
       ],
-      "applicableGroups": ["temperate_humid"]
+      "applicableGroups": [
+        "temperate_humid",
+        "semi_arid_temperate",
+        "temperate_mediterranean",
+        "subtropical_humid",
+        "continental"
+      ]
+    },
+    {
+      "id": "sorghum_tropical",
+      "commonName": "Tropical Rainfed Sorghum",
+      "synonyms": ["Dura", "Guinea Corn", "Jowar", "Rainy-Season Sorghum"],
+      "scientificName": "Sorghum bicolor",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Moderate N demand (40–80 kg N/ha in rainfed Sudano-Sahelian and semi-arid tropical systems); benefits strongly from preceding cowpea or groundnut rotation.",
+        "note": "Crop stover has moderately high C:N ratio; rotating with N-fixing pulses (cowpea, groundnut, pigeon pea) restores topsoil mineralizable N."
+      },
+      "residue": {
+        "quantity": "high",
+        "persistence": "moderate",
+        "description": "Abundant stalk and leaf residue that protects tropical savanna soils against wind and early-rain splash erosion when retained as surface mulch."
+      },
+      "rootSystem": "Deep, dense fibrous root system extending 1.5–2.0 m to extract subsoil moisture during intra-seasonal dry spells.",
+      "sensitivePeriods": {
+        "floweringGrainFill": {
+          "months": [8, 9],
+          "note": "Booting, flowering, and grain fill occur in August–September during peak/late rainy season in Northern Hemisphere Sudano-Sahelian savannas.",
+          "source": "ICRISAT Sorghum Improvement Program & FAO Crop Calendar"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–July (onset of main rains)",
+        "harvest": "October–November (early dry season)",
+        "description": "Primary staple cereal of the Sudano-Sahelian and East/Southern African savanna zones, planted with the onset of dependable rains (May–July in Bahr el Ghazal / Darfur / Sahel) and harvested in October–November."
+      },
+      "diseasePestNotes": [
+        "Continuous sorghum builds parasitic witchweed (Striga hermonthica) seedbanks; rotation with trap/non-host crops (cowpea, groundnut, sesame, soybean) is essential.",
+        "Anthracnose and grain mold pressure increase in humid late seasons."
+      ],
+      "sources": [
+        {
+          "citation": "ICRISAT — Sorghum (Sorghum bicolor) Rainfed Savanna Production Systems",
+          "url": "https://www.icrisat.org/crops/sorghum/"
+        },
+        {
+          "citation": "FAO Crop Calendar — Sudan & South Sudan Sorghum Cropping Zones",
+          "url": "https://cropcalendar.apps.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "mena_mediterranean_arid"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "tropical_monsoon",
+        "highland_montane",
+        "arid"
+      ]
+    },
+    {
+      "id": "pearl_millet_grain",
+      "commonName": "Pearl Millet (Grain)",
+      "synonyms": ["Bajra", "Dukhn", "Bulrush Millet"],
+      "scientificName": "Pennisetum glaucum",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "low",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low_to_moderate",
+        "demandCategory": "Low-to-moderate N demand (30–60 kg N/ha); well adapted to low-fertility sandy Alfisols and Arenosols when rotated with cowpea or groundnut.",
+        "note": "Efficient nutrient scavenger in sandy-loam savanna soils."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Tough stalks provide critical dry-season windbreak and surface mulch against Sahelian/Sudanian soil crusting."
+      },
+      "rootSystem": "Rapidly penetrating deep fibrous root system capable of reaching 1.8 m within 60 days.",
+      "sensitivePeriods": {
+        "panicleFlowering": {
+          "months": [8, 9],
+          "note": "Flowering and grain set in August–September; highly heat-tolerant up to 40 °C.",
+          "source": "ICRISAT Pearl Millet Crop Improvement"
+        }
+      },
+      "growingWindow": {
+        "planting": "June–July (rainy season)",
+        "harvest": "September–October",
+        "description": "Short-duration (75–100 day) drought-hardy grain cereal planted across Sudano-Sahelian Africa and semi-arid South Asia."
+      },
+      "diseasePestNotes": [
+        "Downy mildew (Sclerospora graminicola) and Striga hermonthica build under continuous millet monoculture; rotate with legumes (cowpea, groundnut) and sesame.",
+        "Head miner and bird pressure require timely harvest."
+      ],
+      "sources": [
+        {
+          "citation": "ICRISAT — Pearl Millet Production in Semi-Arid Tropics",
+          "url": "https://www.icrisat.org/crops/pearl-millet/"
+        },
+        {
+          "citation": "FAO Crop Calendar — Pearl Millet (Pennisetum glaucum)",
+          "url": "https://cropcalendar.apps.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "south_asia_indo_gangetic",
+        "mena_mediterranean_arid"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "arid"
+      ]
+    },
+    {
+      "id": "cowpea",
+      "commonName": "Cowpea",
+      "synonyms": ["Black-Eyed Pea", "Niebe", "Southern Pea"],
+      "scientificName": "Vigna unguiculata",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Symbiotic N2 fixer via Bradyrhizobium; fixes 40–90 kg N/ha and provides a net positive residual nitrogen credit to subsequent sorghum, millet, or maize.",
+        "residualNcredit": {
+          "value": "30–55 lb N/acre (35–60 kg N/ha)",
+          "note": "IITA and ICRISAT rotation trials report 35–60 kg N/ha fertilizer replacement value for cereal crops following grain cowpea when haulms are retained.",
+          "source": "IITA Cowpea Cropping Systems Guide"
+        },
+        "note": "Retaining vine residue on the field maximizes N transfer to the next cereal crop."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "low_to_moderate",
+        "description": "Nitrogen-rich leafy vines that cover the soil during the rainy season and mineralize rapidly at the start of the following season."
+      },
+      "rootSystem": "Deep taproot with drought-tolerant nodulated lateral roots.",
+      "sensitivePeriods": {
+        "floweringPodSet": {
+          "months": [8, 9],
+          "note": "Flowering and pod fill in August–October; excess waterlogging reduces nodulation.",
+          "source": "IITA & ICRISAT Legume Agronomy"
+        }
+      },
+      "growingWindow": {
+        "planting": "June–August (main or late rainy season)",
+        "harvest": "September–November",
+        "description": "Heat- and drought-adapted grain legume grown across Sudano-Sahelian Africa, East/Southern Africa, South Asia, and tropical Americas."
+      },
+      "diseasePestNotes": [
+        "Acts as a non-host trap crop that induces suicidal germination of Striga hermonthica, breaking parasitic weed cycles in sorghum/millet rotations.",
+        "Pod borers (Maruca vitrata), thrips, and macrophomina charcoal rot increase if cowpea is grown in back-to-back years."
+      ],
+      "sources": [
+        {
+          "citation": "International Institute of Tropical Agriculture (IITA) — Cowpea",
+          "url": "https://www.iita.org/cropsnew/cowpea/"
+        },
+        {
+          "citation": "ICRISAT & FAO Crop Calendar — Vigna unguiculata",
+          "url": "https://cropcalendar.apps.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "sa_pampas_cerrado",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "mena_mediterranean_arid"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "tropical_monsoon",
+        "tropical_humid",
+        "subtropical_humid",
+        "arid"
+      ]
+    },
+    {
+      "id": "groundnut",
+      "commonName": "Groundnut / Peanut",
+      "synonyms": ["Peanut", "Arachide", "Fuli"],
+      "scientificName": "Arachis hypogaea",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "moderate",
+      "droughtTolerance": "moderate_to_high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Biological nitrogen fixer (fixes 50–110 kg N/ha); leaves mineralizable N in root/haulm residues for following cereals.",
+        "residualNcredit": {
+          "value": "25–45 lb N/acre (30–50 kg N/ha)",
+          "note": "Documented residual N credit to subsequent sorghum, millet, maize, or wheat when haulms are not completely exported.",
+          "source": "ICRISAT Groundnut Production & CAAS Oilseed Systems"
+        },
+        "note": "Requires adequate topsoil calcium and friable sandy-loam to loam surface texture for peg penetration."
+      },
+      "residue": {
+        "quantity": "low_to_moderate",
+        "persistence": "low",
+        "description": "High-protein haulm residue decomposes rapidly; pairing with a post-harvest cover crop or retaining cereal stover protects soil."
+      },
+      "rootSystem": "Deep taproot (up to 1.3 m) with abundant N-fixing nodules in the upper 30 cm.",
+      "sensitivePeriods": {
+        "peggingPodFill": {
+          "months": [7, 8, 9],
+          "note": "Pegging and pod fill (July–September in NH rainy season) are sensitive to severe late-season drought, which elevates aflatoxin risk.",
+          "source": "ICRISAT Groundnut Pathology & Agronomy"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–June (NH / Rainy onset)",
+        "harvest": "September–October",
+        "description": "Major oilseed and food legume across Sudano-Sahelian Africa (Sudan, South Sudan, Nigeria, Senegal), China, South/Southeast Asia, and the Americas."
+      },
+      "diseasePestNotes": [
+        "Early and late leaf spot (Cercospora), rosette virus, and Aspergillus flavus require a minimum 1–2 year cereal/oilseed break.",
+        "Suppresses Striga hermonthica and cereal root pathogens when rotated with sorghum, millet, or maize."
+      ],
+      "sources": [
+        {
+          "citation": "ICRISAT — Groundnut (Arachis hypogaea) Improvement & Agronomy",
+          "url": "https://www.icrisat.org/crops/groundnut/"
+        },
+        {
+          "citation": "CAAS Oil Crops Research Institute & FAO Crop Calendar",
+          "url": "https://cropcalendar.apps.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "sa_pampas_cerrado"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "tropical_monsoon",
+        "tropical_humid",
+        "subtropical_humid",
+        "temperate_humid"
+      ]
+    },
+    {
+      "id": "sesame",
+      "commonName": "Sesame",
+      "synonyms": ["Simsim", "Benniseed", "Gingelly"],
+      "scientificName": "Sesamum indicum",
+      "family": "Pedaliaceae",
+      "type": "cash",
+      "waterDemand": "low",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low_to_moderate",
+        "demandCategory": "Low-to-moderate N demand (30–50 kg N/ha); deep root system scavenges subsoil nutrients unused by shallow fibrous crops.",
+        "note": "Non-legume broadleaf oilseed (Pedaliaceae) that provides a distinct botanical family break from both Poaceae cereals and Fabaceae pulses."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "moderate",
+        "description": "Erect woody stems leave standing stubble that reduces wind erosion during the dry season."
+      },
+      "rootSystem": "Deep taproot with extensive secondary fibrous roots that improve soil macroporosity and water infiltration.",
+      "sensitivePeriods": {
+        "floweringCapsuleFill": {
+          "months": [8, 9],
+          "note": "Flowering and capsule development in August–September; highly drought-tolerant once established but sensitive to prolonged waterlogging.",
+          "source": "FAO Crop Calendar & Sudan ARC Sesame Production Guide"
+        }
+      },
+      "growingWindow": {
+        "planting": "June–July (rainy season)",
+        "harvest": "October–November",
+        "description": "Signature drought-tolerant cash oilseed of the Sudan/South Sudan savanna belt, East Africa, South Asia, and China."
+      },
+      "diseasePestNotes": [
+        "Belongs to Pedaliaceae, breaking root-knot nematode, Striga, and cereal/legume pathogen cycles.",
+        "Fusarium wilt and webworm (Antigastra catalaunalis) require rotating sesame with cereals and legumes rather than back-to-back sesame."
+      ],
+      "sources": [
+        {
+          "citation": "FAO Crop Calendar — Sesamum indicum (Sudan, South Sudan, East Africa, Asia)",
+          "url": "https://cropcalendar.apps.fao.org/"
+        },
+        {
+          "citation": "ICRISAT & Regional Dryland Oilseed Cropping Systems",
+          "url": "https://www.icrisat.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "mena_mediterranean_arid"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "tropical_monsoon",
+        "subtropical_humid",
+        "semi_arid_temperate",
+        "arid"
+      ]
+    },
+    {
+      "id": "pigeon_pea",
+      "commonName": "Pigeon Pea",
+      "synonyms": ["Red Gram", "Toor Dal", "Arhar", "Congo Pea"],
+      "scientificName": "Cajanus cajan",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "High biological N2 fixation (60–120 kg N/ha) plus substantial leaf-fall litter that enriches topsoil organic N and solubilizes bound soil phosphorus.",
+        "residualNcredit": {
+          "value": "35–65 lb N/acre (40–75 kg N/ha)",
+          "note": "ICRISAT long-term trials demonstrate 40–75 kg N/ha residual N credit to subsequent sorghum, maize, or millet from shed leaves and root turnover.",
+          "source": "ICRISAT Pigeonpea Agronomy"
+        },
+        "note": "Root exudates (piscidic acid) mobilize iron-bound phosphorus in tropical Alfisols, Ultisols, and Oxisols."
+      },
+      "residue": {
+        "quantity": "high",
+        "persistence": "moderate",
+        "description": "Heavy leaf drop builds surface organic matter while woody stems provide fuel/mulch."
+      },
+      "rootSystem": "Very deep woody taproot (2.0+ m) that breaks subsoil hardpans ('biological plow') and accesses deep moisture into the dry season.",
+      "sensitivePeriods": {
+        "floweringPodFill": {
+          "months": [9, 10, 11],
+          "note": "Flowers and fills pods at the end of the rainy season into early dry season using residual deep soil moisture.",
+          "source": "ICRISAT Pigeonpea Production Guide"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–July (rainy onset)",
+        "harvest": "November–January (early dry season)",
+        "description": "Medium-duration drought-resilient grain legume grown across Sudano-Sahelian & East/Southern Africa, South Asia, and tropical South America."
+      },
+      "diseasePestNotes": [
+        "Fusarium udum wilt builds if pigeon pea is repeated without a 2-year cereal/oilseed break.",
+        "Deep taproot and leaf litter strongly suppress Striga and improve subsequent cereal yields."
+      ],
+      "sources": [
+        {
+          "citation": "ICRISAT — Pigeonpea (Cajanus cajan) Improvement Program",
+          "url": "https://www.icrisat.org/crops/pigeonpea/"
+        },
+        {
+          "citation": "FAO Crop Calendar — Cajanus cajan",
+          "url": "https://cropcalendar.apps.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "sa_pampas_cerrado"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "tropical_monsoon",
+        "tropical_humid",
+        "highland_montane"
+      ]
+    },
+    {
+      "id": "cassava",
+      "commonName": "Cassava",
+      "synonyms": ["Manioc", "Yuca", "Tapioca Root"],
+      "scientificName": "Manihot esculenta",
+      "family": "Euphorbiaceae",
+      "type": "cash",
+      "waterDemand": "moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Moderate N and high K uptake by storage roots; benefits strongly from rotation with N-fixing grain or cover legumes (cowpea, groundnut, sunn hemp).",
+        "note": "Returning leafy tops to the soil recycles a large fraction of assimilated nitrogen."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "moderate",
+        "description": "Woody stems and fallen foliage provide moderate post-harvest soil protection."
+      },
+      "rootSystem": "Tuberous storage roots with deep fibrous feeder roots tolerant of acidic, low-phosphorus tropical soils.",
+      "growingWindow": {
+        "planting": "April–June (early rains)",
+        "harvest": "November–March (8–11 month cycle)",
+        "description": "Drought-resilient Euphorbiaceae root crop planted at rainy onset in humid, subhumid, and moist savanna zones of Africa, Southeast Asia, and South America."
+      },
+      "diseasePestNotes": [
+        "Euphorbiaceae family provides a complete botanical break from Poaceae cereal and Fabaceae legume pests.",
+        "Cassava mosaic disease (CMD) and bacterial blight require clean planting stakes and rotation with legumes/cereals."
+      ],
+      "sources": [
+        {
+          "citation": "IITA — Cassava (Manihot esculenta) Cropping Systems",
+          "url": "https://www.iita.org/cropsnew/cassava/"
+        },
+        {
+          "citation": "FAO Save and Grow: Cassava & EMBRAPA Mandioca",
+          "url": "https://www.fao.org/ag/save-and-grow/cassava/en/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "se_asia_monsoon",
+        "sa_pampas_cerrado"
+      ],
+      "applicableGroups": [
+        "tropical_humid",
+        "tropical_monsoon",
+        "tropical_subhumid",
+        "tropical_savanna"
+      ]
+    },
+    {
+      "id": "sunn_hemp",
+      "commonName": "Sunn Hemp",
+      "synonyms": ["Crotalaria", "Sanai"],
+      "scientificName": "Crotalaria juncea",
+      "family": "Fabaceae",
+      "type": "cover",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Rapid warm-season nitrogen-fixing cover crop producing 80–120 kg N/ha in 60–90 days.",
+        "residualNcredit": {
+          "value": "50–90 lb N/acre (55–100 kg N/ha)",
+          "note": "Terminating at early flowering before stems lignify releases substantial mineral N to the subsequent cash crop.",
+          "source": "USDA NRCS & IITA Tropical Green Manure Trials"
+        },
+        "note": "Terminate within 60–75 days of planting to keep C:N ratio low and maximize N mineralization."
+      },
+      "residue": {
+        "quantity": "high",
+        "persistence": "moderate",
+        "description": "Tall fibrous stalks and leafy canopy provide dense weed suppression and erosion protection."
+      },
+      "rootSystem": "Deep taproot with large coralloid nitrogen-fixing nodules; suppresses root-knot and reniform nematodes.",
+      "growingWindow": {
+        "planting": "Late rainy / relay window (August–October in NH tropics; March–May in SH)",
+        "termination": "October–December (60–75 days after planting)",
+        "description": "Fast-growing tropical and subtropical legume cover crop grown in early or late rainy windows across Africa, South/Southeast Asia, and Brazil."
+      },
+      "diseasePestNotes": [
+        "Produces pyrrolizidine compounds that actively suppress plant-parasitic nematodes (Meloidogyne and Rotylenchulus spp.) and Striga.",
+        "Low pest carryover to cereal or oilseed cash crops."
+      ],
+      "sources": [
+        {
+          "citation": "USDA NRCS Plant Guide — Sunn Hemp (Crotalaria juncea)",
+          "url": "https://plants.usda.gov/"
+        },
+        {
+          "citation": "IITA & EMBRAPA Green Manure Cover Crop Systems",
+          "url": "https://www.iita.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "sa_pampas_cerrado",
+        "east_asia_china_subtropical"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "tropical_monsoon",
+        "tropical_humid",
+        "subtropical_humid"
+      ]
+    },
+    {
+      "id": "lablab_bean",
+      "commonName": "Lablab / Dolichos Bean",
+      "synonyms": ["Hyacinth Bean", "Lubia", "Bonavist"],
+      "scientificName": "Lablab purpureus",
+      "family": "Fabaceae",
+      "type": "cover",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Drought-resilient post-rainy cover and forage legume fixing 50–100 kg N/ha on residual soil moisture.",
+        "residualNcredit": {
+          "value": "40–70 lb N/acre (45–80 kg N/ha)",
+          "note": "Widely grown as 'Lubia' in Sudan/South Sudan and East Africa as a soil-restoring rotational legume.",
+          "source": "ILRI / ICRISAT Tropical Forage & Cover Legumes"
+        },
+        "note": "Stays green well into the dry season due to its deep taproot, protecting topsoil from wind erosion."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Dense trailing vines form a thick living and dead mulch mat through the post-rainy dry transition."
+      },
+      "rootSystem": "Deep, vigorous taproot reaching 2 m depth, extracting residual subsoil moisture after main rains end.",
+      "growingWindow": {
+        "planting": "August–October (late rainy / post-rainy relay)",
+        "termination": "December–February (dry season)",
+        "description": "Post-rainy / relay cover crop ('Lubia') planted late in the wet season across Sudano-Sahelian and East African savannas, South Asia, and MENA."
+      },
+      "diseasePestNotes": [
+        "Suppresses Striga hermonthica and dry-season weed establishment when relayed after early millet, sorghum, or sesame.",
+        "Rotate away from other Fabaceae pulses in the main rainy season of the same year to avoid legume pest carryover."
+      ],
+      "sources": [
+        {
+          "citation": "ILRI & ICRISAT — Lablab purpureus ('Lubia') in Sudano-Sahelian & East African Farming Systems",
+          "url": "https://www.ilri.org/"
+        },
+        {
+          "citation": "FAO Grassland & Pasture Crop Profiles — Lablab purpureus",
+          "url": "https://www.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid"
+      ],
+      "applicableGroups": [
+        "tropical_savanna",
+        "tropical_semi_arid",
+        "tropical_subhumid",
+        "tropical_monsoon",
+        "subtropical_humid",
+        "highland_montane",
+        "arid"
+      ]
+    },
+    {
+      "id": "spring_barley",
+      "commonName": "Spring / Winter Feed & Malt Barley",
+      "synonyms": ["Barley", "Two-Row Barley", "Six-Row Barley"],
+      "scientificName": "Hordeum vulgare",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low_to_moderate",
+        "demandCategory": "Lower N and water requirement than wheat or corn (60–110 lb N/acre); excess N in malt barley is avoided to keep grain protein moderate.",
+        "note": "Maturing 2–3 weeks earlier than wheat, barley escapes peak summer heat and drought stress in Nevada, the US West, Mediterranean, and MENA."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "moderate",
+        "description": "Fine straw provides reliable surface cover against wind erosion in semi-arid and arid basins."
+      },
+      "rootSystem": "Fibrous root system with superior salinity/alkalinity tolerance (up to pH 8.2) compared with other small grains.",
+      "sensitivePeriods": {
+        "headingGrainFill": {
+          "months": [5, 6],
+          "note": "Heading and grain fill occur in May–June in Northern Hemisphere spring/winter systems, completing before peak July–August heat.",
+          "source": "University of Nevada Cooperative Extension & USDA ARS"
+        }
+      },
+      "growingWindow": {
+        "planting": "February–April (Spring) or October–November (Winter)",
+        "harvest": "June–July (NH) / November–December (SH)",
+        "description": "Most drought- and salinity-tolerant temperate small grain, widely grown across Nevada/US Southwest, Great Plains, Northern China, Europe, Australia, and MENA."
+      },
+      "diseasePestNotes": [
+        "Cereal cyst nematode and net blotch require rotating with non-grass crops (alfalfa/medics, safflower, brassicas, or pulses).",
+        "Early harvest allows timely establishment of a summer or autumn cover crop."
+      ],
+      "sources": [
+        {
+          "citation": "University of Nevada Cooperative Extension — Small Grain Production in Nevada",
+          "url": "https://extension.unr.edu/agriculture/crops.aspx"
+        },
+        {
+          "citation": "ICARDA Dryland Barley Improvement & GRDC Barley Guide",
+          "url": "https://www.icarda.org/research/crops/barley"
+        }
+      ],
+      "supportedRegions": [
+        "us_southwest",
+        "us_great_plains",
+        "us_midwest",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid",
+        "ssa_east_southern_humid"
+      ],
+      "applicableGroups": [
+        "semi_arid_temperate",
+        "arid",
+        "temperate_mediterranean",
+        "continental",
+        "temperate_humid",
+        "highland_montane"
+      ]
+    },
+    {
+      "id": "spring_wheat",
+      "commonName": "Spring / Irrigated Bread & Durum Wheat",
+      "synonyms": ["Hard Red Spring Wheat", "Irrigated Wheat", "Durum Wheat"],
+      "scientificName": "Triticum aestivum",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "moderate",
+      "droughtTolerance": "moderate_to_high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "moderate_to_high",
+        "demandCategory": "Requires 90–140 lb N/acre to achieve high bread/durum protein; benefits strongly from preceding alfalfa/medic, chickpea, or vetch N credits.",
+        "note": "Straw residue protects soil surface against wind erosion in semi-arid valleys and plains."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Durable cereal straw that conserves soil moisture and reduces evaporative loss."
+      },
+      "rootSystem": "Deep fibrous root system reaching 1.2–1.5 m.",
+      "sensitivePeriods": {
+        "anthesisGrainFill": {
+          "months": [5, 6],
+          "note": "Flowering and grain fill occur in May–June (NH) or October–November (SH Australia).",
+          "source": "University of Nevada Extension / CIMMYT / GRDC"
+        }
+      },
+      "growingWindow": {
+        "planting": "February–April (NH Spring) / November–December (MENA/South Asia) / May (Australia)",
+        "harvest": "July–August (NH Spring) / April (South Asia) / November (Australia)",
+        "description": "Primary cereal grain across irrigated and dryland western US (Nevada, Great Plains), Northeast/Northwest China, Indo-Gangetic Plains, Australia, and MENA."
+      },
+      "diseasePestNotes": [
+        "Avoid planting immediately after corn or sorghum where Fusarium head blight pressure is high.",
+        "Rotate with broadleaf oilseeds (safflower, canola) and legumes (chickpea, lentil, medics/alfalfa) to break take-all and root rot cycles."
+      ],
+      "sources": [
+        {
+          "citation": "University of Nevada Cooperative Extension & USDA NASS Nevada Crop Statistics",
+          "url": "https://extension.unr.edu/agriculture/crops.aspx"
+        },
+        {
+          "citation": "CIMMYT, CAAS China & GRDC Australia Wheat Agronomy",
+          "url": "https://www.cimmyt.org/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southwest",
+        "us_great_plains",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "south_asia_indo_gangetic",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid",
+        "ssa_east_southern_humid"
+      ],
+      "applicableGroups": [
+        "semi_arid_temperate",
+        "arid",
+        "temperate_mediterranean",
+        "continental",
+        "temperate_humid",
+        "subtropical_humid",
+        "tropical_monsoon",
+        "highland_montane"
+      ]
+    },
+    {
+      "id": "safflower",
+      "commonName": "Safflower",
+      "synonyms": ["Oilseed Safflower", "Cartamo"],
+      "scientificName": "Carthamus tinctorius",
+      "family": "Asteraceae",
+      "type": "cash",
+      "waterDemand": "low",
+      "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Moderate N demand (50–80 lb N/acre); deep taproot recovers leached nitrate from 1.5–2.5 m depth unreachable by small grains.",
+        "note": "Excellent deep-profile nutrient and moisture scavenger in western US, Mediterranean, and semi-arid rotations."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "moderate",
+        "description": "Stiff branched stalks remain upright over winter, trapping snow and reducing wind speed at the soil surface."
+      },
+      "rootSystem": "Deepest taproot of annual oilseeds (penetrating 2.0–3.0 m), breaking subsoil compaction in arid and semi-arid valleys.",
+      "sensitivePeriods": {
+        "buddingFlowering": {
+          "months": [6, 7],
+          "note": "Flowering in June–July; thrives in dry sunny weather with low relative humidity.",
+          "source": "University of Nevada Extension & USDA ARS Western Oilseed Guide"
+        }
+      },
+      "growingWindow": {
+        "planting": "March–May (NH) / June–July (Australia)",
+        "harvest": "August–September (NH) / December–January (Australia)",
+        "description": "Deep-rooted drought- and salinity-tolerant Asteraceae oilseed adapted to Nevada/US Southwest, Great Plains, Northwest China, Australia, and MENA."
+      },
+      "diseasePestNotes": [
+        "Provides a non-host broadleaf break for cereal root diseases and nematodes in wheat/barley rotations.",
+        "Alternaria leaf blight and Phytophthora root rot require well-drained or carefully irrigated soils and a 2-year break between Asteraceae crops."
+      ],
+      "sources": [
+        {
+          "citation": "University of Nevada Cooperative Extension & USDA ARS — Safflower Production in the Intermountain West",
+          "url": "https://extension.unr.edu/agriculture/crops.aspx"
+        },
+        {
+          "citation": "GRDC Australia — Safflower Grownotes",
+          "url": "https://grdc.com.au/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southwest",
+        "us_great_plains",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "sa_pampas_cerrado",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid",
+        "south_asia_indo_gangetic"
+      ],
+      "applicableGroups": [
+        "semi_arid_temperate",
+        "arid",
+        "temperate_mediterranean",
+        "continental"
+      ]
+    },
+    {
+      "id": "alfalfa_annual_forage",
+      "commonName": "Annual Forage Medic / Short-Rotation Alfalfa",
+      "synonyms": ["Lucerne", "Barrel Medic", "Forage Alfalfa"],
+      "scientificName": "Medicago sativa / M. truncatula",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "moderate_to_high",
+      "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "High biological nitrogen fixation via Sinorhizobium meliloti (fixes 120–200 lb N/acre/yr under irrigated Nevada/Southwest conditions or 60–110 lb N/acre in dryland medic systems).",
+        "residualNcredit": {
+          "value": "70–120 lb N/acre",
+          "note": "University of Nevada Cooperative Extension and western land-grant guidelines document 70–120 lb N/acre first-year N credit to small grains or corn following alfalfa/medic termination.",
+          "source": "University of Nevada Cooperative Extension — Alfalfa & Forage Systems"
+        },
+        "note": "Primary foundation crop of irrigated Nevada and Intermountain West agriculture."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Dense crown and root biomass builds soil aggregate stability and organic matter."
+      },
+      "rootSystem": "Deep taproot (2–4 m) with prolific nitrogen-fixing nodules; tolerates neutral-to-alkaline soils (pH 6.5–8.2) typical of Great Basin and Mediterranean soils.",
+      "growingWindow": {
+        "planting": "March–May or August–September",
+        "harvest": "May–September (multiple forage cuttings)",
+        "description": "Signature irrigated forage legume of Nevada and the US Southwest, as well as ley-farming medic rotations in Southern Australia, Mediterranean Europe, and MENA."
+      },
+      "diseasePestNotes": [
+        "Rotating out of alfalfa/medic into barley, wheat, or safflower breaks alfalfa weevil, stem nematode (Ditylenchus dipsaci), and autotoxicity.",
+        "Provides complete suppression of cereal root diseases."
+      ],
+      "sources": [
+        {
+          "citation": "University of Nevada Cooperative Extension — Nevada Alfalfa Production & Irrigation Management",
+          "url": "https://extension.unr.edu/agriculture/crops.aspx"
+        },
+        {
+          "citation": "GRDC & ICARDA Pasture Medic–Cereal Ley Rotation Systems",
+          "url": "https://grdc.com.au/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southwest",
+        "us_great_plains",
+        "europe_temperate_med",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid",
+        "east_asia_china_temperate"
+      ],
+      "applicableGroups": [
+        "semi_arid_temperate",
+        "arid",
+        "temperate_mediterranean",
+        "continental"
+      ]
+    },
+    {
+      "id": "desert_tepary_bean",
+      "commonName": "Tepary Bean / Dryland Pulse Bean",
+      "synonyms": ["Tepary Bean", "Arid-Adapted Dry Bean"],
+      "scientificName": "Phaseolus acutifolius",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "low",
+      "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Heat- and drought-tolerant N-fixing pulse legume; fixes 35–70 lb N/acre with low irrigation demand.",
+        "residualNcredit": {
+          "value": "25–45 lb N/acre",
+          "note": "Provides residual N credit and low water footprint ahead of winter/spring barley or wheat.",
+          "source": "USDA ARS Arid-Land Agricultural Research Center"
+        },
+        "note": "Sets pods at daytime temperatures up to 38–40 °C where common bean (Phaseolus vulgaris) aborts flowers."
+      },
+      "residue": {
+        "quantity": "low_to_moderate",
+        "persistence": "low",
+        "description": "Fine vine residue that mineralizes quickly; best followed by a fall small grain or mustard cover crop."
+      },
+      "rootSystem": "Deep, fine taproot system adapted to rapid moisture extraction in desert and semi-arid soils.",
+      "sensitivePeriods": {
+        "floweringPodFill": {
+          "months": [7, 8],
+          "note": "Flowering in July–August; uniquely tolerant of high vapor pressure deficits in the US Southwest.",
+          "source": "USDA ARS & Southwestern Cooperative Extension"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–July",
+        "harvest": "August–October (65–85 day maturity)",
+        "description": "Native Southwestern heat- and drought-adapted grain legume for water-limited irrigated and semi-arid rotations in Nevada and the US Southwest."
+      },
+      "diseasePestNotes": [
+        "High natural resistance to common bacterial blight and charcoal rot.",
+        "Breaks cereal pathogen cycles in barley, wheat, and sorghum rotations."
+      ],
+      "sources": [
+        {
+          "citation": "USDA ARS Arid-Land Agricultural Research Center — Tepary Bean (Phaseolus acutifolius)",
+          "url": "https://www.ars.usda.gov/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southwest",
+        "us_great_plains"
+      ],
+      "applicableGroups": [
+        "semi_arid_temperate",
+        "arid",
+        "temperate_mediterranean"
+      ]
+    },
+    {
+      "id": "yellow_mustard_cover",
+      "commonName": "White / Yellow Mustard Cover",
+      "synonyms": ["Yellow Mustard", "Biofumigant Mustard"],
+      "scientificName": "Sinapis alba",
+      "family": "Brassicaceae",
+      "type": "cover",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "moderate_to_high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Rapid cool-season nitrate scavenger; captures 40–80 lb residual N/acre before winter leaching.",
+        "note": "Glucosinolate compounds in root and shoot tissue provide natural biofumigation against soilborne fungi and nematodes."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "low_to_moderate",
+        "description": "Fast canopy closure protects bare soil against autumn/spring wind erosion in western valleys and Mediterranean basins."
+      },
+      "rootSystem": "Vigorous taproot with dense fine lateral roots in the upper 60 cm.",
+      "growingWindow": {
+        "planting": "August–October (Autumn) or February–March (Early Spring)",
+        "termination": "November–December or April",
+        "description": "Fast-establishing Brassicaceae cover crop for US Southwest/Nevada, Mediterranean Europe, South Asia, Australia, and MENA."
+      },
+      "diseasePestNotes": [
+        "Provides a non-host Brassicaceae family break in cereal–legume–asteraceae rotations.",
+        "Do not plant immediately before or after canola/rapeseed to avoid shared Brassica clubroot or flea beetle pressure."
+      ],
+      "sources": [
+        {
+          "citation": "USDA NRCS Western Cover Crop Guide — White/Yellow Mustard (Sinapis alba)",
+          "url": "https://www.nrcs.usda.gov/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southwest",
+        "us_great_plains",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "south_asia_indo_gangetic",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid"
+      ],
+      "applicableGroups": [
+        "semi_arid_temperate",
+        "arid",
+        "temperate_mediterranean",
+        "continental",
+        "subtropical_humid"
+      ]
+    },
+    {
+      "id": "paddy_rice",
+      "commonName": "Lowland / Irrigated Rice",
+      "synonyms": ["Paddy Rice", "Asian Rice", "Irrigated Rice"],
+      "scientificName": "Oryza sativa",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "high",
+      "droughtTolerance": "low",
+      "irrigationRegime": "irrigated_primary",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "high",
+        "demandCategory": "High N demand (120–180 kg N/ha); flooded/anaerobic soil phase alters N dynamics and suppresses aerobic soilborne diseases for subsequent upland winter crops (wheat, canola, chickpea, or vetch).",
+        "note": "Rice–winter wheat and rice–winter rapeseed (canola) or rice–mung bean/vetch are cornerstone rotations of the Yangtze Basin, Indo-Gangetic Plains, and Southeast Asia."
+      },
+      "residue": {
+        "quantity": "high",
+        "persistence": "moderate_to_high",
+        "description": "High silica-rich straw volume providing strong surface mulch for subsequent zero-till wheat, canola, or pulses."
+      },
+      "rootSystem": "Fibrous root system with aerenchyma adapted to saturated and lowland clay-loam soils.",
+      "sensitivePeriods": {
+        "bootingFlowering": {
+          "months": [7, 8],
+          "note": "Booting and flowering (July–August in NH monsoon/subtropical systems) are sensitive to water deficit and extreme heat (>36 °C).",
+          "source": "CAAS China National Rice Research Institute & IRRI"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–June (Main/Monsoon season)",
+        "harvest": "September–October",
+        "description": "Primary staple cereal of Southern/Central/Northeast China, South Asia (Indo-Gangetic Plains), and Southeast Asia."
+      },
+      "diseasePestNotes": [
+        "Flooded paddy phase eradicates many aerobic cyst nematodes and Sclerotinia sclerotia affecting upland broadleaf crops.",
+        "Rice blast and sheath blight are reduced by rotating with winter canola, winter wheat, chickpea, lentil, or hairy vetch."
+      ],
+      "sources": [
+        {
+          "citation": "CAAS China National Rice Research Institute & FAO Crop Calendar",
+          "url": "https://cropcalendar.apps.fao.org/"
+        },
+        {
+          "citation": "IRRI Rice Knowledge Bank & ICAR Rice–Wheat Cropping Systems",
+          "url": "http://www.knowledgebank.irri.org/"
+        }
+      ],
+      "supportedRegions": [
+        "east_asia_china_subtropical",
+        "east_asia_china_temperate",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon"
+      ],
+      "applicableGroups": [
+        "subtropical_humid",
+        "temperate_humid",
+        "continental",
+        "tropical_monsoon",
+        "tropical_humid"
+      ]
+    },
+    {
+      "id": "upland_rice",
+      "commonName": "Rainfed Upland Rice",
+      "synonyms": ["NERICA Upland Rice", "Dryland Rice"],
+      "scientificName": "Oryza sativa / O. glaberrima",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "moderate_to_high",
+      "droughtTolerance": "moderate",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Moderate N demand (50–90 kg N/ha); responds strongly to preceding cowpea, groundnut, soybean, or sunn hemp N fixation.",
+        "note": "Grown under aerobic rainfed conditions in moist savannas, subhumid tropics, and monsoon uplands."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Straw mulch protects tropical upland soils against heavy rainfall impact."
+      },
+      "rootSystem": "Deeper, thicker fibrous roots than lowland paddy varieties for aerobic moisture extraction.",
+      "growingWindow": {
+        "planting": "May–July (rainy season)",
+        "harvest": "September–November",
+        "description": "Aerobic rainfed rice (including AfricaRice NERICA and EMBRAPA upland cultivars) grown in subhumid/moist savanna Africa, Southeast Asia, South Asia, and the Brazilian Cerrado."
+      },
+      "diseasePestNotes": [
+        "Aerobic upland rice must be rotated with legumes (cowpea, soybean, groundnut, pigeon pea) or cassava/sesame to prevent root-knot nematode and Striga buildup.",
+        "Rice blast pressure is mitigated by balanced N from legume residues."
+      ],
+      "sources": [
+        {
+          "citation": "AfricaRice — NERICA Upland Rice Cropping Systems",
+          "url": "https://www.africarice.org/"
+        },
+        {
+          "citation": "EMBRAPA Rice & Beans & IRRI Upland Rice",
+          "url": "https://www.embrapa.br/"
+        }
+      ],
+      "supportedRegions": [
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "se_asia_monsoon",
+        "south_asia_indo_gangetic",
+        "sa_pampas_cerrado"
+      ],
+      "applicableGroups": [
+        "tropical_subhumid",
+        "tropical_humid",
+        "tropical_monsoon",
+        "tropical_savanna"
+      ]
+    },
+    {
+      "id": "winter_canola",
+      "commonName": "Winter / Spring Rapeseed (Canola)",
+      "synonyms": ["Oilseed Rape", "Canola", "Youcai"],
+      "scientificName": "Brassica napus",
+      "family": "Brassicaceae",
+      "type": "cash",
+      "waterDemand": "moderate",
+      "droughtTolerance": "moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "moderate_to_high",
+        "demandCategory": "High autumn/spring N uptake with deep taproot scavenging; leaves friable soil structure and 20–30 kg N/ha mineralizable leaf-drop residue for following wheat or rice.",
+        "note": "Premier broadleaf cash break crop in cereal-dominated rotations across China (Yangtze & Northern plains), Europe, Australia, South Asia, and North America."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Branching stems and early-shed leaves improve surface tilth and biological activity."
+      },
+      "rootSystem": "Strong taproot (1.2–1.8 m) that bio-drills plough pans and suppresses cereal take-all fungus (Gaeumannomyces graminis).",
+      "sensitivePeriods": {
+        "floweringPodFill": {
+          "months": [4, 5],
+          "note": "Flowering in April–May (NH winter crop) or August–September (SH Australia); avoids peak summer heat.",
+          "source": "CAAS Oil Crops Research Institute & GRDC Canola Guide"
+        }
+      },
+      "growingWindow": {
+        "planting": "September–October (NH Winter) / April–May (NH Spring or SH Australia)",
+        "harvest": "May–June (NH Winter) / August–September (NH Spring) / November (SH Australia)",
+        "description": "Major Brassicaceae oilseed cash crop grown in rotation with rice, wheat, barley, corn, and pulses."
+      },
+      "diseasePestNotes": [
+        "Host of Sclerotinia stem rot (Sclerotinia sclerotiorum) and clubroot; do not plant in more than 1 year of a 3-year rotation or stack with soybean/sunflower.",
+        "Root glucosinolates suppress cereal take-all and root lesion nematodes, boosting subsequent wheat yields by 10–20%."
+      ],
+      "sources": [
+        {
+          "citation": "CAAS Oil Crops Research Institute — Yangtze & Northern Rapeseed Systems",
+          "url": "https://www.caas.cn/en/"
+        },
+        {
+          "citation": "GRDC Australia Canola Grownotes & FAO Crop Calendar",
+          "url": "https://grdc.com.au/"
+        }
+      ],
+      "supportedRegions": [
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "europe_temperate_med",
+        "australia_southern_wheatbelt",
+        "south_asia_indo_gangetic",
+        "sa_pampas_cerrado",
+        "us_great_plains",
+        "mena_mediterranean_arid"
+      ],
+      "applicableGroups": [
+        "temperate_humid",
+        "subtropical_humid",
+        "temperate_mediterranean",
+        "semi_arid_temperate",
+        "continental"
+      ]
+    },
+    {
+      "id": "chickpea",
+      "commonName": "Chickpea / Garbanzo",
+      "synonyms": ["Garbanzo Bean", "Chana", "Bengal Gram", "Kabuli/Desi Chickpea"],
+      "scientificName": "Cicer arietinum",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "low",
+      "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Symbiotic N2 fixer via Mesorhizobium ciceri (fixes 40–90 kg N/ha); provides a reliable residual N credit to subsequent wheat, barley, sorghum, or rice.",
+        "residualNcredit": {
+          "value": "30–55 lb N/acre (35–60 kg N/ha)",
+          "note": "ICRISAT, ICARDA, and GRDC document 35–60 kg N/ha fertilizer savings for wheat/barley following chickpea.",
+          "source": "ICRISAT & ICARDA Chickpea Agronomy"
+        },
+        "note": "Thrives on stored post-rainy (Rabi) soil moisture or cool winter-wet Mediterranean rainfall."
+      },
+      "residue": {
+        "quantity": "low_to_moderate",
+        "persistence": "low",
+        "description": "Organic acid-rich foliage decomposes quickly; retain cereal straw in the system for surface cover."
+      },
+      "rootSystem": "Deep taproot (1.2–1.5 m) capable of extracting receding subsoil moisture during post-rainy grain fill.",
+      "sensitivePeriods": {
+        "floweringPodSet": {
+          "months": [2, 3],
+          "note": "Flowering in February–March (Rabi/Mediterranean) or May–June (NH spring); chilling (<10 °C) or extreme heat (>35 °C) during flowering reduces pod set.",
+          "source": "ICRISAT & ICARDA Chickpea Improvement"
+        }
+      },
+      "growingWindow": {
+        "planting": "October–November (Rabi / Mediterranean / East Africa Highlands) or April–May (Australia / NH Spring)",
+        "harvest": "February–April (Rabi) / June–July (Mediterranean) / October–November (Australia)",
+        "description": "Premier drought-tolerant cool-season pulse crop across South Asia, MENA, Mediterranean Europe, Southern Australia, East African highlands, and the western US."
+      },
+      "diseasePestNotes": [
+        "Ascochyta blight and Fusarium oxysporum wilt require rotating with cereals and oilseeds with at least a 2-year interval between chickpea crops.",
+        "Breaks cereal root lesion nematode (Pratylenchus thornei) and take-all cycles in wheat/barley rotations."
+      ],
+      "sources": [
+        {
+          "citation": "ICRISAT — Chickpea (Cicer arietinum) Global Research",
+          "url": "https://www.icrisat.org/crops/chickpea/"
+        },
+        {
+          "citation": "ICARDA & GRDC Chickpea Production Guides",
+          "url": "https://www.icarda.org/research/crops/chickpea"
+        }
+      ],
+      "supportedRegions": [
+        "south_asia_indo_gangetic",
+        "mena_mediterranean_arid",
+        "europe_temperate_med",
+        "australia_southern_wheatbelt",
+        "ssa_east_southern_humid",
+        "us_great_plains",
+        "us_southwest"
+      ],
+      "applicableGroups": [
+        "temperate_mediterranean",
+        "semi_arid_temperate",
+        "arid",
+        "tropical_monsoon",
+        "tropical_savanna",
+        "subtropical_humid",
+        "highland_montane"
+      ]
+    },
+    {
+      "id": "lentil",
+      "commonName": "Lentil",
+      "synonyms": ["Masoor", "Adas", "Red/Green Lentil"],
+      "scientificName": "Lens culinaris",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "low",
+      "droughtTolerance": "high",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Fixes 35–75 kg N/ha via Rhizobium leguminosarum and leaves higher soil water reserves for subsequent wheat or barley than deep-depleting oilseeds.",
+        "residualNcredit": {
+          "value": "25–45 lb N/acre (30–50 kg N/ha)",
+          "note": "ICARDA Mediterranean and dryland trials document both residual N and conserved subsoil water benefits for wheat/barley following lentil.",
+          "source": "ICARDA Lentil Improvement Program"
+        },
+        "note": "Shallow-to-moderate root depth conserves deeper profile water for the next cereal crop."
+      },
+      "residue": {
+        "quantity": "low",
+        "persistence": "low",
+        "description": "Delicate stems decompose rapidly; pair with high-residue cereals or brassica cover crops."
+      },
+      "rootSystem": "Slender taproot (0.6–0.9 m) densely nodulated in the topsoil.",
+      "growingWindow": {
+        "planting": "October–December (MENA / Mediterranean / South Asia) or April–May (Australia / Northern Plains)",
+        "harvest": "March–May (South Asia / MENA) / July–August (NH Spring) / November (Australia)",
+        "description": "Cool-season drought-hardy pulse staple of MENA, Mediterranean Europe, South Asia, Australia, East African highlands, and Northern Plains."
+      },
+      "diseasePestNotes": [
+        "Broomrape (Orobanche) and Fusarium wilt require a 2-year non-host break with cereals and brassicas/oilseeds.",
+        "Disrupts cereal root rot and grassy weed cycles."
+      ],
+      "sources": [
+        {
+          "citation": "ICARDA — Lentil (Lens culinaris) Dryland Cropping Systems",
+          "url": "https://www.icarda.org/research/crops/lentil"
+        },
+        {
+          "citation": "FAO Crop Calendar & GRDC Lentil Grownotes",
+          "url": "https://cropcalendar.apps.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "mena_mediterranean_arid",
+        "europe_temperate_med",
+        "south_asia_indo_gangetic",
+        "australia_southern_wheatbelt",
+        "ssa_east_southern_humid",
+        "us_great_plains"
+      ],
+      "applicableGroups": [
+        "temperate_mediterranean",
+        "semi_arid_temperate",
+        "arid",
+        "tropical_monsoon",
+        "continental",
+        "highland_montane"
+      ]
+    },
+    {
+      "id": "mung_bean",
+      "commonName": "Mung Bean / Green Gram",
+      "synonyms": ["Green Gram", "Moong", "Lv Dou"],
+      "scientificName": "Vigna radiata",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Ultra-short-duration (60–75 day) N-fixing grain legume fixing 30–60 kg N/ha in summer/catch-crop windows between main cereal harvests.",
+        "residualNcredit": {
+          "value": "25–40 lb N/acre (30–45 kg N/ha)",
+          "note": "CAAS, ICAR, and ICRISAT document 30–45 kg N/ha credit when mung bean pods are picked and green haulms are incorporated before rice or wheat.",
+          "source": "CAAS & ICAR Pulse Cropping Systems"
+        },
+        "note": "Fits short summer or post-rainy windows without delaying main cereal planting."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "low",
+        "description": "Green haulms mineralize rapidly, releasing plant-available N within 2–3 weeks."
+      },
+      "rootSystem": "Nodulated taproot reaching 0.8–1.0 m.",
+      "growingWindow": {
+        "planting": "June–July (China/Temperate Summer) or March–May (South/SE Asia pre-monsoon) or October–November (SH)",
+        "harvest": "August–September or May–July (60–75 days after planting)",
+        "description": "Short-season heat-tolerant pulse widely grown in Northern & Southern China, South Asia, Southeast Asia, East Africa, and Australia."
+      },
+      "diseasePestNotes": [
+        "Breaks cereal pest cycles in wheat–rice and wheat–maize systems.",
+        "Mungbean yellow mosaic virus and Cercospora leaf spot are managed through rotation with cereals and brassicas."
+      ],
+      "sources": [
+        {
+          "citation": "CAAS Institute of Crop Sciences — Mung Bean (Vigna radiata) in Chinese Rotations",
+          "url": "https://www.caas.cn/en/"
+        },
+        {
+          "citation": "ICAR & World Vegetable Center / ICRISAT Mungbean Agronomy",
+          "url": "https://www.icrisat.org/"
+        }
+      ],
+      "supportedRegions": [
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "south_asia_indo_gangetic",
+        "se_asia_monsoon",
+        "ssa_sudano_sahelian",
+        "ssa_east_southern_humid",
+        "australia_southern_wheatbelt"
+      ],
+      "applicableGroups": [
+        "temperate_humid",
+        "subtropical_humid",
+        "semi_arid_temperate",
+        "continental",
+        "tropical_monsoon",
+        "tropical_humid",
+        "tropical_subhumid",
+        "tropical_savanna"
+      ]
+    },
+    {
+      "id": "buckwheat",
+      "commonName": "Common / Tartary Buckwheat",
+      "synonyms": ["Qiaomai", "Buckwheat Cover/Break Crop"],
+      "scientificName": "Fagopyrum esculentum",
+      "family": "Polygonaceae",
+      "type": "cover",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "moderate",
+      "irrigationRegime": "rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Low N requirement; root exudates solubilize calcium- and aluminum-bound soil phosphorus, making P available to subsequent crops.",
+        "note": "Belongs to Polygonaceae, adding a 4th or 5th distinct botanical family to cereal–legume–brassica rotations."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "low_to_moderate",
+        "description": "Establishes full weed-suppressing canopy in 3–4 weeks and decomposes readily after termination."
+      },
+      "rootSystem": "Fine branched root system highly efficient at phosphorus mobilization in low-P topsoil.",
+      "growingWindow": {
+        "planting": "July–August (late summer catch cover) or May–June",
+        "termination": "September–October (45–65 days after planting)",
+        "description": "Fast-growing Polygonaceae summer/autumn cover and break crop widely documented in China (North, Northwest, and Southwest), Europe, and North America."
+      },
+      "diseasePestNotes": [
+        "Non-host to cereal cyst nematodes, SCN, clubroot, and take-all.",
+        "Attracts beneficial hoverflies and predatory insects that reduce aphid pressure in subsequent crops."
+      ],
+      "sources": [
+        {
+          "citation": "CAAS Minor Grain & Buckwheat Research Program",
+          "url": "https://www.caas.cn/en/"
+        },
+        {
+          "citation": "USDA NRCS Cover Crop Guide — Buckwheat (Fagopyrum esculentum)",
+          "url": "https://www.nrcs.usda.gov/"
+        }
+      ],
+      "supportedRegions": [
+        "east_asia_china_temperate",
+        "east_asia_china_subtropical",
+        "europe_temperate_med",
+        "us_midwest",
+        "us_northeast",
+        "us_great_plains"
+      ],
+      "applicableGroups": [
+        "temperate_humid",
+        "subtropical_humid",
+        "continental",
+        "semi_arid_temperate",
+        "highland_montane"
+      ]
     }
   ]
 }

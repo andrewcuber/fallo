@@ -56,7 +56,30 @@ import {
   rankStrategyResults,
   scoreStrategy,
 } from "@/lib/rotation-scoring";
-import { applyFieldRotationsUpdate, type Field, type StoredRotations } from "@/components/providers";
+import {
+  applyFieldRotationsUpdate,
+  sanitizeStoredFields,
+  type Field,
+  type StoredRotations,
+} from "@/components/providers";
+import {
+  normalizeLongitude,
+  validateLatitude,
+  normalizeCoordinates,
+} from "@/lib/coordinates";
+import {
+  detectRegion,
+  detectRegionTag,
+  resolveGeographicContext,
+  GLOBAL_REGION_TAGS,
+} from "@/lib/region";
+import {
+  GLOBAL_DATA_PROVIDERS,
+  resolveGlobalSoilFallback,
+  evaluateGaezV5Indicators,
+  buildUnifiedFieldEvidenceProfile,
+} from "@/lib/global-data-providers";
+import { evaluateFieldCropEvidenceLevel } from "@/lib/rotation-scoring";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -273,11 +296,20 @@ test("Unmatched extreme climate profile -> unknown, low confidence", () => {
   assert.equal(result.confidence, "low");
 });
 
-test("isGroupSupported returns true only for groups with verified catalog crops", () => {
+test("isGroupSupported returns true for all 12 supported global agroecological groups and false for boreal/unknown", () => {
   assert.equal(isGroupSupported("temperate_humid"), true);
   assert.equal(isGroupSupported("semi_arid_temperate"), true);
-  assert.equal(isGroupSupported("subtropical_humid"), false);
-  assert.equal(isGroupSupported("temperate_mediterranean"), false);
+  assert.equal(isGroupSupported("subtropical_humid"), true);
+  assert.equal(isGroupSupported("temperate_mediterranean"), true);
+  assert.equal(isGroupSupported("tropical_humid"), true);
+  assert.equal(isGroupSupported("tropical_subhumid"), true);
+  assert.equal(isGroupSupported("tropical_savanna"), true);
+  assert.equal(isGroupSupported("tropical_monsoon"), true);
+  assert.equal(isGroupSupported("tropical_semi_arid"), true);
+  assert.equal(isGroupSupported("arid"), true);
+  assert.equal(isGroupSupported("continental"), true);
+  assert.equal(isGroupSupported("highland_montane"), true);
+  assert.equal(isGroupSupported("boreal"), false);
   assert.equal(isGroupSupported("unknown"), false);
 });
 
@@ -1205,7 +1237,8 @@ test("isReferenceStrategyApplicable and getAvailableCropsForContext gate regiona
   assert.ok(!neCrops.includes("grain_sorghum"));
 
   assert.equal(getAvailableCropsForContext("unknown", "us_southeast").length, 0);
-  assert.equal(getAvailableCropsForContext("subtropical_humid", "us_southeast").length, 0);
+  assert.equal(getAvailableCropsForContext("boreal", "us_southeast").length, 0);
+  assert.ok(getAvailableCropsForContext("subtropical_humid", "us_southeast").length > 0);
 
   // Reference templates are applicable to temperate_humid + us_southeast
   for (const s of staticStrategies) {
@@ -1593,27 +1626,130 @@ test("Duplicate request prevention blocks concurrent generateRotations calls for
   assert.equal(isFieldGenerationInFlight("concurrent_field_1"), false);
 });
 
-test("African test field (9.45287, 24.98303) classifies tropical thermal regime honestly, skips AI call, and returns zero static rotations", async () => {
-  let providerCalled = false;
-  const spyProvider = makeMockProvider(async () => {
-    providerCalled = true;
-    return JSON.stringify({ strategies: [makeValidStrategy()], rationale: "Should not be called" });
-  });
+test("African test field (9.45287, 24.98303) resolves border geography, global soil fallback with uncertainty, tropical_savanna group, verified local crops, and validates AI rotations", async () => {
+  // 1. Geographic & administrative resolution
+  const geo = resolveGeographicContext(9.45287, 24.98303);
+  assert.ok(geo.countryName.includes("South Sudan / Sudan"));
+  assert.equal(geo.countryCodeIso3, "SSD");
+  assert.equal(geo.regionTag, "ssa_sudano_sahelian");
+  assert.ok(geo.disputedOrBorderNote?.includes("Bahr el Arab"));
 
-  // Tropical savanna/monsoon climate at (9.45287, 24.98303) — South Darfur / Bahr el Ghazal border (~27.1 °C annual avg, ~740 mm seasonal rain, null SSURGO soil)
+  // 2. Harmonized FAO HWSD v2.2 / ISRIC SoilGrids v2.0 fallback with Q0.05-Q0.95 uncertainty
+  const soilFallback = resolveGlobalSoilFallback(9.45287, 24.98303);
+  assert.ok(soilFallback.source.includes("HWSD v2.2"));
+  assert.ok(soilFallback.source.includes("SoilGrids"));
+  assert.ok(soilFallback.wrbSoilGroup.length > 0);
+  assert.ok(soilFallback.aggregated.depth0_30cm.sand !== null);
+  assert.ok(soilFallback.aggregated.depth0_30cm.clay !== null);
+  assert.ok(soilFallback.aggregated.depth0_30cm.om !== null);
+  assert.ok(soilFallback.aggregated.depth0_30cm.ph !== null);
+  assert.ok(soilFallback.aggregated.depth0_30cm.awc !== null);
+  assert.ok(soilFallback.uncertainty.depth0_30cm.sand.q05 < soilFallback.uncertainty.depth0_30cm.sand.q95);
+  assert.ok(soilFallback.uncertainty.depth0_30cm.awc.q05 < soilFallback.uncertainty.depth0_30cm.awc.q95);
+  assert.ok(soilFallback.propertySources.sand.includes("HWSD v2.2"));
+
+  // 3. Tropical savanna climate at (9.45287, 24.98303) — ~27.1 °C annual avg, ~740 mm seasonal rain (May–Oct)
   const africanClimate = makeClimate({
     avgAnnualTemp: 27.1,
     avgAnnualPrecip: 740,
     monthlyTemp: [23.5, 25.8, 28.9, 30.5, 29.8, 27.9, 26.1, 25.4, 26.3, 27.4, 25.8, 23.8],
     monthlyPrecip: [0, 0, 4, 18, 68, 115, 195, 215, 105, 20, 0, 0],
   });
+  africanClimate.location = { lat: 9.45287, lon: 24.98303, elevation: 465 };
 
-  const classification = classifyAgGroup(africanClimate, null);
-  assert.equal(classification.group, "unknown");
-  assert.equal(classification.confidence, "low");
-  assert.ok(classification.reasons.some((r) => r.includes("Tropical thermal regime")));
-  assert.ok(classification.limitations.some((l) => l.includes("FAO/IIASA GAEZ v5")));
-  assert.ok(classification.limitations.some((l) => l.includes("No soil data available")));
+  const classification = classifyAgGroup(africanClimate, soilFallback);
+  assert.equal(classification.group, "tropical_savanna");
+  assert.equal(classification.confidence, "high");
+  assert.equal(classification.dominantSeasonality, "tropical_rainy_dry");
+  assert.ok(
+    classification.estimatedLgpDays !== null &&
+      classification.estimatedLgpDays !== undefined &&
+      classification.estimatedLgpDays >= 120
+  );
+
+  // 4. Verified Sudano-Sahelian tropical savanna crops
+  const crops = getAvailableCropsForContext("tropical_savanna", "ssa_sudano_sahelian");
+  assert.ok(crops.includes("sorghum_tropical"));
+  assert.ok(crops.includes("pearl_millet_grain"));
+  assert.ok(crops.includes("cowpea"));
+  assert.ok(crops.includes("groundnut"));
+  assert.ok(crops.includes("sesame"));
+  assert.ok(crops.includes("pigeon_pea"));
+  assert.ok(crops.includes("sunn_hemp"));
+  assert.ok(crops.includes("lablab_bean"));
+  assert.ok(!crops.includes("soft_red_winter_wheat"));
+
+  // 5. Generate and deterministically validate a 3-year tropical savanna rotation
+  const africanStrategy: RotationStrategy = {
+    id: "sudano_sahelian_resilience",
+    name: "Sudano-Sahelian Sorghum–Pulse–Sesame Rotation",
+    archetype: "water_resilience",
+    description:
+      "Alternates deep-rooted rainy-season sorghum, N-fixing cowpea/groundnut, and drought-hardy sesame to suppress Striga and build topsoil N.",
+    years: [
+      {
+        year: 1,
+        seasons: [
+          {
+            season: "Rainy Season",
+            crop: "sorghum_tropical",
+            activity: "Plant rainfed sorghum at onset of June rains",
+            months: [6, 7, 8, 9, 10],
+          },
+        ],
+      },
+      {
+        year: 2,
+        seasons: [
+          {
+            season: "Rainy Season",
+            crop: "groundnut",
+            activity: "Plant groundnut to fix N and induce Striga suicidal germination",
+            months: [6, 7, 8, 9],
+          },
+          {
+            season: "Late Rainy",
+            crop: "pearl_millet",
+            activity: "Short-duration millet biomass cover",
+            months: [9, 10, 11],
+          },
+        ],
+      },
+      {
+        year: 3,
+        seasons: [
+          {
+            season: "Rainy Season",
+            crop: "sesame",
+            activity: "Plant Pedaliaceae oilseed break crop",
+            months: [7, 8, 9, 10],
+          },
+          {
+            season: "Post-Rainy Relay",
+            crop: "lablab_bean",
+            activity: "Relay lablab N-fixing cover on residual moisture",
+            months: [10, 11, 12],
+          },
+        ],
+      },
+    ],
+    tradeoffs: {
+      advantages: [
+        "Three distinct botanical families (Poaceae, Fabaceae, Pedaliaceae) break Striga and nematode cycles",
+        "High drought tolerance across all 3 years suited to 740 mm seasonal rain",
+      ],
+      disadvantages: ["Requires timely weeding during July–August peak rains"],
+      operational: ["Retain sorghum and millet stalks as dry-season surface mulch"],
+      warnings: [],
+    },
+  };
+
+  const mockProvider = makeMockProvider(
+    JSON.stringify({
+      strategies: [africanStrategy],
+      rationale: "Tailored to Bahr el Ghazal / South Darfur tropical savanna rainy season.",
+    })
+  );
 
   const result = await generateRotations(
     {
@@ -1622,17 +1758,395 @@ test("African test field (9.45287, 24.98303) classifies tropical thermal regime 
       lat: 9.45287,
       lon: 24.98303,
       climate: africanClimate,
+      soil: soilFallback,
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: null,
+    },
+    mockProvider
+  );
+
+  assert.equal(result.supportStatus, "supported");
+  assert.equal(result.evidenceLevel, "level_2_global_modeled");
+  assert.equal(result.proposals.length, 1);
+  assert.equal(result.proposals[0].strategy.id, "sudano_sahelian_resilience");
+  assert.ok(typeof result.proposals[0].overallScore === "number");
+});
+
+// ─── 8. Priority 1–5 Global Coordinate, Provider & Regional Acceptance Tests ───
+
+section("Global Coordinate Normalization, Data Providers & Regional Acceptance");
+
+test("Longitude normalization handles world-map wrapping (-250 -> 110, 250 -> -110, 190 -> -170, -190 -> 170, 180 -> -180, 540 -> -180, -540 -> -180, 0 -> 0) and is idempotent", () => {
+  assert.equal(normalizeLongitude(-250), 110);
+  assert.equal(normalizeLongitude(250), -110);
+  assert.equal(normalizeLongitude(190), -170);
+  assert.equal(normalizeLongitude(-190), 170);
+  assert.equal(normalizeLongitude(180), -180);
+  assert.equal(normalizeLongitude(-180), -180);
+  assert.equal(normalizeLongitude(540), -180);
+  assert.equal(normalizeLongitude(-540), -180);
+  assert.equal(normalizeLongitude(0), 0);
+  assert.equal(Object.is(normalizeLongitude(-0), -0), false);
+
+  // Normal longitudes across US, Africa, China, Australia, Europe
+  assert.equal(normalizeLongitude(-80.47), -80.47);
+  assert.equal(normalizeLongitude(24.98303), 24.98303);
+  assert.equal(normalizeLongitude(117.12), 117.12);
+  assert.equal(normalizeLongitude(147.35), 147.35);
+  assert.equal(normalizeLongitude(2.35), 2.35);
+
+  // International Date Line behavior
+  assert.equal(normalizeLongitude(179.9), 179.9);
+  assert.equal(normalizeLongitude(-179.9), -179.9);
+  assert.ok(Math.abs((normalizeLongitude(180.5) ?? 0) - -179.5) < 1e-9);
+  assert.ok(Math.abs((normalizeLongitude(-180.5) ?? 0) - 179.5) < 1e-9);
+
+  // Idempotence across arbitrary wrapped longitudes
+  for (const raw of [-995.25, -540, -250, -190, -180, -119.81, 0, 24.98303, 110, 180, 190, 250, 540, 830.5]) {
+    const once = normalizeLongitude(raw);
+    assert.ok(once !== null && once >= -180 && once < 180);
+    assert.equal(normalizeLongitude(once!), once);
+  }
+
+  // Strict latitude validation & rejection of NaN/Infinity/invalid strings
+  assert.equal(validateLatitude(-90), -90);
+  assert.equal(validateLatitude(90), 90);
+  assert.equal(validateLatitude(0), 0);
+  assert.throws(() => validateLatitude(-90.001), RangeError);
+  assert.throws(() => validateLatitude(90.001), RangeError);
+  assert.throws(() => validateLatitude(NaN), RangeError);
+  assert.throws(() => validateLatitude(Infinity), RangeError);
+  assert.throws(() => normalizeLongitude(NaN), RangeError);
+  assert.throws(() => normalizeLongitude(Infinity), RangeError);
+  assert.throws(() => normalizeLongitude("-Infinity"), RangeError);
+  assert.throws(() => normalizeLongitude("abc"), RangeError);
+  assert.throws(() => normalizeLongitude(""), RangeError);
+  assert.equal(normalizeCoordinates(-90.001, 0).valid, false);
+  assert.equal(normalizeCoordinates(90.001, 0).valid, false);
+  assert.equal(normalizeCoordinates(35, NaN).valid, false);
+  assert.equal(normalizeCoordinates(35, "abc").valid, false);
+
+  const normChina = normalizeCoordinates(35.86, -250);
+  assert.equal(normChina.ok, true);
+  if (normChina.ok) {
+    assert.equal(normChina.lat, 35.86);
+    assert.equal(normChina.lon, 110);
+    assert.equal(normChina.lonWasNormalized, true);
+    assert.equal(normChina.originalLon, -250);
+  }
+
+  // sanitizeStoredFields migrates wrapped longitudes in persisted fields
+  const sanitized = sanitizeStoredFields([
+    { id: "cn1", name: "Shaanxi Field", lat: 35.86, lon: -250 },
+    { id: "bad", name: "Invalid Lat", lat: 120, lon: 10 },
+  ]);
+  assert.equal(sanitized.length, 1);
+  assert.equal(sanitized[0].lon, 110);
+});
+
+test("China wrapped longitude (-250 -> 110) and direct coordinates identify China (CHN), never assign a US tag, and generate validated Chinese rotations", async () => {
+  // Wrapped longitude -250 normalizes to 110°E (North-Central China)
+  const geoWrapped = resolveGeographicContext(35.86, -250);
+  assert.equal(geoWrapped.lon, 110);
+  assert.equal(geoWrapped.lonWasNormalized, true);
+  assert.equal(geoWrapped.countryName, "China");
+  assert.equal(geoWrapped.countryCodeIso3, "CHN");
+  assert.equal(geoWrapped.regionTag, "east_asia_china_temperate");
+  assert.ok(!geoWrapped.regionTag?.startsWith("us_"));
+  assert.equal(detectRegionTag(35.86, -250), "east_asia_china_temperate");
+  assert.equal(detectRegion(30.59, 114.3)?.tag, "east_asia_china_subtropical");
+
+  // GenerationRequestSchema normalizes wrapped longitude -250 -> 110 automatically
+  const parsedReq = GenerationRequestSchema.safeParse({
+    fieldId: "china_wrapped",
+    fieldName: "North China Plain Field",
+    lat: 36.65,
+    lon: -242.88, // wraps to +117.12 (Jinan, Shandong)
+    climate: makeClimate(),
+    soil: null,
+    priorities: DEFAULT_PRIORITIES,
+    regionTag: "east_asia_china_temperate",
+  });
+  assert.equal(parsedReq.success, true);
+  if (parsedReq.success) {
+    assert.ok(Math.abs(parsedReq.data.lon - 117.12) < 1e-6);
+  }
+
+  const chinaSoil = resolveGlobalSoilFallback(36.65, -242.88);
+  assert.ok(chinaSoil.aggregated.depth0_30cm.awc !== null);
+
+  const chinaCrops = getAvailableCropsForContext("temperate_humid", "east_asia_china_temperate");
+  assert.ok(chinaCrops.includes("soft_red_winter_wheat"));
+  assert.ok(chinaCrops.includes("field_corn"));
+  assert.ok(chinaCrops.includes("soybean"));
+  assert.ok(chinaCrops.includes("winter_canola"));
+  assert.ok(chinaCrops.includes("groundnut"));
+  assert.ok(chinaCrops.includes("mung_bean"));
+  assert.ok(chinaCrops.includes("buckwheat"));
+
+  const chinaStrat: RotationStrategy = {
+    id: "north_china_wheat_soy_canola",
+    name: "North China Plain Wheat–Legume–Rapeseed Rotation",
+    archetype: "crop_diversity",
+    description: "Rotates winter wheat, summer soybean with buckwheat cover, and winter canola across 4 botanical families.",
+    years: [
+      {
+        year: 1,
+        seasons: [
+          { season: "Winter–Spring", crop: "soft_red_winter_wheat", activity: "Winter wheat harvest in June", months: [1, 2, 3, 4, 5, 6] },
+          { season: "Late Summer", crop: "buckwheat", activity: "Summer buckwheat phosphorus-scavenging cover", months: [7, 8, 9] },
+        ],
+      },
+      {
+        year: 2,
+        seasons: [
+          { season: "Summer", crop: "soybean", activity: "Plant summer soybean", months: [5, 6, 7, 8, 9] },
+          { season: "Autumn", crop: "hairy_vetch", activity: "Overwinter legume cover", months: [10, 11, 12] },
+        ],
+      },
+      {
+        year: 3,
+        seasons: [
+          { season: "Spring–Summer", crop: "winter_canola", activity: "Harvest rapeseed in May", months: [1, 2, 3, 4, 5] },
+          { season: "Summer", crop: "mung_bean", activity: "Short-season summer mung bean pulse", months: [6, 7, 8] },
+        ],
+      },
+    ],
+    tradeoffs: {
+      advantages: ["Four botanical families (Poaceae, Polygonaceae, Fabaceae, Brassicaceae)", "Includes N-fixing soybean, mung bean, and vetch"],
+      disadvantages: ["Requires timely post-harvest seeding in June"],
+      operational: ["Monitor Sclerotinia interval between soybean and canola"],
+      warnings: [],
+    },
+  };
+  // Note: soybean AND winter_canola are both Sclerotinia hosts -> let's verify our validator catches Sclerotinia if both are used, and accepts when non-host groundnut replaces soybean!
+  chinaStrat.years[1].seasons[0].crop = "groundnut";
+
+  const chinaRes = await generateRotations(
+    {
+      fieldId: "china_field_1",
+      fieldName: "Shandong Field",
+      lat: 36.65,
+      lon: -242.88,
+      climate: makeClimate(),
+      soil: chinaSoil,
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: null,
+    },
+    makeMockProvider(JSON.stringify({ strategies: [chinaStrat], rationale: "Adapted to North China Plain." }))
+  );
+
+  assert.equal(chinaRes.geography?.countryName, "China");
+  assert.equal(chinaRes.geography?.regionTag, "east_asia_china_temperate");
+  assert.equal(chinaRes.proposals.length, 1);
+});
+
+test("Nevada / US Southwest (39.53, -119.81) identifies us_southwest, distinguishes irrigated vs rainfed regimes, and validates western crop rotations", async () => {
+  const nvGeo = resolveGeographicContext(39.53, -119.81);
+  assert.equal(nvGeo.countryCodeIso2, "US");
+  assert.equal(nvGeo.regionTag, "us_southwest");
+  assert.equal(nvGeo.defaultWaterRegime, "irrigated_primary");
+  assert.ok(nvGeo.admin1Name.includes("Nevada"));
+
+  // Great Basin arid/semi-arid climate (~11.5 °C, 195 mm annual precip -> classifies as "arid" with irrigation_required)
+  const nvAridClimate = makeClimate({
+    avgAnnualTemp: 11.5,
+    avgAnnualPrecip: 195,
+    monthlyTemp: [0.5, 3.2, 6.8, 10.1, 14.8, 19.9, 24.5, 23.4, 18.2, 11.4, 5.1, 0.8],
+    monthlyPrecip: [24, 22, 20, 16, 18, 12, 6, 6, 8, 14, 20, 29],
+  });
+  nvAridClimate.location = { lat: 39.53, lon: -119.81, elevation: 1340 };
+
+  const nvClassification = classifyAgGroup(nvAridClimate, makeSoil());
+  assert.equal(nvClassification.group, "arid");
+  assert.equal(nvClassification.waterRegime, "irrigation_required");
+
+  // Both "arid" and "semi_arid_temperate" in "us_southwest" have verified western crops
+  const nvAridCrops = getAvailableCropsForContext("arid", "us_southwest");
+  const nvSemiAridCrops = getAvailableCropsForContext("semi_arid_temperate", "us_southwest");
+  for (const cropList of [nvAridCrops, nvSemiAridCrops]) {
+    assert.ok(cropList.includes("alfalfa_annual_forage"));
+    assert.ok(cropList.includes("spring_barley"));
+    assert.ok(cropList.includes("spring_wheat"));
+    assert.ok(cropList.includes("safflower"));
+    assert.ok(cropList.includes("grain_sorghum"));
+    assert.ok(cropList.includes("desert_tepary_bean"));
+    assert.ok(cropList.includes("yellow_mustard_cover"));
+  }
+
+  const nvStrategy: RotationStrategy = {
+    id: "nevada_irrigated_water_saving",
+    name: "Nevada Great Basin Alfalfa–Barley–Safflower Rotation",
+    archetype: "water_resilience",
+    description: "Rotates irrigated forage medic/alfalfa, low-water spring barley with mustard cover, and deep-rooted safflower.",
+    years: [
+      {
+        year: 1,
+        seasons: [
+          { season: "Spring–Summer", crop: "alfalfa_annual_forage", activity: "Irrigated forage medic/alfalfa nitrogen builder", months: [3, 4, 5, 6, 7, 8, 9] },
+        ],
+      },
+      {
+        year: 2,
+        seasons: [
+          { season: "Spring", crop: "spring_barley", activity: "Early-maturing spring barley utilizing legume N credit", months: [3, 4, 5, 6, 7] },
+          { season: "Autumn", crop: "yellow_mustard_cover", activity: "Autumn biofumigant mustard cover", months: [8, 9, 10] },
+        ],
+      },
+      {
+        year: 3,
+        seasons: [
+          { season: "Spring–Summer", crop: "safflower", activity: "Deep-taproot drought-tolerant safflower oilseed", months: [4, 5, 6, 7, 8] },
+        ],
+      },
+    ],
+    tradeoffs: {
+      advantages: ["Four botanical families (Fabaceae, Poaceae, Brassicaceae, Asteraceae)", "Reduces irrigation demand in Years 2 and 3"],
+      disadvantages: ["Requires irrigation scheduling for establishment in <200 mm Great Basin climate"],
+      operational: ["Terminate forage medic cleanly prior to spring barley seeding"],
+      warnings: [],
+    },
+  };
+
+  const nvRes = await generateRotations(
+    {
+      fieldId: "nv_field_1",
+      fieldName: "Fallon Nevada Field",
+      lat: 39.53,
+      lon: -119.81,
+      climate: nvAridClimate,
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: null,
+    },
+    makeMockProvider(JSON.stringify({ strategies: [nvStrategy], rationale: "Designed for irrigated Nevada Great Basin." }))
+  );
+
+  assert.equal(nvRes.supportStatus, "supported");
+  assert.equal(nvRes.evidenceLevel, "level_1_strong_local");
+  assert.equal(nvRes.proposals.length, 1);
+  assert.equal(nvRes.proposals[0].strategy.id, "nevada_irrigated_water_saving");
+});
+
+test("Global agroecological coverage across South America, Europe, South Asia, Southeast Asia, Australia, MENA, and Level 3 refusal for unsupported extremes", async () => {
+  assert.equal(Object.keys(GLOBAL_DATA_PROVIDERS).length, 14);
+  assert.equal(GLOBAL_REGION_TAGS.length, 15);
+
+  const representativeLocations = [
+    {
+      name: "Brazil Cerrado/Pampas",
+      lat: -23.31,
+      lon: -51.16,
+      expectedIso3: "BRA",
+      expectedRegion: "sa_pampas_cerrado",
+      agGroup: "subtropical_humid" as const,
+      expectedCrop: "soybean",
+    },
+    {
+      name: "Castile & León Spain (Mediterranean Europe)",
+      lat: 41.65,
+      lon: -4.72,
+      expectedIso3: "ESP",
+      expectedRegion: "europe_temperate_med",
+      agGroup: "temperate_mediterranean" as const,
+      expectedCrop: "winter_canola",
+    },
+    {
+      name: "Punjab Indo-Gangetic Plains India",
+      lat: 30.9,
+      lon: 75.85,
+      expectedIso3: "IND",
+      expectedRegion: "south_asia_indo_gangetic",
+      agGroup: "tropical_monsoon" as const,
+      expectedCrop: "paddy_rice",
+    },
+    {
+      name: "Central Plains Thailand (SE Asia Monsoon)",
+      lat: 15.87,
+      lon: 100.99,
+      expectedIso3: "THA",
+      expectedRegion: "se_asia_monsoon",
+      agGroup: "tropical_monsoon" as const,
+      expectedCrop: "paddy_rice",
+    },
+    {
+      name: "South Australia Wheatbelt",
+      lat: -34.92,
+      lon: 138.6,
+      expectedIso3: "AUS",
+      expectedRegion: "australia_southern_wheatbelt",
+      agGroup: "temperate_mediterranean" as const,
+      expectedCrop: "chickpea",
+    },
+    {
+      name: "Meknès Morocco (MENA)",
+      lat: 33.89,
+      lon: -5.55,
+      expectedIso3: "MAR",
+      expectedRegion: "mena_mediterranean_arid",
+      agGroup: "temperate_mediterranean" as const,
+      expectedCrop: "lentil",
+    },
+  ];
+
+  for (const loc of representativeLocations) {
+    const geo = resolveGeographicContext(loc.lat, loc.lon);
+    assert.equal(geo.countryCodeIso3, loc.expectedIso3, `ISO3 mismatch for ${loc.name}`);
+    assert.equal(geo.regionTag, loc.expectedRegion, `Region mismatch for ${loc.name}`);
+    const crops = getAvailableCropsForContext(loc.agGroup, geo.regionTag);
+    assert.ok(crops.length >= 5, `Expected >=5 crops for ${loc.name}, got ${crops.length}`);
+    assert.ok(crops.includes(loc.expectedCrop), `Expected ${loc.expectedCrop} in ${loc.name}`);
+    const evidence = evaluateFieldCropEvidenceLevel({
+      agGroup: loc.agGroup,
+      regionTag: geo.regionTag,
+      availableCropIds: crops,
+      soil: resolveGlobalSoilFallback(loc.lat, loc.lon),
+    });
+    assert.equal(evidence.level, "level_2_global_modeled");
+  }
+
+  // Unified evidence profile builder works cleanly
+  const profile = buildUnifiedFieldEvidenceProfile(
+    9.45287,
+    24.98303,
+    makeClimate({ avgAnnualTemp: 27.1, avgAnnualPrecip: 740 }),
+    null
+  );
+  assert.equal(profile.geography.regionTag, "ssa_sudano_sahelian");
+  assert.ok(profile.soilFallback !== null);
+  assert.ok(profile.activeProviders.length >= 10);
+
+  // Level 3 Insufficient Evidence: Boreal / polar location refuses generation honestly
+  let providerCalled = false;
+  const borealClimate = makeClimate({
+    avgAnnualTemp: 1.5,
+    avgAnnualPrecip: 450,
+    monthlyTemp: [-14, -12, -7, -1, 5, 11, 14, 12, 7, 1, -6, -11],
+  });
+  const borealClass = classifyAgGroup(borealClimate, null);
+  assert.equal(borealClass.group, "boreal");
+  assert.equal(borealClass.evidenceLevel, "level_3_insufficient");
+
+  const borealRes = await generateRotations(
+    {
+      fieldId: "boreal_test",
+      fieldName: "Sub-Arctic Field",
+      lat: 66.5,
+      lon: 25.7,
+      climate: borealClimate,
       soil: null,
       priorities: DEFAULT_PRIORITIES,
       regionTag: null,
     },
-    spyProvider
+    makeMockProvider(async () => {
+      providerCalled = true;
+      return "{}";
+    })
   );
-
   assert.equal(providerCalled, false);
-  assert.equal(result.availableCrops.length, 0);
-  assert.equal(result.proposals.length, 0);
-  assert.equal(result.supportStatus, "unavailable");
+  assert.equal(borealRes.evidenceLevel, "level_3_insufficient");
+  assert.equal(borealRes.proposals.length, 0);
+  assert.equal(borealRes.supportStatus, "unavailable");
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Search, MapPin, Loader2, XCircle, CheckCircle2 } from "lucide-react";
+import { normalizeCoordinates, normalizeLongitude } from "@/lib/coordinates";
 
 const MapPicker = dynamic(() => import("@/components/map-picker"), { ssr: false });
 
@@ -24,6 +25,7 @@ export default function FieldCreator() {
   // Raw text values for coordinate inputs to allow natural typing of negatives, decimals, etc.
   const [latText, setLatText] = useState("41.878");
   const [lonText, setLonText] = useState("-93.0977");
+  const [lonNormalizedNote, setLonNormalizedNote] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [geoLoading, setGeoLoading] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
@@ -31,11 +33,20 @@ export default function FieldCreator() {
   const toastIdRef = useRef(0);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  // Parsed numeric values (used for map and validation)
+  const normalizedCheck = normalizeCoordinates(latText, lonText);
   const latNum = parseFloat(latText);
   const lonNum = parseFloat(lonText);
-  const latValid = !Number.isNaN(latNum) && latNum >= -90 && latNum <= 90;
-  const lonValid = !Number.isNaN(lonNum) && lonNum >= -180 && lonNum <= 180;
+  const latValid =
+    latText.trim() !== "" &&
+    /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(latText.trim()) &&
+    Number.isFinite(latNum) &&
+    latNum >= -90 &&
+    latNum <= 90;
+  const lonValid =
+    lonText.trim() !== "" &&
+    /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(lonText.trim()) &&
+    Number.isFinite(lonNum);
+  const canonicalLon = lonValid ? normalizeLongitude(lonNum) : NaN;
 
   const addToast = useCallback((message: string, type: "error" | "success") => {
     const id = ++toastIdRef.current;
@@ -55,10 +66,20 @@ export default function FieldCreator() {
       );
       const data = await res.json();
       if (data && data.length > 0) {
-        const newLat = parseFloat(data[0].lat);
-        const newLon = parseFloat(data[0].lon);
-        setLatText(String(newLat));
-        setLonText(String(newLon));
+        const norm = normalizeCoordinates(data[0].lat, data[0].lon);
+        if (!norm.valid) {
+          addToast(norm.error, "error");
+          return;
+        }
+        setLatText(String(Number(norm.lat.toFixed(6))));
+        setLonText(String(Number(norm.lon.toFixed(6))));
+        if (norm.lonWasNormalized) {
+          setLonNormalizedNote(
+            `Wrapped longitude ${norm.originalLon.toFixed(2)}° normalized to ${norm.lon.toFixed(4)}°.`
+          );
+        } else {
+          setLonNormalizedNote(null);
+        }
         addToast(`Location set: ${data[0].display_name.split(",")[0]}`, "success");
       } else {
         addToast("Address not found. Try a broader search like a city name.", "error");
@@ -70,37 +91,28 @@ export default function FieldCreator() {
     }
   }
 
-  function validate() {
+  function handleSubmit() {
     if (!name.trim()) {
       addToast("Please enter a field name before saving.", "error");
       nameInputRef.current?.focus();
-      return false;
+      return;
     }
-    if (Number.isNaN(latNum)) {
-      addToast("Latitude must be a valid number.", "error");
-      return false;
+    if (!normalizedCheck.valid) {
+      addToast(normalizedCheck.error, "error");
+      return;
     }
-    if (latNum < -90 || latNum > 90) {
-      addToast("Latitude must be between -90 and 90.", "error");
-      return false;
-    }
-    if (Number.isNaN(lonNum)) {
-      addToast("Longitude must be a valid number.", "error");
-      return false;
-    }
-    if (lonNum < -180 || lonNum > 180) {
-      addToast("Longitude must be between -180 and 180.", "error");
-      return false;
-    }
-    return true;
-  }
 
-  function handleSubmit() {
-    if (!validate()) return;
+    const { lat: finalLat, lon: finalLon, lonWasNormalized, originalLon } = normalizedCheck;
+    if (lonWasNormalized) {
+      setLonText(String(Number(finalLon.toFixed(6))));
+      setLonNormalizedNote(
+        `Wrapped longitude ${originalLon.toFixed(2)}° normalized to canonical ${finalLon.toFixed(4)}°.`
+      );
+    }
+
     setSubmitLoading(true);
-    // Small delay to show loading state
     setTimeout(() => {
-      const field = addField({ name: name.trim(), lat: latNum, lon: lonNum });
+      const field = addField({ name: name.trim(), lat: finalLat, lon: finalLon });
       setSubmitLoading(false);
       router.push(`/field/${field.id}/climate`);
     }, 300);
@@ -172,7 +184,7 @@ export default function FieldCreator() {
                   <Input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="e.g., Ames, Iowa"
+                    placeholder="e.g., Ames, Iowa or Jinan, China"
                     onKeyDown={(e) => e.key === "Enter" && geocode()}
                     className="pl-9"
                   />
@@ -207,9 +219,8 @@ export default function FieldCreator() {
                   value={latText}
                   onChange={(e) => setLatText(e.target.value)}
                   onBlur={() => {
-                    const parsed = parseFloat(latText);
-                    if (!Number.isNaN(parsed)) {
-                      setLatText(String(parsed));
+                    if (latValid) {
+                      setLatText(String(Number(latNum.toFixed(6))));
                     }
                   }}
                   aria-invalid={!latValid}
@@ -225,18 +236,30 @@ export default function FieldCreator() {
                   type="text"
                   inputMode="decimal"
                   value={lonText}
-                  onChange={(e) => setLonText(e.target.value)}
+                  onChange={(e) => {
+                    setLonText(e.target.value);
+                    setLonNormalizedNote(null);
+                  }}
                   onBlur={() => {
-                    const parsed = parseFloat(lonText);
-                    if (!Number.isNaN(parsed)) {
-                      setLonText(String(parsed));
+                    if (lonValid) {
+                      const normLon = normalizeLongitude(lonNum);
+                      const wasWrapped = Math.abs(normLon - lonNum) > 1e-9;
+                      setLonText(String(Number(normLon.toFixed(6))));
+                      if (wasWrapped) {
+                        setLonNormalizedNote(
+                          `Normalized wrapped longitude ${lonNum.toFixed(2)}° to canonical ${normLon.toFixed(4)}°.`
+                        );
+                      }
                     }
                   }}
                   aria-invalid={!lonValid}
                   className={!lonValid && lonText !== "" ? "border-accent-red" : ""}
                 />
                 {!lonValid && lonText !== "" && (
-                  <p className="text-xs text-accent-red">Enter a number between -180 and 180.</p>
+                  <p className="text-xs text-accent-red">Enter a valid finite longitude.</p>
+                )}
+                {lonNormalizedNote && (
+                  <p className="text-xs text-electric">{lonNormalizedNote}</p>
                 )}
               </div>
             </div>
@@ -250,16 +273,27 @@ export default function FieldCreator() {
               Map Location
             </CardTitle>
             <CardDescription>
-              Click anywhere on the map to set coordinates, or drag the marker.
+              Click anywhere on the map to set coordinates, or drag the marker. Wrapped world-map longitudes are normalized automatically.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <MapPicker
-              lat={latNum}
-              lon={lonNum}
-              onChange={(nlat, nlon) => {
-                setLatText(String(Number(nlat.toFixed(6))));
-                setLonText(String(Number(nlon.toFixed(6))));
+              lat={latValid ? latNum : NaN}
+              lon={lonValid ? canonicalLon : NaN}
+              onChange={(nlat, nlon, meta) => {
+                const norm = normalizeCoordinates(nlat, nlon);
+                const finalLat = norm.valid ? norm.lat : nlat;
+                const finalLon = norm.valid ? norm.lon : nlon;
+                setLatText(String(Number(finalLat.toFixed(6))));
+                setLonText(String(Number(finalLon.toFixed(6))));
+                if (meta?.lonWasNormalized || (norm.valid && norm.lonWasNormalized)) {
+                  const orig = meta?.originalLon ?? (norm.valid ? norm.originalLon : nlon);
+                  setLonNormalizedNote(
+                    `Map longitude ${orig.toFixed(2)}° normalized to canonical ${finalLon.toFixed(4)}°.`
+                  );
+                } else {
+                  setLonNormalizedNote(null);
+                }
               }}
             />
           </CardContent>

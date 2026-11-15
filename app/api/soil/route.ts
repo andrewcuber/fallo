@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LRUCache } from "lru-cache";
+import { normalizeCoordinates } from "@/lib/coordinates";
+import { resolveGeographicContext } from "@/lib/region";
+import {
+  resolveGlobalSoilFallback,
+  type SoilPropertyUncertainty,
+} from "@/lib/global-data-providers";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SDA_TIMEOUT_MS = 20000; // 20 seconds per query
@@ -56,16 +62,35 @@ interface SoilResponse {
   location: {
     lat: number;
     lon: number;
+    lonWasNormalized?: boolean;
+    originalLon?: number;
   };
   source: string;
   coverage: string;
+  wrbSoilGroup?: string;
   mapUnit: {
     mukey: string;
     name: string;
   } | null;
   totalComponentPercent: number;
   components: SoilComponent[];
-  aggregated: AggregatedProperties;
+  aggregated: AggregatedProperties & {
+    depth0_30cm: AggregatedProperties["depth0_30cm"] & {
+      bulkDensityGcm3?: number | null;
+      coarseFragmentsPct?: number | null;
+    };
+  };
+  uncertainty?: {
+    depth0_30cm: {
+      sand?: SoilPropertyUncertainty;
+      silt?: SoilPropertyUncertainty;
+      clay?: SoilPropertyUncertainty;
+      om?: SoilPropertyUncertainty;
+      ph?: SoilPropertyUncertainty;
+      awc?: SoilPropertyUncertainty;
+    };
+  };
+  propertySources?: Record<string, string>;
   dataCoverage: DataCoverage;
   limitations: string[];
   cached?: boolean;
@@ -252,27 +277,84 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const lat = parseFloat(latStr);
-  const lon = parseFloat(lonStr);
-
-  if (Number.isNaN(lat) || Number.isNaN(lon)) {
+  const norm = normalizeCoordinates(latStr, lonStr);
+  if (!norm.ok) {
     return NextResponse.json(
-      { error: "Invalid lat or lon" },
+      { error: norm.error },
       { status: 400 }
     );
   }
 
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-    return NextResponse.json(
-      { error: "Latitude must be -90 to 90, longitude -180 to 180" },
-      { status: 400 }
-    );
-  }
+  const lat = norm.lat;
+  const lon = norm.lon;
+  const locationMeta = {
+    lat,
+    lon,
+    ...(norm.lonWasNormalized
+      ? { lonWasNormalized: true, originalLon: norm.originalLon }
+      : {}),
+  };
 
   const cacheKey = `${lat.toFixed(2)}_${lon.toFixed(2)}`;
   const cached = cache.get(cacheKey);
   if (cached) {
-    return NextResponse.json({ ...cached, cached: true });
+    return NextResponse.json({ ...cached, location: locationMeta, cached: true });
+  }
+
+  const geo = resolveGeographicContext(lat, lon);
+  const isInsideUS =
+    geo.countryCodeIso2 === "US" ||
+    (lat >= 17.5 && lat <= 71.5 && lon >= -179.9 && lon <= -64.5);
+
+  function buildGlobalFallbackResponse(reasonNote?: string): SoilResponse {
+    const fb = resolveGlobalSoilFallback(lat, lon);
+    const fbLimitations = reasonNote
+      ? [reasonNote, ...fb.limitations]
+      : fb.limitations;
+    return {
+      location: locationMeta,
+      source: fb.source,
+      coverage: fb.coverage,
+      wrbSoilGroup: fb.wrbSoilGroup,
+      mapUnit: fb.mapUnit,
+      totalComponentPercent: fb.totalComponentPercent,
+      components: [
+        {
+          cokey: fb.mapUnit.mukey,
+          name: fb.wrbSoilGroup,
+          percent: 100,
+          kind: "FAO HWSD v2.2 / WRB Reference Soil Group",
+          majcompflag: "Yes",
+          drainage: fb.aggregated.drainage,
+          slope: fb.aggregated.slope,
+          horizons: [
+            {
+              depthTop: 0,
+              depthBottom: 30,
+              sand: fb.aggregated.depth0_30cm.sand,
+              silt: fb.aggregated.depth0_30cm.silt,
+              clay: fb.aggregated.depth0_30cm.clay,
+              om: fb.aggregated.depth0_30cm.om,
+              ph: fb.aggregated.depth0_30cm.ph,
+              awc: fb.aggregated.depth0_30cm.awc,
+            },
+          ],
+        },
+      ],
+      aggregated: fb.aggregated,
+      uncertainty: fb.uncertainty,
+      propertySources: fb.propertySources,
+      dataCoverage: fb.dataCoverage,
+      limitations: fbLimitations,
+    };
+  }
+
+  if (!isInsideUS) {
+    const response = buildGlobalFallbackResponse(
+      `Location (${geo.countryName} — ${geo.admin1Name}) is outside USDA SSURGO (US-only) coverage. Using harmonized FAO HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m) 0–30 cm global soil baseline.`
+    );
+    cache.set(cacheKey, response);
+    return NextResponse.json(response);
   }
 
   const limitations: string[] = [];
@@ -287,65 +369,18 @@ export async function GET(request: NextRequest) {
     );
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    // Timeouts on the spatial query usually indicate the point is far outside
-    // SSURGO coverage (non-US). Return an honest unavailable state.
-    const response: SoilResponse = {
-      location: { lat, lon },
-      source:
-        "USDA NRCS Soil Data Access (SSURGO). Query timed out or failed.",
-      coverage:
-        "SSURGO covers the United States and its territories. Global fallback (ISRIC SoilGrids) is currently unavailable.",
-      mapUnit: null,
-      totalComponentPercent: 0,
-      components: [],
-      aggregated: {
-        depth0_30cm: { sand: null, silt: null, clay: null, om: null, ph: null, awc: null },
-        drainage: null,
-        slope: null,
-      },
-      dataCoverage: {
-        depth0_30cm: { sand: null, silt: null, clay: null, om: null, ph: null, awc: null },
-        drainage: null,
-        slope: null,
-      },
-      limitations: [
-        `SSURGO spatial query did not complete: ${message}. This often means the point is outside the United States.`,
-        "ISRIC SoilGrids REST API v2.0 is temporarily paused. WCS and WebDAV are documented alternative access methods.",
-        "Soil data for this location is not currently available.",
-      ],
-    };
+    const response = buildGlobalFallbackResponse(
+      `USDA SSURGO spatial query did not complete (${message}). Falling back to harmonized FAO HWSD v2.2 & ISRIC SoilGrids v2.0 0–30 cm global soil profile.`
+    );
     cache.set(cacheKey, response);
     return NextResponse.json(response);
   }
 
   try {
     if (!mukeyRows || mukeyRows.length === 0) {
-      // Outside SSURGO coverage (usually non-US)
-      const response: SoilResponse = {
-        location: { lat, lon },
-        source:
-          "USDA NRCS Soil Data Access (SSURGO). No map unit found at this location.",
-        coverage:
-          "SSURGO covers the United States and its territories. Global fallback (ISRIC SoilGrids) is currently unavailable.",
-        mapUnit: null,
-        totalComponentPercent: 0,
-        components: [],
-        aggregated: {
-          depth0_30cm: { sand: null, silt: null, clay: null, om: null, ph: null, awc: null },
-          drainage: null,
-          slope: null,
-        },
-        dataCoverage: {
-          depth0_30cm: { sand: null, silt: null, clay: null, om: null, ph: null, awc: null },
-          drainage: null,
-          slope: null,
-        },
-        limitations: [
-          "No SSURGO map unit found at this coordinate. This usually means the point is outside the United States.",
-          "ISRIC SoilGrids REST API v2.0 is temporarily paused. WCS and WebDAV are documented alternative access methods.",
-          "Soil data for this location is not currently available.",
-        ],
-      };
+      const response = buildGlobalFallbackResponse(
+        "No USDA SSURGO map unit found at this coordinate. Falling back to harmonized FAO HWSD v2.2 & ISRIC SoilGrids v2.0 0–30 cm global soil profile."
+      );
       cache.set(cacheKey, response);
       return NextResponse.json(response);
     }
@@ -490,10 +525,10 @@ export async function GET(request: NextRequest) {
     );
 
     const response: SoilResponse = {
-      location: { lat, lon },
+      location: locationMeta,
       source:
         "USDA NRCS Soil Survey Geographic Database (SSURGO). https://sdmdataaccess.sc.egov.usda.gov",
-      coverage: "US-only (SSURGO).",
+      coverage: "United States (USDA SSURGO primary survey).",
       mapUnit: {
         mukey,
         name: mapUnitName ?? "Unknown map unit",
@@ -501,6 +536,16 @@ export async function GET(request: NextRequest) {
       totalComponentPercent,
       components,
       aggregated,
+      propertySources: {
+        sand: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
+        silt: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
+        clay: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
+        om: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
+        ph: "USDA NRCS SSURGO (1:1 H2O, depth-weighted 0–30 cm)",
+        awc: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
+        drainage: "USDA NRCS SSURGO (dominant component drainage class)",
+        slope: "USDA NRCS SSURGO (component-weighted slope %)",
+      },
       dataCoverage,
       limitations,
     };

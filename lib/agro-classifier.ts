@@ -1,20 +1,35 @@
 /**
- * Deterministic agricultural group classifier for fallo.
+ * Deterministic global agroecological group classifier for fallo.
  *
  * Principles:
- * - Uses actual climate and soil data, never lat/lon alone.
- * - Returns explicit confidence levels; unknown/insufficient-data is a valid outcome.
- * - Rules are transparent and extensible.
- * - Does not invent field characteristics.
+ * - Uses actual climate, elevation, and soil data, grounded in FAO/IIASA GAEZ v5
+ *   thermal regimes, moisture regimes, and Length of Growing Period (LGP) indicators.
+ * - Returns explicit confidence and evidence levels; unknown/insufficient-data is a valid outcome.
+ * - Separates agroecological classification, water regime (rainfed vs. irrigated),
+ *   dominant seasonality, and soil data quality.
+ * - Rules are transparent, deterministic, and never invent field characteristics.
  */
 
 import type { ClimateData, SoilData } from "@/lib/rotation-scoring";
+import {
+  evaluateGaezV5Indicators,
+  type EvidenceLevel,
+} from "@/lib/global-data-providers";
 
 export type AgGroup =
   | "temperate_humid"
   | "semi_arid_temperate"
   | "subtropical_humid"
   | "temperate_mediterranean"
+  | "tropical_humid"
+  | "tropical_subhumid"
+  | "tropical_savanna"
+  | "tropical_monsoon"
+  | "tropical_semi_arid"
+  | "arid"
+  | "continental"
+  | "boreal"
+  | "highland_montane"
   | "unknown";
 
 export interface ClassificationResult {
@@ -23,6 +38,20 @@ export interface ClassificationResult {
   reasons: string[];
   inputsUsed: string[];
   limitations: string[];
+  evidenceLevel?: EvidenceLevel;
+  waterRegime?:
+    | "rainfed_viable"
+    | "supplementary_irrigation_recommended"
+    | "irrigation_required";
+  dominantSeasonality?:
+    | "northern_warm_cool"
+    | "southern_warm_cool"
+    | "tropical_rainy_dry"
+    | "mediterranean_winter_wet"
+    | "arid_irrigated";
+  gaezThermalZone?: string;
+  gaezMoistureZone?: string;
+  estimatedLgpDays?: number | null;
 }
 
 function sum(arr: (number | null)[]): number | null {
@@ -31,29 +60,34 @@ function sum(arr: (number | null)[]): number | null {
   return valid.reduce((a, b) => a + b, 0);
 }
 
-function summerMonthsPrecip(monthlyPrecip: (number | null)[]): number | null {
-  // Jun, Jul, Aug
+function summerMonthsPrecip(
+  monthlyPrecip: (number | null)[],
+  lat = 35
+): number | null {
+  // Northern hemisphere warm season: Jun, Jul, Aug; Southern hemisphere warm season: Dec, Jan, Feb
+  if (lat < 0) {
+    return sum([monthlyPrecip[11], monthlyPrecip[0], monthlyPrecip[1]]);
+  }
   return sum([monthlyPrecip[5], monthlyPrecip[6], monthlyPrecip[7]]);
 }
 
-function winterMonthsPrecip(monthlyPrecip: (number | null)[]): number | null {
-  // Dec, Jan, Feb
+function winterMonthsPrecip(
+  monthlyPrecip: (number | null)[],
+  lat = 35
+): number | null {
+  // Northern hemisphere cool season: Dec, Jan, Feb; Southern hemisphere cool season: Jun, Jul, Aug
+  if (lat < 0) {
+    return sum([monthlyPrecip[5], monthlyPrecip[6], monthlyPrecip[7]]);
+  }
   return sum([monthlyPrecip[11], monthlyPrecip[0], monthlyPrecip[1]]);
 }
 
 /**
- * Classify a field into an agricultural group based on climate and optional soil data.
+ * Classify a field into a global agroecological group based on climate, elevation, and soil data.
  *
  * Hard requirements for any classification:
  *   - Annual average temperature must be available.
  *   - Annual precipitation must be available.
- *
- * Note on soil integration:
- *   The current crop catalog and agronomic reference sources do not define
- *   validated quantitative soil thresholds for macro-group assignment. Therefore,
- *   classification is provisionally driven by climate regimes, while soil
- *   availability is explicitly recorded in inputs/limitations and factored into
- *   classification confidence.
  */
 export function classifyAgGroup(
   climate: ClimateData,
@@ -63,14 +97,35 @@ export function classifyAgGroup(
   const inputsUsed: string[] = [];
   const limitations: string[] = [];
 
+  const lat = climate.location?.lat ?? 35;
+  const elevation = climate.location?.elevation ?? null;
   const avgAnnualTemp = climate.fullRecord.avgAnnualTemp;
   const avgAnnualPrecip = climate.fullRecord.avgAnnualPrecip;
   const dryDays = climate.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays;
   const heatDays = climate.stressMetrics.summerHeatDays.avgDaysAboveThreshold;
   const gsPrecip = climate.stressMetrics.growingSeasonPrecip.avgTotalMm;
 
-  const summerPrecip = summerMonthsPrecip(climate.fullRecord.monthlyPrecip);
-  const winterPrecip = winterMonthsPrecip(climate.fullRecord.monthlyPrecip);
+  const summerPrecip = summerMonthsPrecip(climate.fullRecord.monthlyPrecip, lat);
+  const winterPrecip = winterMonthsPrecip(climate.fullRecord.monthlyPrecip, lat);
+
+  const validMonthlyTemps = (climate.fullRecord.monthlyTemp ?? []).filter(
+    (t): t is number => t !== null
+  );
+  const minMonthlyTemp =
+    validMonthlyTemps.length === 12 ? Math.min(...validMonthlyTemps) : null;
+  const maxMonthlyTemp =
+    validMonthlyTemps.length === 12 ? Math.max(...validMonthlyTemps) : null;
+  const annualTempRange =
+    minMonthlyTemp !== null && maxMonthlyTemp !== null
+      ? maxMonthlyTemp - minMonthlyTemp
+      : null;
+
+  const validMonthlyPrecips = (climate.fullRecord.monthlyPrecip ?? []).filter(
+    (p): p is number => p !== null
+  );
+  const dryMonthCount = validMonthlyPrecips.filter((p) => p < 30).length;
+
+  const gaez = evaluateGaezV5Indicators(climate);
 
   if (avgAnnualTemp !== null) {
     inputsUsed.push(`Average annual temperature: ${avgAnnualTemp.toFixed(1)} °C`);
@@ -82,6 +137,16 @@ export function classifyAgGroup(
     inputsUsed.push(`Average annual precipitation: ${avgAnnualPrecip.toFixed(0)} mm`);
   } else {
     limitations.push("Average annual precipitation is unavailable.");
+  }
+
+  if (elevation !== null) {
+    inputsUsed.push(`Surface elevation (DEM / NASA POWER): ${elevation.toFixed(0)} m`);
+  }
+
+  if (gaez.estimatedLgpDays !== null) {
+    inputsUsed.push(
+      `FAO/IIASA GAEZ v5 estimated LGP: ${gaez.estimatedLgpDays} days (${gaez.moistureZone})`
+    );
   }
 
   if (dryDays !== null) {
@@ -113,12 +178,15 @@ export function classifyAgGroup(
     if (soil.aggregated.slope !== null) {
       inputsUsed.push(`Soil slope: ${soil.aggregated.slope.toFixed(1)}%`);
     }
+    if (soil.source) {
+      inputsUsed.push(`Soil data source: ${soil.source}`);
+    }
   } else {
     limitations.push("No soil data available.");
   }
 
   limitations.push(
-    "Provisional climate-based classification: soil properties are recorded for field context and scoring, but source-backed soil-group thresholds are not yet integrated into group classification."
+    "Provisional climate-based classification: soil properties are recorded for field context and scoring, while macro-group assignment is driven by FAO GAEZ v5 thermal, moisture, and LGP regimes."
   );
 
   // Core data gating: without temperature and precipitation, we cannot classify.
@@ -129,20 +197,98 @@ export function classifyAgGroup(
       reasons: ["Insufficient core climate data to assign an agricultural group."],
       inputsUsed,
       limitations,
+      evidenceLevel: "level_3_insufficient",
+      waterRegime: gaez.waterRegimeRecommendation,
+      dominantSeasonality: gaez.dominantSeasonality,
+      gaezThermalZone: gaez.thermalZone,
+      gaezMoistureZone: gaez.moistureZone,
+      estimatedLgpDays: gaez.estimatedLgpDays,
     };
   }
 
   let group: AgGroup = "unknown";
   let confidence: "high" | "moderate" | "low" = "moderate";
 
-  // ── Temperate Mediterranean ──
-  // Winter-wet, summer-dry pattern
-  if (summerPrecip !== null && winterPrecip !== null) {
+  // ── 1. Highland / Montane (low-latitude high-elevation agroecosystems) ──
+  if (
+    elevation !== null &&
+    elevation >= 1500 &&
+    Math.abs(lat) <= 38 &&
+    avgAnnualTemp >= 8 &&
+    avgAnnualTemp <= 23 &&
+    avgAnnualPrecip >= 450
+  ) {
+    group = "highland_montane";
+    reasons.push(
+      `Highland/montane regime at ${elevation.toFixed(0)} m elevation (lat ${lat.toFixed(2)}°) with moderated annual temperature (${avgAnnualTemp.toFixed(1)} °C) and ${avgAnnualPrecip.toFixed(0)} mm annual precipitation.`
+    );
+    confidence = "high";
+  }
+
+  // ── 2. Tropical Agroecological Regimes (GAEZ Warm Tropics: T_ann > 24 °C or low-lat T_ann >= 22.5 °C) ──
+  const isTropicalThermal =
+    avgAnnualTemp > 24.0 ||
+    (Math.abs(lat) <= 23.5 &&
+      avgAnnualTemp >= 22.5 &&
+      (minMonthlyTemp === null || minMonthlyTemp >= 16));
+
+  if (group === "unknown" && isTropicalThermal) {
+    if (avgAnnualPrecip >= 1500 && dryMonthCount <= 3) {
+      group = "tropical_humid";
+      reasons.push(
+        `Humid tropical regime: warm year-round (${avgAnnualTemp.toFixed(1)} °C) with abundant precipitation (${avgAnnualPrecip.toFixed(0)} mm) and short dry season (${dryMonthCount} dry months).`
+      );
+      confidence = "high";
+    } else if (avgAnnualPrecip >= 1200 && dryMonthCount > 3) {
+      group = "tropical_monsoon";
+      reasons.push(
+        `Tropical monsoon regime: warm thermal baseline (${avgAnnualTemp.toFixed(1)} °C) with high annual rainfall (${avgAnnualPrecip.toFixed(0)} mm) concentrated in a pronounced wet season (${dryMonthCount} dry months <30 mm).`
+      );
+      confidence = "high";
+    } else if (avgAnnualPrecip >= 950) {
+      group = "tropical_subhumid";
+      reasons.push(
+        `Subhumid tropical regime: annual temperature ${avgAnnualTemp.toFixed(1)} °C with ${avgAnnualPrecip.toFixed(0)} mm rainfall and ${gaez.estimatedLgpDays ?? 190}-day GAEZ growing period.`
+      );
+      confidence = "high";
+    } else if (avgAnnualPrecip >= 500) {
+      group = "tropical_savanna";
+      reasons.push(
+        `Tropical savanna (Sudano-Sahelian / wet-dry tropical) regime: warm annual temperature (${avgAnnualTemp.toFixed(1)} °C) with seasonal rainfall (${avgAnnualPrecip.toFixed(0)} mm, ~${gaez.estimatedLgpDays ?? 135} LGP days) and distinct rainy/dry seasons.`
+      );
+      confidence = "high";
+    } else if (avgAnnualPrecip >= 250) {
+      group = "tropical_semi_arid";
+      reasons.push(
+        `Semi-arid tropical (Sahelian / dry savanna) regime: high annual temperature (${avgAnnualTemp.toFixed(1)} °C) with limited seasonal rainfall (${avgAnnualPrecip.toFixed(0)} mm, ~${gaez.estimatedLgpDays ?? 80} LGP days).`
+      );
+      confidence = "high";
+    } else {
+      group = "arid";
+      reasons.push(
+        `Arid tropical/subtropical regime: annual precipitation ${avgAnnualPrecip.toFixed(0)} mm (<250 mm threshold) at ${avgAnnualTemp.toFixed(1)} °C; crop production requires irrigation.`
+      );
+      confidence = "high";
+    }
+  }
+
+  // ── 3. Temperate / Subtropical Arid (< 250 mm annual precipitation) ──
+  if (group === "unknown" && avgAnnualTemp >= 6 && avgAnnualPrecip < 250) {
+    group = "arid";
+    reasons.push(
+      `Arid moisture regime: annual precipitation ${avgAnnualPrecip.toFixed(0)} mm (<250 mm) with ${avgAnnualTemp.toFixed(1)} °C mean annual temperature; agricultural production depends on irrigation.`
+    );
+    confidence = "high";
+  }
+
+  // ── 4. Temperate Mediterranean (winter-wet, summer-dry pattern) ──
+  if (group === "unknown" && summerPrecip !== null && winterPrecip !== null) {
     if (
       avgAnnualTemp >= 10 &&
-      avgAnnualTemp <= 20 &&
+      avgAnnualTemp <= 21 &&
       summerPrecip < 80 &&
       winterPrecip > summerPrecip * 2 &&
+      avgAnnualPrecip >= 250 &&
       avgAnnualPrecip < 900
     ) {
       group = "temperate_mediterranean";
@@ -153,8 +299,7 @@ export function classifyAgGroup(
     }
   }
 
-  // ── Subtropical Humid ──
-  // Warm year-round, relatively high precipitation
+  // ── 5. Subtropical Humid (warm year-round, high precipitation) ──
   if (group === "unknown") {
     if (
       avgAnnualTemp >= 16 &&
@@ -170,8 +315,7 @@ export function classifyAgGroup(
     }
   }
 
-  // ── Semi-Arid Temperate ──
-  // Low precipitation, high dry spells or heat days
+  // ── 6. Semi-Arid Temperate (low precipitation, high dry spells or heat days) ──
   if (group === "unknown") {
     const aridSignal =
       avgAnnualPrecip <= 550 ||
@@ -179,7 +323,7 @@ export function classifyAgGroup(
       (heatDays !== null && heatDays >= 18) ||
       (gsPrecip !== null && gsPrecip <= 300);
 
-    if (avgAnnualTemp >= 8 && avgAnnualTemp <= 24 && aridSignal) {
+    if (avgAnnualTemp >= 6 && avgAnnualTemp <= 24 && aridSignal) {
       group = "semi_arid_temperate";
       reasons.push(
         `Limited moisture signal: annual precip ${avgAnnualPrecip.toFixed(0)} mm${
@@ -191,8 +335,26 @@ export function classifyAgGroup(
     }
   }
 
-  // ── Temperate Humid ──
-  // Moderate temperatures, moderate-to-high precipitation, not arid
+  // ── 7. Continental (cold winters <= -4 °C and wide seasonal amplitude >= 26 °C) ──
+  if (group === "unknown") {
+    if (
+      avgAnnualTemp >= 2 &&
+      avgAnnualTemp <= 12 &&
+      avgAnnualPrecip >= 350 &&
+      minMonthlyTemp !== null &&
+      minMonthlyTemp <= -4 &&
+      annualTempRange !== null &&
+      annualTempRange >= 26
+    ) {
+      group = "continental";
+      reasons.push(
+        `Continental thermal regime: cold winters (min monthly mean ${minMonthlyTemp.toFixed(1)} °C), large annual temperature amplitude (${annualTempRange.toFixed(1)} °C), and ${avgAnnualPrecip.toFixed(0)} mm annual precipitation.`
+      );
+      confidence = "high";
+    }
+  }
+
+  // ── 8. Temperate Humid (moderate temperatures, adequate precipitation) ──
   if (group === "unknown") {
     const humidSignal =
       avgAnnualPrecip >= 500 || (gsPrecip !== null && gsPrecip >= 350);
@@ -207,21 +369,22 @@ export function classifyAgGroup(
     }
   }
 
-  // If nothing matched, but we have core data, mark as unknown with low confidence
-  // that we genuinely cannot assign a known group.
+  // ── 9. Boreal (cold high-latitude short growing season: 0 to <4 °C, >= 350 mm) ──
   if (group === "unknown") {
-    if (avgAnnualTemp > 25) {
+    if (avgAnnualTemp >= 0 && avgAnnualTemp < 4 && avgAnnualPrecip >= 350) {
+      group = "boreal";
       reasons.push(
-        `Tropical thermal regime (annual average ${avgAnnualTemp.toFixed(1)} °C, annual precip ${avgAnnualPrecip.toFixed(0)} mm) exceeds temperate/subtropical thresholds (≤ 25 °C). Tropical savanna/monsoon agroecological groups and verified local rainy/dry-season crop calendars are not yet defined in the current catalog.`
+        `Boreal cold-temperate regime: low mean annual temperature (${avgAnnualTemp.toFixed(1)} °C) with short frost-free growing period and ${avgAnnualPrecip.toFixed(0)} mm precipitation.`
       );
-      limitations.push(
-        "Global tropical coverage requires integrating FAO/IIASA GAEZ v5 agro-ecological zones, ISRIC SoilGrids global soil profiles, and regional research-backed crop calendars (e.g., sorghum, pearl millet, cowpea, groundnut, sesame)."
-      );
-    } else {
-      reasons.push(
-        `Climate profile (temp ${avgAnnualTemp.toFixed(1)} °C, precip ${avgAnnualPrecip.toFixed(0)} mm) does not match any currently defined agricultural group.`
-      );
+      confidence = "moderate";
     }
+  }
+
+  // ── 10. Unmatched / Extreme Climate ──
+  if (group === "unknown") {
+    reasons.push(
+      `Climate profile (temp ${avgAnnualTemp.toFixed(1)} °C, precip ${avgAnnualPrecip.toFixed(0)} mm) does not match any supported agricultural group.`
+    );
     confidence = "low";
   }
 
@@ -231,12 +394,50 @@ export function classifyAgGroup(
     confidence = "moderate";
   }
 
-  return { group, confidence, reasons, inputsUsed, limitations };
+  const evidenceLevel: EvidenceLevel =
+    group === "unknown" || group === "boreal"
+      ? "level_3_insufficient"
+      : hasSoilAwc && soil?.source?.includes("SSURGO")
+      ? "level_1_strong_local"
+      : "level_2_global_modeled";
+
+  return {
+    group,
+    confidence,
+    reasons,
+    inputsUsed,
+    limitations,
+    evidenceLevel,
+    waterRegime: gaez.waterRegimeRecommendation,
+    dominantSeasonality: gaez.dominantSeasonality,
+    gaezThermalZone: gaez.thermalZone,
+    gaezMoistureZone: gaez.moistureZone,
+    estimatedLgpDays: gaez.estimatedLgpDays,
+  };
 }
+
+/**
+ * Supported agroecological groups that have verified multi-family 3-year crop
+ * catalog coverage in `data/crops.json`.
+ */
+const SUPPORTED_AG_GROUPS: ReadonlySet<AgGroup> = new Set<AgGroup>([
+  "temperate_humid",
+  "semi_arid_temperate",
+  "subtropical_humid",
+  "temperate_mediterranean",
+  "tropical_humid",
+  "tropical_subhumid",
+  "tropical_savanna",
+  "tropical_monsoon",
+  "tropical_semi_arid",
+  "arid",
+  "continental",
+  "highland_montane",
+]);
 
 /**
  * Return true if the group is one we have a verified crop catalog for.
  */
 export function isGroupSupported(group: AgGroup): boolean {
-  return group === "temperate_humid" || group === "semi_arid_temperate";
+  return SUPPORTED_AG_GROUPS.has(group);
 }

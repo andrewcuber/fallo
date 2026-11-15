@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LRUCache } from "lru-cache";
+import { normalizeCoordinates } from "@/lib/coordinates";
 
 const NASA_FILL_VALUE = -999;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -66,6 +67,8 @@ interface ClimateResponse {
     lat: number;
     lon: number;
     elevation: number | null;
+    lonWasNormalized?: boolean;
+    originalLon?: number;
   };
   periods: {
     startYear: number;
@@ -120,22 +123,16 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const lat = parseFloat(latStr);
-  const lon = parseFloat(lonStr);
-
-  if (Number.isNaN(lat) || Number.isNaN(lon)) {
+  const norm = normalizeCoordinates(latStr, lonStr);
+  if (!norm.ok) {
     return NextResponse.json(
-      { error: "Invalid lat or lon" },
+      { error: norm.error },
       { status: 400 }
     );
   }
 
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-    return NextResponse.json(
-      { error: "Latitude must be -90 to 90, longitude -180 to 180" },
-      { status: 400 }
-    );
-  }
+  const lat = norm.lat;
+  const lon = norm.lon;
 
   // Compute date range: latest 20 completed years
   const currentYear = new Date().getFullYear();
@@ -487,7 +484,14 @@ export async function GET(request: NextRequest) {
   }
 
   const response: ClimateResponse = {
-    location: { lat, lon, elevation },
+    location: {
+      lat,
+      lon,
+      elevation,
+      ...(norm.lonWasNormalized
+        ? { lonWasNormalized: true, originalLon: norm.originalLon }
+        : {}),
+    },
     periods: {
       startYear,
       endYear,

@@ -14,6 +14,7 @@ import {
   DEFAULT_PRIORITIES,
   isVerifiedAiStrategyForField,
 } from "@/lib/rotation-scoring";
+import { normalizeCoordinates } from "@/lib/coordinates";
 
 export interface StoredRotations {
   /** Raw generated strategies (not pre-scored, so priority changes can re-run scoring locally) */
@@ -102,13 +103,34 @@ export function applyFieldRotationsUpdate(
   return { fields: nextFields, activeField: nextActiveField };
 }
 
+/**
+ * Normalize and migrate any stored Field records so wrapped longitudes (e.g. -250 -> 110)
+ * become canonical [-180, 180) and invalid coordinates are filtered out.
+ */
+export function sanitizeStoredFields(rawList: unknown[]): Field[] {
+  const sanitized: Field[] = [];
+  for (const item of rawList) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Partial<Field>;
+    if (typeof rec.id !== "string" || typeof rec.name !== "string") continue;
+    const norm = normalizeCoordinates(rec.lat, rec.lon);
+    if (!norm.valid) continue;
+    sanitized.push({
+      ...(rec as Field),
+      lat: norm.lat,
+      lon: norm.lon,
+    });
+  }
+  return sanitized;
+}
+
 function loadFields(): Field[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed)) return sanitizeStoredFields(parsed);
     return [];
   } catch {
     return [];
@@ -216,8 +238,11 @@ export function FieldProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addField = useCallback((field: Omit<Field, "id" | "generatedRotations">) => {
+    const norm = normalizeCoordinates(field.lat, field.lon);
+    const canonicalLat = norm.valid ? norm.lat : field.lat;
+    const canonicalLon = norm.valid ? norm.lon : field.lon;
     const id = `${Date.now()}`;
-    const newField: Field = { ...field, id };
+    const newField: Field = { ...field, lat: canonicalLat, lon: canonicalLon, id };
     setFields((prev) => [...prev, newField]);
     setActiveFieldState(newField);
     return newField;

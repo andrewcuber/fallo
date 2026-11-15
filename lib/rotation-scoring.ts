@@ -13,14 +13,22 @@ import rotationsData from "@/data/rotations.json";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
+export type CropEvidenceLevel =
+  | "level_1_strong_local"
+  | "level_2_global_modeled"
+  | "level_3_insufficient";
+
 export interface Crop {
   id: string;
   commonName: string;
+  synonyms?: string[];
   scientificName: string;
   family: string;
   type: "cash" | "cover";
   waterDemand: string;
   droughtTolerance: string;
+  irrigationRegime?: "rainfed" | "irrigated_or_rainfed" | "irrigated_primary";
+  evidenceLevel?: CropEvidenceLevel;
   nitrogenBehavior: {
     demand: string;
     demandCategory: string;
@@ -1031,10 +1039,7 @@ export function getAvailableCropsForContext(
   agGroup: string | null | undefined,
   regionTag: string | null | undefined
 ): string[] {
-  if (!agGroup || agGroup === "unknown") return [];
-  if (agGroup !== "temperate_humid" && agGroup !== "semi_arid_temperate") {
-    return [];
-  }
+  if (!agGroup || agGroup === "unknown" || agGroup === "boreal") return [];
   return Object.values(cropLibrary)
     .filter((c) => {
       if (!c.applicableGroups || !c.applicableGroups.includes(agGroup)) {
@@ -1046,6 +1051,75 @@ export function getAvailableCropsForContext(
       return true;
     })
     .map((c) => c.id);
+}
+
+/**
+ * Evaluate the 3-tier evidence level for a field's crop & environmental context:
+ * - level_1_strong_local: Regionally documented crops (>=3 families) + matching climate/seasonality + field-scale soil survey (e.g. SSURGO) or complete local agronomic record.
+ * - level_2_global_modeled: Regionally/nationally documented crops (>=2 families, >=3 crops) supported by global modeled soil/climate baselines (FAO HWSD v2.2 / ISRIC SoilGrids / GAEZ v5) with explicit caveats.
+ * - level_3_insufficient: Unclassified/unsupported agroecological regime or fewer than 3 eligible crops across at least 2 botanical families; rotation generation is refused.
+ */
+export function evaluateFieldCropEvidenceLevel(params: {
+  agGroup: string | null | undefined;
+  regionTag: string | null | undefined;
+  availableCropIds: string[];
+  soil: SoilData | null;
+}): {
+  level: CropEvidenceLevel;
+  label: string;
+  summary: string;
+  distinctFamilies: string[];
+} {
+  const { agGroup, regionTag, availableCropIds, soil } = params;
+  const distinctFamilies = uniqueFamilies(availableCropIds);
+  const hasCashCrop = availableCropIds.some((id) => getCrop(id)?.type === "cash");
+
+  if (
+    !agGroup ||
+    agGroup === "unknown" ||
+    agGroup === "boreal" ||
+    availableCropIds.length < 3 ||
+    distinctFamilies.length < 2 ||
+    !hasCashCrop
+  ) {
+    return {
+      level: "level_3_insufficient",
+      label: "Level 3 — Insufficient evidence",
+      summary:
+        "Insufficient verified crop or agroecological evidence to generate a defensible 3-year rotation for this location.",
+      distinctFamilies,
+    };
+  }
+
+  const hasFieldScaleSoilSurvey =
+    soil !== null &&
+    soil.aggregated.depth0_30cm.awc !== null &&
+    soil.source.toUpperCase().includes("SSURGO");
+
+  if (
+    regionTag &&
+    distinctFamilies.length >= 3 &&
+    availableCropIds.length >= 5 &&
+    hasFieldScaleSoilSurvey
+  ) {
+    return {
+      level: "level_1_strong_local",
+      label: "Level 1 — Strong local evidence",
+      summary: `Strong regional crop catalog (${availableCropIds.length} verified crops across ${distinctFamilies.length} botanical families) paired with USDA SSURGO survey soil data and NASA POWER / GAEZ v5 climate records.`,
+      distinctFamilies,
+    };
+  }
+
+  return {
+    level: "level_2_global_modeled",
+    label: "Level 2 — Global modeled or partial local evidence",
+    summary: `Supported by ${availableCropIds.length} regionally documented crops (${distinctFamilies.length} botanical families) using FAO GAEZ v5 / NASA POWER climate regimes and ${
+      soil
+        ? "harmonized FAO HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m) global topsoil estimates"
+        : "climate-only baseline (soil profile unavailable)"
+    }. Verify local cultivar maturity and on-site soil tests.`,
+    distinctFamilies,
+  };
 }
 
 /**

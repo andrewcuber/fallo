@@ -4,8 +4,8 @@
 
 @layer base {
   :root {
-    /* Space-gray content area palette (#DCE2E9 base) with pure white cards */
-    --background: 212 23% 89%;       /* #DCE2E9 — sophisticated space-gray background */
+    /* Space-gray content area palette (#D2D9E2 base) with pure white cards */
+    --background: 214 21% 85%;       /* #D2D9E2 — slightly darker space-gray background */
     --foreground: 220 40% 10%;       /* deep navy text #0A1429 */
     --card: 0 0% 100%;                /* pure white cards for crisp contrast */
     --card-foreground: 220 40% 10%;
@@ -13,16 +13,16 @@
     --popover-foreground: 220 40% 10%;
     --primary: 213 100% 65%;        /* electric blue #4D9FFF */
     --primary-foreground: 0 0% 100%;
-    --secondary: 213 20% 84%;       /* #CED6E0 — supporting cool gray */
+    --secondary: 214 20% 80%;       /* #C2CBD6 — supporting cool gray */
     --secondary-foreground: 220 40% 10%;
-    --muted: 212 20% 93%;           /* subtle light surface inside white cards */
-    --muted-foreground: 218 18% 38%; /* high-readability muted text */
+    --muted: 213 20% 92%;           /* subtle light surface inside white cards */
+    --muted-foreground: 218 18% 36%; /* high-readability muted text */
     --accent: 188 72% 65%;          /* cyan #62D5E8 */
     --accent-foreground: 220 40% 10%;
     --destructive: 352 72% 58%;     /* accent red #E34B5B */
     --destructive-foreground: 0 0% 100%;
-    --border: 213 20% 81%;          /* #C4CEDB — defined card & section borders */
-    --input: 213 20% 81%;
+    --border: 214 20% 77%;          /* #B8C3D0 — defined card & section borders */
+    --input: 214 20% 77%;
     --ring: 213 100% 65%;
     --radius: 0.625rem;
   }

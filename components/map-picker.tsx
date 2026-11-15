@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { normalizeCoordinates, normalizeLongitude } from "@/lib/coordinates";
 
 // Fix default Leaflet icon paths in Next.js
 import icon from "leaflet/dist/images/marker-icon.png";
@@ -21,13 +22,36 @@ L.Marker.prototype.options.icon = DefaultIcon;
 interface MapPickerProps {
   lat: number;
   lon: number;
-  onChange: (lat: number, lon: number) => void;
+  onChange: (
+    lat: number,
+    lon: number,
+    meta?: { lonWasNormalized: boolean; originalLon: number }
+  ) => void;
 }
 
-function MapEvents({ onChange }: { onChange: (lat: number, lon: number) => void }) {
+function MapEvents({
+  onChange,
+}: {
+  onChange: (
+    lat: number,
+    lon: number,
+    meta?: { lonWasNormalized: boolean; originalLon: number }
+  ) => void;
+}) {
   useMapEvents({
     click(e) {
-      onChange(e.latlng.lat, e.latlng.lng);
+      const rawLat = e.latlng.lat;
+      const rawLon = e.latlng.lng;
+      const wrapped = e.latlng.wrap();
+      const norm = normalizeCoordinates(wrapped.lat, rawLon);
+      if (norm.valid) {
+        onChange(norm.lat, norm.lon, {
+          lonWasNormalized: norm.lonWasNormalized,
+          originalLon: norm.originalLon,
+        });
+      } else {
+        onChange(rawLat, wrapped.lng);
+      }
     },
   });
   return null;
@@ -41,14 +65,18 @@ function ChangeView({ lat, lon }: { lat: number; lon: number }) {
   return null;
 }
 
-function isValidCoord(v: unknown): v is number {
+function isValidLat(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && !Number.isNaN(v) && v >= -90 && v <= 90;
+}
+
+function isFiniteLon(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v) && !Number.isNaN(v);
 }
 
 export default function MapPicker({ lat, lon, onChange }: MapPickerProps) {
-  const safeLat = isValidCoord(lat) ? lat : 41.878;
-  const safeLon = isValidCoord(lon) ? lon : -93.0977;
-  const coordsValid = isValidCoord(lat) && isValidCoord(lon);
+  const coordsValid = isValidLat(lat) && isFiniteLon(lon);
+  const safeLat = isValidLat(lat) ? lat : 41.878;
+  const safeLon = isFiniteLon(lon) ? normalizeLongitude(lon) : -93.0977;
 
   return (
     <div className="relative w-full h-80 sm:h-96 rounded-lg border border-border overflow-hidden">
@@ -56,6 +84,7 @@ export default function MapPicker({ lat, lon, onChange }: MapPickerProps) {
         center={[safeLat, safeLon]}
         zoom={10}
         scrollWheelZoom={false}
+        worldCopyJump={true}
         className="w-full h-full"
       >
         <TileLayer
@@ -64,13 +93,22 @@ export default function MapPicker({ lat, lon, onChange }: MapPickerProps) {
         />
         {coordsValid && (
           <Marker
-            position={[lat, lon]}
+            position={[safeLat, safeLon]}
             draggable
             eventHandlers={{
               dragend(e) {
                 const marker = e.target;
                 const pos = marker.getLatLng();
-                onChange(pos.lat, pos.lng);
+                const wrapped = pos.wrap();
+                const norm = normalizeCoordinates(wrapped.lat, pos.lng);
+                if (norm.valid) {
+                  onChange(norm.lat, norm.lon, {
+                    lonWasNormalized: norm.lonWasNormalized,
+                    originalLon: norm.originalLon,
+                  });
+                } else {
+                  onChange(wrapped.lat, wrapped.lng);
+                }
               },
             }}
           />
@@ -82,7 +120,7 @@ export default function MapPicker({ lat, lon, onChange }: MapPickerProps) {
       {!coordsValid && (
         <div className="absolute inset-0 flex items-center justify-center bg-muted/80 backdrop-blur-sm z-[500]">
           <p className="text-sm text-muted-foreground text-center px-4">
-            Enter valid latitude and longitude to display the map.
+            Enter valid latitude (-90 to 90) and longitude to display the map.
           </p>
         </div>
       )}

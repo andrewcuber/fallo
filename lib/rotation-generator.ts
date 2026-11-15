@@ -15,6 +15,12 @@
 
 import { z } from "zod";
 import { ThinkingLevel, type GoogleGenAIOptions } from "@google/genai";
+import { normalizeLongitude } from "@/lib/coordinates";
+import {
+  GLOBAL_REGION_TAGS,
+  resolveGeographicContext,
+  type GeographicContext,
+} from "@/lib/region";
 import {
   type ClimateData,
   type SoilData,
@@ -22,10 +28,12 @@ import {
   type RotationStrategy,
   type StrategyResult,
   type AIUsageMetadata,
+  type CropEvidenceLevel,
   cropLibrary,
   scoreStrategy,
   rankStrategyResults,
   getAvailableCropsForContext,
+  evaluateFieldCropEvidenceLevel,
 } from "@/lib/rotation-scoring";
 import {
   classifyAgGroup,
@@ -44,10 +52,15 @@ import {
 const NullableFiniteNumberSchema = z.number().finite().nullable();
 const MonthlyArraySchema = z.array(NullableFiniteNumberSchema).length(12);
 
+const NormalizedLongitudeSchema = z
+  .number()
+  .finite()
+  .transform((val) => normalizeLongitude(val) ?? val);
+
 export const ClimateDataSchema = z.object({
   location: z.object({
     lat: z.number().finite().min(-90).max(90),
-    lon: z.number().finite().min(-180).max(180),
+    lon: NormalizedLongitudeSchema,
     elevation: NullableFiniteNumberSchema,
   }),
   fullRecord: z.object({
@@ -120,15 +133,13 @@ export const FarmerPrioritiesSchema = z.object({
   climateRiskResilience: PrioritySliderValueSchema,
 });
 
-export const RegionTagSchema = z
-  .enum(["us_southeast", "us_midwest", "us_northeast", "us_great_plains", "us_southwest"])
-  .nullable();
+export const RegionTagSchema = z.enum(GLOBAL_REGION_TAGS).nullable();
 
 export const GenerationRequestSchema = z.object({
   fieldId: z.string().trim().min(1),
   fieldName: z.string().trim().min(1),
   lat: z.number().finite().min(-90).max(90),
-  lon: z.number().finite().min(-180).max(180),
+  lon: NormalizedLongitudeSchema,
   climate: ClimateDataSchema,
   soil: SoilDataSchema,
   priorities: FarmerPrioritiesSchema,
@@ -202,7 +213,16 @@ export interface GenerationResult {
     reasons: string[];
     inputsUsed: string[];
     limitations: string[];
+    evidenceLevel?: CropEvidenceLevel;
+    waterRegime?: string;
+    dominantSeasonality?: string;
+    gaezThermalZone?: string;
+    gaezMoistureZone?: string;
+    estimatedLgpDays?: number | null;
   };
+  geography?: GeographicContext;
+  evidenceLevel?: CropEvidenceLevel;
+  evidenceSummary?: string;
   availableCrops: string[];
   proposals: StrategyResult[];
   rejectedProposals?: RejectedProposalInfo[];
@@ -709,12 +729,17 @@ export function buildSystemPrompt(
   classification: ClassificationResult,
   availableCrops: string[]
 ): string {
+  const normLon = normalizeLongitude(context.lon) ?? context.lon;
+  const geo = resolveGeographicContext(context.lat, normLon);
+  const effectiveRegionTag = context.regionTag ?? geo.regionTag;
+
   const cropSummaries = availableCrops
     .map((id) => {
       const c = cropLibrary[id];
       if (!c) return null;
       const nCredit = c.nitrogenBehavior.residualNcredit?.value ?? "none";
       const nDemand = c.nitrogenBehavior.demand ?? "unknown";
+      const waterRegime = c.irrigationRegime ?? "irrigated_or_rainfed";
       const windowStr = [
         c.growingWindow.planting ? `plant:${c.growingWindow.planting}` : null,
         c.growingWindow.harvest ? `harvest:${c.growingWindow.harvest}` : null,
@@ -722,7 +747,7 @@ export function buildSystemPrompt(
       ]
         .filter(Boolean)
         .join(", ");
-      return `  - ${id} (${c.commonName}, ${c.family}, ${c.type}): water=${c.waterDemand}, drought=${c.droughtTolerance}, N-demand=${nDemand}, N-credit=${nCredit}, window=[${windowStr}]`;
+      return `  - ${id} (${c.commonName}, ${c.family}, ${c.type}): water=${c.waterDemand}, drought=${c.droughtTolerance}, regime=${waterRegime}, N-demand=${nDemand}, N-credit=${nCredit}, window=[${windowStr}]`;
     })
     .filter(Boolean)
     .join("\n");
@@ -738,6 +763,8 @@ export function buildSystemPrompt(
 
   const climateSummary = [
     `Annual avg temp: ${context.climate.fullRecord.avgAnnualTemp?.toFixed(1) ?? "unknown"} °C | Annual precip: ${context.climate.fullRecord.avgAnnualPrecip?.toFixed(0) ?? "unknown"} mm`,
+    `GAEZ v5 thermal/moisture zone: ${classification.gaezThermalZone ?? "N/A"} / ${classification.gaezMoistureZone ?? "N/A"} (est. LGP: ${classification.estimatedLgpDays ?? "unknown"} days)`,
+    `Dominant seasonality: ${classification.dominantSeasonality ?? "unknown"} | Water regime: ${classification.waterRegime ?? geo.defaultWaterRegime}`,
     `Growing-season precip (May–Aug): ${context.climate.stressMetrics.growingSeasonPrecip.avgTotalMm?.toFixed(0) ?? "unknown"} mm | Spring precip (Mar–May): ${context.climate.stressMetrics.springPrecip.avgTotalMm?.toFixed(0) ?? "unknown"} mm`,
     `Summer dry spells (Jun–Aug): ${context.climate.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays?.toFixed(1) ?? "unknown"} days | Heat-stress days (Jul–Aug, >35 °C): ${context.climate.stressMetrics.summerHeatDays.avgDaysAboveThreshold?.toFixed(1) ?? "unknown"} days`,
     `Monthly seasonality (Temp/Precip): ${monthlySeasonality}`,
@@ -746,6 +773,7 @@ export function buildSystemPrompt(
   const d0 = context.soil?.aggregated.depth0_30cm;
   const soilSummary = context.soil
     ? [
+        `Source: ${context.soil.source}`,
         `AWC (0–30 cm): ${d0?.awc !== null && d0?.awc !== undefined ? `${d0.awc.toFixed(3)} cm/cm` : "null"} | OM: ${d0?.om !== null && d0?.om !== undefined ? `${d0.om.toFixed(1)}%` : "null"} | pH: ${d0?.ph !== null && d0?.ph !== undefined ? d0.ph.toFixed(1) : "null"}`,
         `Texture (sand/silt/clay): ${d0?.sand !== null && d0?.sand !== undefined ? `${d0.sand.toFixed(0)}%` : "null"} / ${d0?.silt !== null && d0?.silt !== undefined ? `${d0.silt.toFixed(0)}%` : "null"} / ${d0?.clay !== null && d0?.clay !== undefined ? `${d0.clay.toFixed(0)}%` : "null"}`,
         `Drainage: ${context.soil.aggregated.drainage ?? "null"} | Slope: ${context.soil.aggregated.slope !== null && context.soil.aggregated.slope !== undefined ? `${context.soil.aggregated.slope.toFixed(1)}%` : "null"}`,
@@ -753,9 +781,10 @@ export function buildSystemPrompt(
     : "No soil data available (soil = null).";
 
   const classificationSummary = [
+    `Country & Administrative Region: ${geo.countryName} (${geo.countryCodeIso3}) — ${geo.admin1Name}`,
     `Classified agricultural group: ${classification.group}`,
     `Classification confidence: ${classification.confidence}`,
-    `Geographic region tag: ${context.regionTag ?? "outside documented US bounding boxes"}`,
+    `Geographic region tag: ${effectiveRegionTag ?? "outside documented regional boxes"}`,
     `Classification rationale: ${classification.reasons.join(" ") || "N/A"}`,
     `Classification limitations: ${classification.limitations.join(" ") || "None"}`,
   ].join("\n");
@@ -770,12 +799,13 @@ Generate 3 distinct, field-specific 3-year crop rotation strategies in a single 
 ${formatCompatibilityRulesForPrompt()}
 
 - Keep each strategy's "description" to 1 concise sentence stating its objective for this field.
-- Include 2–3 short "advantages", 1–2 "disadvantages", and 1–2 "operational" bullets grounded in the field's actual climate/soil metrics and verified crop traits.
-- Do not assume or mention a default state/region (such as North Carolina) unless the field's coordinates and region tag place it there.
+- Include 2–3 short "advantages", 1–2 "disadvantages", and 1–2 "operational" bullets grounded in the field's actual climate/soil metrics, water regime (${classification.waterRegime ?? geo.defaultWaterRegime}), and verified crop traits.
+- Align seasonal planting/harvest months with the field's hemisphere (${geo.hemisphere}) and dominant seasonality (${classification.dominantSeasonality ?? "local calendar"}).
+- Do not assume or mention a default US state/region (such as North Carolina) unless the field's coordinates and region tag place it there.
 - Return ONLY valid JSON matching the schema below.
 
 ## FIELD CONTEXT
-Field: ${context.fieldName} (${context.lat.toFixed(4)}, ${context.lon.toFixed(4)})
+Field: ${context.fieldName} (${context.lat.toFixed(4)}, ${normLon.toFixed(4)})
 ${classificationSummary}
 
 ### Climate
@@ -881,8 +911,24 @@ export async function generateRotations(
   aiProvider: AIProviderClient | null,
   options?: { signal?: AbortSignal; timeoutMs?: number }
 ): Promise<GenerationResult> {
-  if (!tryAcquireFieldGenerationLock(context.fieldId)) {
-    const classification = classifyAgGroup(context.climate, context.soil);
+  const normLon = normalizeLongitude(context.lon) ?? context.lon;
+  const geo = resolveGeographicContext(context.lat, normLon);
+  const effectiveRegionTag = context.regionTag ?? geo.regionTag;
+  const normalizedContext: GenerationContext = {
+    ...context,
+    lon: normLon,
+    regionTag: effectiveRegionTag,
+  };
+
+  if (!tryAcquireFieldGenerationLock(normalizedContext.fieldId)) {
+    const classification = classifyAgGroup(normalizedContext.climate, normalizedContext.soil);
+    const availableCrops = getAvailableCropsForContext(classification.group, effectiveRegionTag);
+    const evidence = evaluateFieldCropEvidenceLevel({
+      agGroup: classification.group,
+      regionTag: effectiveRegionTag,
+      availableCropIds: availableCrops,
+      soil: normalizedContext.soil,
+    });
     return {
       classification: {
         group: classification.group,
@@ -890,200 +936,242 @@ export async function generateRotations(
         reasons: classification.reasons,
         inputsUsed: classification.inputsUsed,
         limitations: classification.limitations,
+        evidenceLevel: evidence.level,
+        waterRegime: classification.waterRegime,
+        dominantSeasonality: classification.dominantSeasonality,
+        gaezThermalZone: classification.gaezThermalZone,
+        gaezMoistureZone: classification.gaezMoistureZone,
+        estimatedLgpDays: classification.estimatedLgpDays,
       },
-      availableCrops: getAvailableCropsForContext(classification.group, context.regionTag),
+      geography: geo,
+      evidenceLevel: evidence.level,
+      evidenceSummary: evidence.summary,
+      availableCrops,
       proposals: [],
       supportStatus: "unavailable",
-      aiUnavailableReason: `A rotation generation request is already in progress for field "${context.fieldName}" (${context.fieldId}). Please wait for the active request to complete.`,
+      aiUnavailableReason: `A rotation generation request is already in progress for field "${normalizedContext.fieldName}" (${normalizedContext.fieldId}). Please wait for the active request to complete.`,
     };
   }
 
   try {
     // 1. Classify deterministically
-  const classification = classifyAgGroup(context.climate, context.soil);
-  const classificationSummary = {
-    group: classification.group,
-    confidence: classification.confidence,
-    reasons: classification.reasons,
-    inputsUsed: classification.inputsUsed,
-    limitations: classification.limitations,
-  };
+    const classification = classifyAgGroup(normalizedContext.climate, normalizedContext.soil);
 
-  // 2. Filter crops strictly by supported agricultural group and geographic region (when known)
-  const groupSupported = isGroupSupported(classification.group);
-  const availableCrops = getAvailableCropsForContext(classification.group, context.regionTag);
-
-  if (!groupSupported || availableCrops.length === 0) {
-    const reason =
-      classification.group === "unknown"
-        ? "Cannot generate AI-assisted rotations: field agricultural group is unknown due to insufficient or unclassified climate data."
-        : !groupSupported
-        ? `Cannot generate AI-assisted rotations: agricultural group "${classification.group}" does not yet have a verified crop catalog.`
-        : `Cannot generate AI-assisted rotations: no verified crops match group "${classification.group}"${
-            context.regionTag ? ` and region "${context.regionTag}"` : ""
-          }.`;
-
-    return {
-      classification: classificationSummary,
-      availableCrops: [],
-      proposals: [],
-      supportStatus: "unavailable",
-      aiUnavailableReason: reason,
-    };
-  }
-
-  const supportStatus: GenerationResult["supportStatus"] =
-    classification.confidence === "high" && availableCrops.length >= 5
-      ? "supported"
-      : "limited-evidence";
-
-  // If no AI provider, return classification + available crops + honest message
-  if (!aiProvider) {
-    return {
-      classification: classificationSummary,
-      availableCrops,
-      proposals: [],
-      supportStatus,
-      aiUnavailableReason:
-        "No runtime AI provider is configured. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials via `gcloud auth application-default login`), or set FALLO_AI_PROVIDER, to enable AI-assisted rotation generation.",
-    };
-  }
-
-  // 3. Build prompt with real classification and call AI
-  const prompt = buildSystemPrompt(context, classification, availableCrops);
-  let rawAiText: string;
-  try {
-    rawAiText = await aiProvider.generate({
-      prompt,
-      maxTokens: DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
-      signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
+    // 2. Filter crops strictly by supported agricultural group and geographic region (when known)
+    const groupSupported = isGroupSupported(classification.group);
+    const availableCrops = getAvailableCropsForContext(classification.group, effectiveRegionTag);
+    const evidence = evaluateFieldCropEvidenceLevel({
+      agGroup: classification.group,
+      regionTag: effectiveRegionTag,
+      availableCropIds: availableCrops,
+      soil: normalizedContext.soil,
     });
-  } catch (err) {
-    return {
-      classification: classificationSummary,
-      availableCrops,
-      proposals: [],
-      supportStatus: "unavailable",
-      aiUnavailableReason: `AI provider (${aiProvider.providerName}) call failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      aiProvider: aiProvider.providerName,
-      aiModel: aiProvider.modelName,
+
+    const classificationSummary = {
+      group: classification.group,
+      confidence: classification.confidence,
+      reasons: classification.reasons,
+      inputsUsed: classification.inputsUsed,
+      limitations: classification.limitations,
+      evidenceLevel: evidence.level,
+      waterRegime: classification.waterRegime,
+      dominantSeasonality: classification.dominantSeasonality,
+      gaezThermalZone: classification.gaezThermalZone,
+      gaezMoistureZone: classification.gaezMoistureZone,
+      estimatedLgpDays: classification.estimatedLgpDays,
     };
-  }
 
-  // 4. Parse with Zod
-  let parsed: AIProposal;
-  try {
-    const cleaned = extractJsonString(rawAiText);
-    const json = JSON.parse(cleaned);
-    parsed = AIProposalSchema.parse(json);
-  } catch (err) {
-    return {
-      classification: classificationSummary,
-      availableCrops,
-      proposals: [],
-      supportStatus: "unavailable",
-      aiUnavailableReason: `AI response could not be parsed or validated: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      aiProvider: aiProvider.providerName,
-      aiModel: aiProvider.modelName,
-      usageMetadata: aiProvider.lastUsageMetadata,
-    };
-  }
+    if (!groupSupported || availableCrops.length === 0 || evidence.level === "level_3_insufficient") {
+      const reason =
+        classification.group === "unknown"
+          ? "Cannot generate AI-assisted rotations: field agricultural group is unknown due to insufficient or unclassified climate data."
+          : !groupSupported
+          ? `Cannot generate AI-assisted rotations: agricultural group "${classification.group}" does not yet have a verified crop catalog.`
+          : `Cannot generate AI-assisted rotations: insufficient verified crop coverage (${availableCrops.length} crops) for group "${classification.group}"${
+              effectiveRegionTag ? ` and region "${effectiveRegionTag}"` : ""
+            }.`;
 
-  // 5. Validate each proposal deterministically; reject invalid proposals and preserve soft warnings
-  const validationCtx: ValidationContext = {
-    agGroup: classification.group,
-    regionTag: context.regionTag,
-    availableCropIds: availableCrops,
-  };
-
-  const acceptedResults: StrategyResult[] = [];
-  const rejectedProposals: RejectedProposalInfo[] = [];
-  const generatedAt = new Date().toISOString();
-
-  for (const strat of parsed.strategies) {
-    const validation = validateProposal(strat, validationCtx);
-
-    if (!validation.valid) {
-      rejectedProposals.push({
-        id: strat.id,
-        name: strat.name,
-        errors: validation.errors,
-        warnings: validation.warnings,
-      });
-      continue;
+      return {
+        classification: classificationSummary,
+        geography: geo,
+        evidenceLevel: "level_3_insufficient",
+        evidenceSummary: evidence.summary,
+        availableCrops: [],
+        proposals: [],
+        supportStatus: "unavailable",
+        aiUnavailableReason: reason,
+      };
     }
 
-    const mergedWarnings = mergeValidationWarnings(strat.tradeoffs.warnings, validation.warnings);
+    const supportStatus: GenerationResult["supportStatus"] =
+      evidence.level === "level_1_strong_local" && classification.confidence === "high"
+        ? "supported"
+        : classification.confidence === "high" && availableCrops.length >= 5
+        ? "supported"
+        : "limited-evidence";
 
-    const strategyWithMeta: RotationStrategy = {
-      ...strat,
-      tradeoffs: {
-        ...strat.tradeoffs,
-        warnings: mergedWarnings,
-      },
-      generationInfo: {
-        source: "ai-assisted",
-        generatedAt,
-        agGroup: classification.group,
+    // If no AI provider, return classification + available crops + honest message
+    if (!aiProvider) {
+      return {
+        classification: classificationSummary,
+        geography: geo,
+        evidenceLevel: evidence.level,
+        evidenceSummary: evidence.summary,
+        availableCrops,
+        proposals: [],
         supportStatus,
-        validationStatus: "passed",
-        validationErrors: [],
-        validationWarnings: validation.warnings,
-        rationale: parsed.rationale,
+        aiUnavailableReason:
+          "No runtime AI provider is configured. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials via `gcloud auth application-default login`), or set FALLO_AI_PROVIDER, to enable AI-assisted rotation generation.",
+      };
+    }
+
+    // 3. Build prompt with real classification and call AI
+    const prompt = buildSystemPrompt(normalizedContext, classification, availableCrops);
+    let rawAiText: string;
+    try {
+      rawAiText = await aiProvider.generate({
+        prompt,
+        maxTokens: DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      });
+    } catch (err) {
+      return {
+        classification: classificationSummary,
+        geography: geo,
+        evidenceLevel: evidence.level,
+        evidenceSummary: evidence.summary,
+        availableCrops,
+        proposals: [],
+        supportStatus: "unavailable",
+        aiUnavailableReason: `AI provider (${aiProvider.providerName}) call failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
         aiProvider: aiProvider.providerName,
         aiModel: aiProvider.modelName,
-        fieldId: context.fieldId,
+      };
+    }
+
+    // 4. Parse with Zod
+    let parsed: AIProposal;
+    try {
+      const cleaned = extractJsonString(rawAiText);
+      const json = JSON.parse(cleaned);
+      parsed = AIProposalSchema.parse(json);
+    } catch (err) {
+      return {
+        classification: classificationSummary,
+        geography: geo,
+        evidenceLevel: evidence.level,
+        evidenceSummary: evidence.summary,
+        availableCrops,
+        proposals: [],
+        supportStatus: "unavailable",
+        aiUnavailableReason: `AI response could not be parsed or validated: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        aiProvider: aiProvider.providerName,
+        aiModel: aiProvider.modelName,
         usageMetadata: aiProvider.lastUsageMetadata,
-      },
+      };
+    }
+
+    // 5. Validate each proposal deterministically; reject invalid proposals and preserve soft warnings
+    const validationCtx: ValidationContext = {
+      agGroup: classification.group,
+      regionTag: effectiveRegionTag,
+      availableCropIds: availableCrops,
     };
 
-    const result = scoreStrategy(
-      strategyWithMeta,
-      context.climate,
-      context.soil,
-      context.priorities,
-      context.regionTag
-    );
-    acceptedResults.push(result);
-  }
+    const acceptedResults: StrategyResult[] = [];
+    const rejectedProposals: RejectedProposalInfo[] = [];
+    const generatedAt = new Date().toISOString();
 
-  if (acceptedResults.length === 0) {
-    const rejectionSummary = rejectedProposals
-      .map((r) => `"${r.name}" (${r.id}): ${r.errors.join("; ")}`)
-      .join(" | ");
+    for (const strat of parsed.strategies) {
+      const validation = validateProposal(strat, validationCtx);
+
+      if (!validation.valid) {
+        rejectedProposals.push({
+          id: strat.id,
+          name: strat.name,
+          errors: validation.errors,
+          warnings: validation.warnings,
+        });
+        continue;
+      }
+
+      const mergedWarnings = mergeValidationWarnings(strat.tradeoffs.warnings, validation.warnings);
+
+      const strategyWithMeta: RotationStrategy = {
+        ...strat,
+        tradeoffs: {
+          ...strat.tradeoffs,
+          warnings: mergedWarnings,
+        },
+        generationInfo: {
+          source: "ai-assisted",
+          generatedAt,
+          agGroup: classification.group,
+          supportStatus,
+          validationStatus: "passed",
+          validationErrors: [],
+          validationWarnings: validation.warnings,
+          rationale: parsed.rationale,
+          aiProvider: aiProvider.providerName,
+          aiModel: aiProvider.modelName,
+          fieldId: normalizedContext.fieldId,
+          usageMetadata: aiProvider.lastUsageMetadata,
+        },
+      };
+
+      const result = scoreStrategy(
+        strategyWithMeta,
+        normalizedContext.climate,
+        normalizedContext.soil,
+        normalizedContext.priorities,
+        effectiveRegionTag
+      );
+      acceptedResults.push(result);
+    }
+
+    if (acceptedResults.length === 0) {
+      const rejectionSummary = rejectedProposals
+        .map((r) => `"${r.name}" (${r.id}): ${r.errors.join("; ")}`)
+        .join(" | ");
+      return {
+        classification: classificationSummary,
+        geography: geo,
+        evidenceLevel: evidence.level,
+        evidenceSummary: evidence.summary,
+        availableCrops,
+        proposals: [],
+        rejectedProposals,
+        supportStatus: "unavailable",
+        aiUnavailableReason: `All AI-generated proposals were rejected by deterministic agronomic validation: ${rejectionSummary}`,
+        aiProvider: aiProvider.providerName,
+        aiModel: aiProvider.modelName,
+        usageMetadata: aiProvider.lastUsageMetadata,
+      };
+    }
+
+    const rankedProposals = rankStrategyResults(acceptedResults);
+
     return {
       classification: classificationSummary,
+      geography: geo,
+      evidenceLevel: evidence.level,
+      evidenceSummary: evidence.summary,
       availableCrops,
-      proposals: [],
-      rejectedProposals,
-      supportStatus: "unavailable",
-      aiUnavailableReason: `All AI-generated proposals were rejected by deterministic agronomic validation: ${rejectionSummary}`,
+      proposals: rankedProposals,
+      rejectedProposals: rejectedProposals.length > 0 ? rejectedProposals : undefined,
+      rationale: parsed.rationale,
+      supportStatus,
       aiProvider: aiProvider.providerName,
       aiModel: aiProvider.modelName,
+      generatedAt,
       usageMetadata: aiProvider.lastUsageMetadata,
     };
-  }
-
-  const rankedProposals = rankStrategyResults(acceptedResults);
-
-  return {
-    classification: classificationSummary,
-    availableCrops,
-    proposals: rankedProposals,
-    rejectedProposals: rejectedProposals.length > 0 ? rejectedProposals : undefined,
-    rationale: parsed.rationale,
-    supportStatus,
-    aiProvider: aiProvider.providerName,
-    aiModel: aiProvider.modelName,
-    generatedAt,
-    usageMetadata: aiProvider.lastUsageMetadata,
-  };
   } finally {
-    releaseFieldGenerationLock(context.fieldId);
+    releaseFieldGenerationLock(normalizedContext.fieldId);
   }
 }

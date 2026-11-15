@@ -21,6 +21,7 @@ import {
   STRATEGY_OBJECTIVES,
   buildObjectiveFieldContextBullets,
   getAvailableCropsForContext,
+  evaluateFieldCropEvidenceLevel,
   cropLibrary,
 } from "@/lib/rotation-scoring";
 import { classifyAgGroup, type AgGroup } from "@/lib/agro-classifier";
@@ -43,8 +44,9 @@ import {
   Compass,
   CheckCircle2,
   Database,
+  Globe,
 } from "lucide-react";
-import { detectRegion } from "@/lib/region";
+import { detectRegion, resolveGeographicContext } from "@/lib/region";
 
 interface StressMetrics {
   summerDrySpells: {
@@ -150,6 +152,15 @@ const AG_GROUP_LABELS: Record<AgGroup, string> = {
   semi_arid_temperate: "Semi-Arid Temperate",
   subtropical_humid: "Subtropical Humid",
   temperate_mediterranean: "Temperate Mediterranean",
+  tropical_humid: "Tropical Humid",
+  tropical_subhumid: "Tropical Subhumid",
+  tropical_savanna: "Tropical Savanna (Sudano-Sahelian / Wet-Dry)",
+  tropical_monsoon: "Tropical Monsoon",
+  tropical_semi_arid: "Tropical Semi-Arid (Sahelian / Dry Savanna)",
+  arid: "Arid (Irrigation-Dependent)",
+  continental: "Continental",
+  boreal: "Boreal / Sub-Boreal",
+  highland_montane: "Highland / Montane",
   unknown: "Unclassified / Insufficient Data",
 };
 
@@ -260,11 +271,15 @@ export default function RotationsPage() {
 
   const adaptedClimate = useMemo(() => adaptClimate(climate), [climate]);
   const adaptedSoil = useMemo(() => adaptSoil(soil), [soil]);
+  const geoContext = useMemo(
+    () => (field ? resolveGeographicContext(field.lat, field.lon) : null),
+    [field]
+  );
   const detectedRegion = useMemo(
     () => (field ? detectRegion(field.lat, field.lon) : null),
     [field]
   );
-  const regionTag = detectedRegion?.tag ?? null;
+  const regionTag = detectedRegion?.tag ?? geoContext?.regionTag ?? null;
 
   // Deterministic agroecological classification & local crop availability
   const fieldClassification = useMemo(() => {
@@ -276,6 +291,16 @@ export default function RotationsPage() {
     if (!fieldClassification) return [];
     return getAvailableCropsForContext(fieldClassification.group, regionTag);
   }, [fieldClassification, regionTag]);
+
+  const fieldEvidence = useMemo(() => {
+    if (!fieldClassification) return null;
+    return evaluateFieldCropEvidenceLevel({
+      agGroup: fieldClassification.group,
+      regionTag,
+      availableCropIds,
+      soil: adaptedSoil,
+    });
+  }, [fieldClassification, regionTag, availableCropIds, adaptedSoil]);
 
   const availableCropNames = useMemo(
     () =>
@@ -430,7 +455,10 @@ export default function RotationsPage() {
         <p className="text-xs text-muted-foreground">
           Field: <strong className="text-foreground">{field.name}</strong> ({field.lat.toFixed(4)},{" "}
           {field.lon.toFixed(4)})
-          {detectedRegion ? ` · ${detectedRegion.label}` : " · Outside documented US bounding boxes"}
+          {geoContext
+            ? ` · ${geoContext.countryName} (${geoContext.countryCodeIso3}) — ${geoContext.admin1Name}`
+            : ""}
+          {detectedRegion ? ` · ${detectedRegion.label}` : ""}
         </p>
       </div>
 
@@ -487,13 +515,41 @@ export default function RotationsPage() {
                           : "bg-red-50 text-red-700 border border-red-100"
                       }`}
                     >
-                      {fieldClassification.confidence} confidence (provisional climate-based)
+                      {fieldClassification.confidence} confidence (GAEZ v5 thermal/moisture)
                     </span>
+                    {fieldEvidence && (
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-medium tracking-wide ${
+                          fieldEvidence.level === "level_1_strong_local"
+                            ? "bg-blue-50 text-blue-700 border border-blue-200"
+                            : fieldEvidence.level === "level_2_global_modeled"
+                            ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                            : "bg-red-50 text-red-700 border border-red-200"
+                        }`}
+                      >
+                        {fieldEvidence.label}
+                      </span>
+                    )}
                   </div>
                   <CardDescription className="text-xs">
                     {fieldClassification.reasons[0] ??
-                      "Classified from NASA POWER climate history and recorded SSURGO soil context."}
+                      "Classified from NASA POWER / GAEZ v5 climate history and recorded soil context."}
+                    {fieldClassification.estimatedLgpDays !== null &&
+                      fieldClassification.estimatedLgpDays !== undefined && (
+                        <>
+                          {" "}
+                          · GAEZ v5 LGP: <strong>{fieldClassification.estimatedLgpDays} days</strong>{" "}
+                          ({fieldClassification.gaezMoistureZone}) · Water regime:{" "}
+                          <strong>{fieldClassification.waterRegime?.replace(/_/g, " ")}</strong>
+                        </>
+                      )}
                   </CardDescription>
+                  {geoContext?.disputedOrBorderNote && (
+                    <p className="text-[11px] text-muted-foreground flex items-center gap-1 pt-0.5">
+                      <Globe className="h-3 w-3 text-electric shrink-0" />
+                      <span>{geoContext.disputedOrBorderNote}</span>
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
@@ -567,7 +623,11 @@ export default function RotationsPage() {
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-foreground flex items-center gap-1.5">
                       <Database className="h-3.5 w-3.5 text-electric" />
-                      Soil Data Coverage (USDA SSURGO 0–30 cm)
+                      Soil Data Coverage (
+                      {adaptedSoil?.source.toUpperCase().includes("SSURGO")
+                        ? "USDA SSURGO 0–30 cm"
+                        : "FAO HWSD v2.2 & ISRIC SoilGrids 0–30 cm"}
+                      )
                     </span>
                     {adaptedSoil ? (
                       <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 border border-emerald-100">
@@ -585,10 +645,11 @@ export default function RotationsPage() {
                       {soilOm !== null ? `${soilOm.toFixed(1)}%` : "—"} · pH:{" "}
                       {soilPh !== null ? soilPh.toFixed(1) : "—"} · Drainage: {soilDrainage ?? "—"} · Slope:{" "}
                       {soilSlope !== null ? `${soilSlope.toFixed(1)}%` : "—"}
+                      {soil?.mapUnit?.name ? ` · Unit: ${soil.mapUnit.name}` : ""}
                     </p>
                   ) : (
                     <p className="text-[11px] text-amber-800">
-                      No USDA SSURGO soil data available for these coordinates (US-only survey). Soil AWC, organic matter, pH, drainage, and slope are recorded as null and lower classification/scoring coverage.
+                      Soil profile data is currently unavailable for these coordinates. Soil AWC, organic matter, pH, drainage, and slope are recorded as null and lower classification/scoring coverage.
                     </p>
                   )}
                 </div>
