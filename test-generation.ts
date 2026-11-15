@@ -27,6 +27,15 @@ import {
   getAvailableCropsForContext,
   GenerationRequestSchema,
   OpenAICompatibleProvider,
+  GeminiEnterpriseProvider,
+  resolveRuntimeAIProvider,
+  parseGeminiThinkingLevel,
+  isFieldGenerationInFlight,
+  DEFAULT_AI_TIMEOUT_MS,
+  DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+  DEFAULT_GEMINI_THINKING_LEVEL,
+  DEFAULT_GEMINI_ENTERPRISE_MODEL,
+  DEFAULT_GOOGLE_CLOUD_LOCATION,
   type AIProviderClient,
 } from "@/lib/rotation-generator";
 import {
@@ -40,6 +49,8 @@ import {
   buildObjectiveFieldContextBullets,
   buildStrategyOverviewBullets,
   isReferenceStrategyApplicable,
+  isVerifiedAiStrategyForField,
+  scoreVerifiedAiStrategies,
   mergeAndRankStrategies,
   resolveScoredStrategyById,
   rankStrategyResults,
@@ -896,22 +907,82 @@ test("Unknown agricultural group refuses AI generation even when provider is sup
 
 section("Persistence, Ranking & Detail-Page Lookup");
 
-test("applyFieldRotationsUpdate updates both fields and activeField consistently", () => {
+test("applyFieldRotationsUpdate persists valid AI strategies, refuses invalid/static strategies, and preserves previous valid plans on failed regeneration", () => {
   const f1: Field = { id: "f1", name: "Field 1", lat: 35.67, lon: -80.47 };
   const f2: Field = { id: "f2", name: "Field 2", lat: 36.0, lon: -79.0 };
+  const validAiStrategy: RotationStrategy = {
+    ...makeValidStrategy("ai_gen_1", "AI Generated 1"),
+    generationInfo: {
+      source: "ai-assisted",
+      generatedAt: "2026-11-14T00:00:00.000Z",
+      agGroup: "temperate_humid",
+      supportStatus: "supported",
+      validationStatus: "passed",
+      aiProvider: "gemini-enterprise",
+      aiModel: "gemini-4-argon",
+      fieldId: "f1",
+    },
+  };
   const stored: StoredRotations = {
-    strategies: [makeValidStrategy("ai_gen_1", "AI Generated 1")],
+    strategies: [validAiStrategy],
     generatedAt: "2026-11-14T00:00:00.000Z",
     agGroup: "temperate_humid",
     version: "1.0",
+    fieldId: "f1",
+    aiProvider: "gemini-enterprise",
+    aiModel: "gemini-4-argon",
+    validationStatus: "passed",
+    usageMetadata: {
+      promptTokenCount: 820,
+      candidatesTokenCount: 640,
+      thoughtsTokenCount: 110,
+      totalTokenCount: 1570,
+      estimatedCostUsd: null,
+    },
   };
 
+  // 1. Persists after validation succeeds
   const updated = applyFieldRotationsUpdate([f1, f2], f1, "f1", stored);
   assert.equal(updated.fields[0].generatedRotations?.strategies.length, 1);
   assert.equal(updated.activeField?.generatedRotations?.strategies.length, 1);
+  assert.equal(updated.fields[0].generatedRotations?.aiProvider, "gemini-enterprise");
+  assert.equal(updated.fields[0].generatedRotations?.aiModel, "gemini-4-argon");
+  assert.equal(updated.fields[0].generatedRotations?.validationStatus, "passed");
+  assert.equal(updated.fields[0].generatedRotations?.usageMetadata?.totalTokenCount, 1570);
   assert.equal(updated.fields[1].generatedRotations, undefined);
 
-  // Clearing sets both to null
+  // 2. Preserves previous valid AI-generated plans if a later regeneration attempt fails (empty or failed strategies)
+  const failedRegenAttempt: StoredRotations = {
+    strategies: [
+      {
+        ...makeValidStrategy("bad_plan", "Bad Plan"),
+        generationInfo: {
+          source: "ai-assisted",
+          validationStatus: "failed",
+          supportStatus: "unavailable",
+        },
+      },
+    ],
+    generatedAt: "2026-11-15T00:00:00.000Z",
+    agGroup: "temperate_humid",
+    version: "1.0",
+  };
+  const afterFailedRegen = applyFieldRotationsUpdate(
+    updated.fields,
+    updated.activeField,
+    "f1",
+    failedRegenAttempt
+  );
+  assert.equal(afterFailedRegen.fields[0].generatedRotations?.strategies.length, 1);
+  assert.equal(afterFailedRegen.fields[0].generatedRotations?.strategies[0].id, "ai_gen_1");
+  assert.equal(afterFailedRegen.activeField?.generatedRotations?.strategies[0].id, "ai_gen_1");
+
+  // 3. No persistence when validation fails on a fresh field with no prior plans
+  const f2AfterFailed = applyFieldRotationsUpdate([f1, f2], f2, "f2", failedRegenAttempt);
+  assert.equal(f2AfterFailed.fields[1].generatedRotations, undefined);
+  assert.equal(f2AfterFailed.activeField?.generatedRotations, undefined);
+
+  // 4. Explicit Clear (null) sets both to null
   const cleared = applyFieldRotationsUpdate(updated.fields, updated.activeField, "f1", null);
   assert.equal(cleared.fields[0].generatedRotations, null);
   assert.equal(cleared.activeField?.generatedRotations, null);
@@ -970,19 +1041,45 @@ test("mergeAndRankStrategies sorts by overallScore descending (nulls last) and r
   assert.equal(nullRanked[1].rank, 2);
 });
 
-test("resolveScoredStrategyById resolves generated strategies first, falls back to static, and handles clear", () => {
+test("scoreVerifiedAiStrategies and resolveScoredStrategyById display ONLY verified AI-generated strategies and never fall back to static predefined sequences", () => {
   const climate = makeClimate();
   const soil = makeSoil();
+
+  // 1. Before generation (null or empty stored strategies), no static 3-year sequences are scored or returned
+  assert.equal(
+    scoreVerifiedAiStrategies(null, "f1", climate, soil, DEFAULT_PRIORITIES, "us_southeast").length,
+    0
+  );
+  assert.equal(
+    scoreVerifiedAiStrategies([], "f1", climate, soil, DEFAULT_PRIORITIES, "us_southeast").length,
+    0
+  );
+
+  // 2. Passing static predefined strategies (from data/rotations.json) is rejected by isVerifiedAiStrategyForField and scoreVerifiedAiStrategies
+  for (const s of staticStrategies) {
+    assert.equal(isVerifiedAiStrategyForField(s, "f1"), false);
+  }
+  assert.equal(
+    scoreVerifiedAiStrategies(staticStrategies, "f1", climate, soil, DEFAULT_PRIORITIES, "us_southeast")
+      .length,
+    0
+  );
+
+  // 3. Verified AI-generated strategy for f1 is resolved and scored
   const genStrat: RotationStrategy = {
     ...makeValidStrategy("ai_custom_detail", "AI Custom Detail Plan"),
     generationInfo: {
       source: "ai-assisted",
       agGroup: "temperate_humid",
+      supportStatus: "supported",
+      validationStatus: "passed",
+      fieldId: "f1",
+      aiProvider: "gemini-enterprise",
+      aiModel: "gemini-4-argon",
       validationWarnings: ["Sample warning for detail view"],
     },
   };
 
-  // 1. Resolves generated strategy and preserves metadata + recalculates with custom priorities
   const customPriorities: FarmerPriorities = {
     waterSuitability: 10,
     nitrogenContribution: 60,
@@ -990,13 +1087,26 @@ test("resolveScoredStrategyById resolves generated strategies first, falls back 
     diversityPestBreak: 10,
     climateRiskResilience: 10,
   };
+
+  const scoredAi = scoreVerifiedAiStrategies(
+    [genStrat],
+    "f1",
+    climate,
+    soil,
+    customPriorities,
+    "us_southeast"
+  );
+  assert.equal(scoredAi.length, 1);
+  assert.equal(scoredAi[0].strategy.id, "ai_custom_detail");
+
   const resolvedGen = resolveScoredStrategyById(
     "ai_custom_detail",
     [genStrat],
     climate,
     soil,
     customPriorities,
-    "us_southeast"
+    "us_southeast",
+    "f1"
   );
   assert.ok(resolvedGen);
   assert.equal(resolvedGen!.strategy.id, "ai_custom_detail");
@@ -1005,26 +1115,46 @@ test("resolveScoredStrategyById resolves generated strategies first, falls back 
     "Sample warning for detail view",
   ]);
 
-  // 2. Falls back to static catalog when strategyId is a static archetype
+  // 4. Static strategy IDs NEVER resolve via resolveScoredStrategyById (no static fallback on detail page)
   const resolvedStatic = resolveScoredStrategyById(
     "soil_health_building",
     [genStrat],
     climate,
     soil,
     customPriorities,
-    "us_southeast"
+    "us_southeast",
+    "f1"
   );
-  assert.ok(resolvedStatic);
-  assert.equal(resolvedStatic!.strategy.id, "soil_health_building");
+  assert.equal(resolvedStatic, null);
 
-  // 3. Returns null when generated strategies are cleared
+  // 5. Strategy generated for a different fieldId ("f1") is not returned for field "f2"
+  assert.equal(
+    scoreVerifiedAiStrategies([genStrat], "f2", climate, soil, customPriorities, "us_southeast")
+      .length,
+    0
+  );
+  assert.equal(
+    resolveScoredStrategyById(
+      "ai_custom_detail",
+      [genStrat],
+      climate,
+      soil,
+      customPriorities,
+      "us_southeast",
+      "f2"
+    ),
+    null
+  );
+
+  // 6. Returns null when generated strategies are cleared
   const afterClear = resolveScoredStrategyById(
     "ai_custom_detail",
     null,
     climate,
     soil,
     customPriorities,
-    "us_southeast"
+    "us_southeast",
+    "f1"
   );
   assert.equal(afterClear, null);
 });
@@ -1086,6 +1216,423 @@ test("isReferenceStrategyApplicable and getAvailableCropsForContext gate regiona
     // All 3 static reference templates include at least one crop not in us_northeast (pearl_millet, grain_sorghum, or sunflower)
     assert.equal(isReferenceStrategyApplicable(s, "temperate_humid", "us_northeast"), false);
   }
+});
+
+// ─── 7. Gemini Enterprise Agent Platform (ADC) Provider Tests ─────────
+
+section("Gemini Enterprise Agent Platform (ADC) Provider");
+
+test("resolveRuntimeAIProvider detects Google Cloud Gemini Enterprise without requiring FALLO_AI_API_KEY", () => {
+  const provider = resolveRuntimeAIProvider({
+    GOOGLE_CLOUD_PROJECT: "triangle-hackathon-claude-code",
+    GOOGLE_CLOUD_LOCATION: "global",
+    GOOGLE_GENAI_USE_ENTERPRISE: "true",
+    FALLO_AI_MODEL: "gemini-4-argon",
+  });
+
+  assert.ok(provider instanceof GeminiEnterpriseProvider);
+  const gemini = provider as GeminiEnterpriseProvider;
+  assert.equal(gemini.providerName, "gemini-enterprise");
+  assert.equal(gemini.project, "triangle-hackathon-claude-code");
+  assert.equal(gemini.location, "global");
+  assert.equal(gemini.model, "gemini-4-argon");
+  assert.equal(gemini.enterprise, true);
+
+  // Defaults location to "global" and model to "gemini-4-argon" when omitted
+  const defaultProvider = resolveRuntimeAIProvider({
+    GOOGLE_CLOUD_PROJECT: "triangle-hackathon-claude-code",
+    GOOGLE_GENAI_USE_ENTERPRISE: "true",
+  }) as GeminiEnterpriseProvider;
+  assert.ok(defaultProvider instanceof GeminiEnterpriseProvider);
+  assert.equal(defaultProvider.location, DEFAULT_GOOGLE_CLOUD_LOCATION);
+  assert.equal(defaultProvider.model, DEFAULT_GEMINI_ENTERPRISE_MODEL);
+
+  // Returns null when GOOGLE_CLOUD_PROJECT is missing and no OpenAI key is configured
+  const missingProject = resolveRuntimeAIProvider({
+    GOOGLE_GENAI_USE_ENTERPRISE: "true",
+  });
+  assert.equal(missingProject, null);
+
+  // Preserves OpenAICompatibleProvider fallback when explicitly requested with FALLO_AI_API_KEY
+  const openAiProvider = resolveRuntimeAIProvider({
+    FALLO_AI_PROVIDER: "openai-compatible",
+    FALLO_AI_API_KEY: "sk-test-key",
+    GOOGLE_CLOUD_PROJECT: "triangle-hackathon-claude-code",
+  });
+  assert.ok(openAiProvider instanceof OpenAICompatibleProvider);
+});
+
+test("GeminiEnterpriseProvider initializes @google/genai with enterprise: true, project, location, LOW thinkingConfig, 120s timeout, retryOptions={attempts:1}, and extracts real usageMetadata", async () => {
+  assert.equal(DEFAULT_AI_TIMEOUT_MS, 120_000);
+  assert.equal(DEFAULT_GEMINI_MAX_OUTPUT_TOKENS, 3500);
+  assert.equal(DEFAULT_GEMINI_THINKING_LEVEL, "LOW");
+
+  // Verify thinkingLevel validation: LOW, MEDIUM, HIGH allowed; MINIMAL rejected
+  assert.equal(parseGeminiThinkingLevel("low"), "LOW");
+  assert.equal(parseGeminiThinkingLevel("MEDIUM"), "MEDIUM");
+  assert.equal(parseGeminiThinkingLevel("HIGH"), "HIGH");
+  assert.throws(
+    () => parseGeminiThinkingLevel("MINIMAL"),
+    /Allowed values are LOW, MEDIUM, or HIGH/
+  );
+  assert.throws(
+    () =>
+      new GeminiEnterpriseProvider({
+        project: "triangle-hackathon-claude-code",
+        thinkingLevel: "MINIMAL",
+      }),
+    /MINIMAL and thinkingBudget are not supported/
+  );
+
+  // Verify FALLO_AI_ENABLED=false disables provider resolution
+  assert.equal(
+    resolveRuntimeAIProvider({
+      GOOGLE_CLOUD_PROJECT: "triangle-hackathon-claude-code",
+      GOOGLE_GENAI_USE_ENTERPRISE: "true",
+      FALLO_AI_ENABLED: "false",
+    }),
+    null
+  );
+
+  let capturedSdkOptions: Record<string, unknown> | null = null;
+  let capturedModel: string | null = null;
+  let capturedConfig: Record<string, unknown> | undefined;
+
+  const s1 = makeValidStrategy("soil_health_field", "Soil Health Plan");
+  s1.archetype = "soil_health";
+  const s2 = makeValidStrategy("water_resilience_field", "Water Resilience Plan");
+  s2.archetype = "water_resilience";
+  const s3 = makeValidStrategy("crop_diversity_field", "Crop Diversity Plan");
+  s3.archetype = "crop_diversity";
+
+  const geminiProvider = new GeminiEnterpriseProvider({
+    project: "triangle-hackathon-claude-code",
+    location: "global",
+    model: "gemini-4-argon",
+    clientFactory: (opts) => {
+      capturedSdkOptions = opts as Record<string, unknown>;
+      return {
+        models: {
+          generateContent: async (params) => {
+            capturedModel = params.model;
+            capturedConfig = params.config as unknown as Record<string, unknown>;
+            return {
+              text: JSON.stringify({
+                strategies: [s1, s2, s3],
+                rationale: "Generated 3 field-specific strategies via Gemini 4 Argon.",
+              }),
+              usageMetadata: {
+                promptTokenCount: 912,
+                candidatesTokenCount: 745,
+                thoughtsTokenCount: 128,
+                totalTokenCount: 1785,
+              },
+            };
+          },
+        },
+      };
+    },
+  });
+
+  const result = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    geminiProvider
+  );
+
+  assert.deepEqual(capturedSdkOptions, {
+    enterprise: true,
+    project: "triangle-hackathon-claude-code",
+    location: "global",
+    httpOptions: {
+      timeout: 120_000,
+      retryOptions: {
+        attempts: 1,
+      },
+    },
+  });
+  assert.equal(capturedModel, "gemini-4-argon");
+  assert.ok(capturedConfig);
+  assert.equal(capturedConfig!.responseMimeType, "application/json");
+  assert.equal(capturedConfig!.maxOutputTokens, 3500);
+  assert.deepEqual(capturedConfig!.thinkingConfig, { thinkingLevel: "LOW" });
+  assert.deepEqual(capturedConfig!.httpOptions, {
+    timeout: 120_000,
+    retryOptions: {
+      attempts: 1,
+    },
+  });
+  // Verify unsupported parameters are absent
+  assert.equal("temperature" in capturedConfig!, false);
+  assert.equal("topP" in capturedConfig!, false);
+  assert.equal("topK" in capturedConfig!, false);
+  assert.equal("thinkingBudget" in (capturedConfig!.thinkingConfig as Record<string, unknown>), false);
+
+  assert.equal(result.supportStatus, "supported");
+  assert.equal(result.proposals.length, 3);
+  assert.equal(result.aiProvider, "gemini-enterprise");
+  assert.equal(result.aiModel, "gemini-4-argon");
+  assert.equal(result.usageMetadata?.promptTokenCount, 912);
+  assert.equal(result.usageMetadata?.candidatesTokenCount, 745);
+  assert.equal(result.usageMetadata?.thoughtsTokenCount, 128);
+  assert.equal(result.usageMetadata?.totalTokenCount, 1785);
+  assert.equal(result.usageMetadata?.estimatedCostUsd, null);
+
+  const firstGenInfo = result.proposals[0].strategy.generationInfo;
+  assert.equal(firstGenInfo?.aiProvider, "gemini-enterprise");
+  assert.equal(firstGenInfo?.aiModel, "gemini-4-argon");
+  assert.equal(firstGenInfo?.fieldId, "f1");
+  assert.equal(firstGenInfo?.validationStatus, "passed");
+  assert.equal(firstGenInfo?.usageMetadata?.totalTokenCount, 1785);
+});
+
+test("GeminiEnterpriseProvider handles malformed responses, unsupported crops, and invalid crop sequences safely", async () => {
+  // 1. Malformed / non-JSON response
+  const malformedGemini = new GeminiEnterpriseProvider({
+    project: "triangle-hackathon-claude-code",
+    clientFactory: () => ({
+      models: {
+        generateContent: async () => ({ text: "Not valid JSON output" }),
+      },
+    }),
+  });
+
+  const malformedRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    malformedGemini
+  );
+  assert.equal(malformedRes.proposals.length, 0);
+  assert.equal(malformedRes.supportStatus, "unavailable");
+
+  // 2. Response with unsupported crop (e.g. grain_sorghum in us_northeast) and invalid sequence (Sclerotinia stacking)
+  const unsupportedCropStrat = makeValidStrategy("unsupported_ne", "Unsupported NE Strategy");
+  unsupportedCropStrat.years[0].seasons[0].crop = "grain_sorghum";
+
+  const invalidSclerotiniaStrat = makeValidStrategy("sclerotinia_stack", "Sclerotinia Stack");
+  invalidSclerotiniaStrat.years[0].seasons[0].crop = "sunflower";
+  invalidSclerotiniaStrat.years[1].seasons[0].crop = "soybean";
+
+  const invalidSequenceGemini = new GeminiEnterpriseProvider({
+    project: "triangle-hackathon-claude-code",
+    clientFactory: () => ({
+      models: {
+        generateContent: async () => ({
+          text: JSON.stringify({
+            strategies: [unsupportedCropStrat, invalidSclerotiniaStrat],
+            rationale: "Both strategies violate hard deterministic constraints.",
+          }),
+        }),
+      },
+    }),
+  });
+
+  const rejectedRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Northeast Field",
+      lat: 42.44,
+      lon: -76.5,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_northeast",
+    },
+    invalidSequenceGemini
+  );
+
+  assert.equal(rejectedRes.proposals.length, 0);
+  assert.equal(rejectedRes.rejectedProposals?.length, 2);
+  assert.equal(rejectedRes.supportStatus, "unavailable");
+});
+
+test("GeminiEnterpriseProvider surfaces clear ADC authentication errors, redacts OAuth tokens, and enforces timeouts", async () => {
+  const fakeToken = "ya29.a0AfB_byCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+
+  // 1. ADC authentication error + token redaction
+  const authFailGemini = new GeminiEnterpriseProvider({
+    project: "triangle-hackathon-claude-code",
+    location: "global",
+    model: "gemini-4-argon",
+    clientFactory: () => ({
+      models: {
+        generateContent: async () => {
+          throw new Error(
+            `Could not load the default credentials. Token ${fakeToken} rejected with status: 401 UNAUTHENTICATED`
+          );
+        },
+      },
+    }),
+  });
+
+  const authRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    authFailGemini
+  );
+
+  assert.equal(authRes.proposals.length, 0);
+  assert.equal(authRes.supportStatus, "unavailable");
+  assert.ok(authRes.aiUnavailableReason?.includes("Google Cloud ADC authentication failed"));
+  assert.ok(authRes.aiUnavailableReason?.includes("gcloud auth application-default login"));
+  assert.ok(!authRes.aiUnavailableReason?.includes(fakeToken));
+  assert.ok(authRes.aiUnavailableReason?.includes("[REDACTED_TOKEN]"));
+
+  // 2. Timeout enforcement AND actual AbortSignal cancellation reaching the SDK request
+  let sdkAbortSignalTriggered = false;
+  let generateContentCallCount = 0;
+  const hangingGemini = new GeminiEnterpriseProvider({
+    project: "triangle-hackathon-claude-code",
+    timeoutMs: 40,
+    clientFactory: () => ({
+      models: {
+        generateContent: (params) => {
+          generateContentCallCount++;
+          return new Promise((_resolve, reject) => {
+            params.config?.abortSignal?.addEventListener("abort", () => {
+              sdkAbortSignalTriggered = true;
+              const abortErr = new Error("Aborted");
+              abortErr.name = "AbortError";
+              reject(abortErr);
+            });
+          });
+        },
+      },
+    }),
+  });
+
+  const timeoutRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    hangingGemini
+  );
+
+  assert.equal(timeoutRes.proposals.length, 0);
+  assert.equal(timeoutRes.supportStatus, "unavailable");
+  assert.ok(timeoutRes.aiUnavailableReason?.includes("timed out after 40ms"));
+  assert.equal(sdkAbortSignalTriggered, true);
+  assert.equal(generateContentCallCount, 1); // No automatic retries
+});
+
+test("Duplicate request prevention blocks concurrent generateRotations calls for the same fieldId", async () => {
+  let providerCalls = 0;
+  let releaseFirstCall: (() => void) | null = null;
+
+  const slowProvider: AIProviderClient = {
+    providerName: "slow-mock-provider",
+    async generate() {
+      providerCalls++;
+      await new Promise<void>((resolve) => {
+        releaseFirstCall = resolve;
+      });
+      return JSON.stringify({
+        strategies: [makeValidStrategy("slow_plan", "Slow Plan")],
+        rationale: "Completed after lock release.",
+      });
+    },
+  };
+
+  const ctx = {
+    fieldId: "concurrent_field_1",
+    fieldName: "Concurrent Test Field",
+    lat: 35.67,
+    lon: -80.47,
+    climate: makeClimate(),
+    soil: makeSoil(),
+    priorities: DEFAULT_PRIORITIES,
+    regionTag: "us_southeast",
+  };
+
+  // Start first request (in flight)
+  const firstPromise = generateRotations(ctx, slowProvider);
+  assert.equal(isFieldGenerationInFlight("concurrent_field_1"), true);
+
+  // Second concurrent request for the same fieldId is immediately rejected without calling the provider
+  const duplicateResult = await generateRotations(ctx, slowProvider);
+  assert.equal(duplicateResult.proposals.length, 0);
+  assert.equal(duplicateResult.supportStatus, "unavailable");
+  assert.ok(duplicateResult.aiUnavailableReason?.includes("already in progress"));
+  assert.equal(providerCalls, 1);
+
+  // Release first request and verify lock is cleaned up
+  if (releaseFirstCall) (releaseFirstCall as () => void)();
+  const firstResult = await firstPromise;
+  assert.equal(firstResult.proposals.length, 1);
+  assert.equal(isFieldGenerationInFlight("concurrent_field_1"), false);
+});
+
+test("African test field (9.45287, 24.98303) classifies tropical thermal regime honestly, skips AI call, and returns zero static rotations", async () => {
+  let providerCalled = false;
+  const spyProvider = makeMockProvider(async () => {
+    providerCalled = true;
+    return JSON.stringify({ strategies: [makeValidStrategy()], rationale: "Should not be called" });
+  });
+
+  // Tropical savanna/monsoon climate at (9.45287, 24.98303) — South Darfur / Bahr el Ghazal border (~27.1 °C annual avg, ~740 mm seasonal rain, null SSURGO soil)
+  const africanClimate = makeClimate({
+    avgAnnualTemp: 27.1,
+    avgAnnualPrecip: 740,
+    monthlyTemp: [23.5, 25.8, 28.9, 30.5, 29.8, 27.9, 26.1, 25.4, 26.3, 27.4, 25.8, 23.8],
+    monthlyPrecip: [0, 0, 4, 18, 68, 115, 195, 215, 105, 20, 0, 0],
+  });
+
+  const classification = classifyAgGroup(africanClimate, null);
+  assert.equal(classification.group, "unknown");
+  assert.equal(classification.confidence, "low");
+  assert.ok(classification.reasons.some((r) => r.includes("Tropical thermal regime")));
+  assert.ok(classification.limitations.some((l) => l.includes("FAO/IIASA GAEZ v5")));
+  assert.ok(classification.limitations.some((l) => l.includes("No soil data available")));
+
+  const result = await generateRotations(
+    {
+      fieldId: "africa_test_field",
+      fieldName: "African Savanna Test Field",
+      lat: 9.45287,
+      lon: 24.98303,
+      climate: africanClimate,
+      soil: null,
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: null,
+    },
+    spyProvider
+  );
+
+  assert.equal(providerCalled, false);
+  assert.equal(result.availableCrops.length, 0);
+  assert.equal(result.proposals.length, 0);
+  assert.equal(result.supportStatus, "unavailable");
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────

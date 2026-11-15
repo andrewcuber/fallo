@@ -14,15 +14,18 @@
  */
 
 import { z } from "zod";
+import { ThinkingLevel, type GoogleGenAIOptions } from "@google/genai";
 import {
   type ClimateData,
   type SoilData,
   type FarmerPriorities,
   type RotationStrategy,
   type StrategyResult,
+  type AIUsageMetadata,
   cropLibrary,
   scoreStrategy,
   rankStrategyResults,
+  getAvailableCropsForContext,
 } from "@/lib/rotation-scoring";
 import {
   classifyAgGroup,
@@ -206,6 +209,10 @@ export interface GenerationResult {
   rationale?: string;
   supportStatus: "supported" | "limited-evidence" | "unavailable";
   aiUnavailableReason?: string;
+  aiProvider?: string;
+  aiModel?: string;
+  generatedAt?: string;
+  usageMetadata?: AIUsageMetadata;
 }
 
 export interface AIProviderClient {
@@ -216,9 +223,363 @@ export interface AIProviderClient {
     timeoutMs?: number;
   }): Promise<string>;
   providerName: string;
+  modelName?: string;
+  lastUsageMetadata?: AIUsageMetadata;
 }
 
-export const DEFAULT_AI_TIMEOUT_MS = 30_000;
+export const DEFAULT_AI_TIMEOUT_MS = 120_000;
+export const DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 3500;
+export const DEFAULT_GEMINI_ENTERPRISE_MODEL = "gemini-4-argon";
+export const DEFAULT_GOOGLE_CLOUD_LOCATION = "global";
+
+export type GeminiThinkingLevel = "LOW" | "MEDIUM" | "HIGH";
+export const DEFAULT_GEMINI_THINKING_LEVEL: GeminiThinkingLevel = "LOW";
+
+export function parseGeminiThinkingLevel(raw?: string): GeminiThinkingLevel {
+  if (!raw || !raw.trim()) return DEFAULT_GEMINI_THINKING_LEVEL;
+  const upper = raw.trim().toUpperCase();
+  if (upper === "LOW" || upper === "MEDIUM" || upper === "HIGH") {
+    return upper;
+  }
+  throw new Error(
+    `Unsupported Gemini 4 Argon thinkingLevel "${raw}". Allowed values are LOW, MEDIUM, or HIGH (MINIMAL and thinkingBudget are not supported).`
+  );
+}
+
+export interface GeminiUsageMetadata {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
+  totalTokenCount?: number;
+}
+
+export interface GeminiGenerateContentRequest {
+  model: string;
+  contents: string;
+  config?: {
+    systemInstruction?: string;
+    thinkingConfig?: {
+      thinkingLevel?: ThinkingLevel;
+    };
+    maxOutputTokens?: number;
+    responseMimeType?: string;
+    abortSignal?: AbortSignal;
+    httpOptions?: {
+      timeout?: number;
+      retryOptions?: {
+        attempts?: number;
+      };
+    };
+  };
+}
+
+export interface GeminiGenerateContentResponse {
+  text?: string;
+  usageMetadata?: GeminiUsageMetadata;
+}
+
+export interface GeminiClientLike {
+  models: {
+    generateContent(params: GeminiGenerateContentRequest): Promise<GeminiGenerateContentResponse>;
+  };
+}
+
+export type GeminiClientFactory = (
+  options: GoogleGenAIOptions
+) => GeminiClientLike | Promise<GeminiClientLike>;
+
+/**
+ * Official `@google/genai` provider for Google Cloud's Gemini Enterprise Agent Platform
+ * using Application Default Credentials (ADC).
+ *
+ * Initializes `new GoogleGenAI({ enterprise: true, project, location, httpOptions })`
+ * and does NOT require an API key (`FALLO_AI_API_KEY`).
+ *
+ * Configured specifically for `gemini-4-argon`:
+ * - Uses `thinkingConfig: { thinkingLevel: "LOW" }` by default for responsive structured output.
+ * - Omits unsupported/ignored sampling parameters (`temperature`, `topP`, `topK`, `thinkingBudget`).
+ * - Disables SDK automatic retries (`retryOptions: { attempts: 1 }`) to prevent duplicate billing.
+ * - Propagates `AbortSignal` and `httpOptions.timeout` (default 120,000 ms) to the underlying request.
+ */
+export class GeminiEnterpriseProvider implements AIProviderClient {
+  providerName: string;
+  modelName: string;
+  lastUsageMetadata?: AIUsageMetadata;
+  readonly project: string;
+  readonly location: string;
+  readonly model: string;
+  readonly enterprise: boolean;
+  readonly thinkingLevel: GeminiThinkingLevel;
+  private defaultTimeoutMs: number;
+  private clientFactory: GeminiClientFactory;
+
+  constructor(opts: {
+    providerName?: string;
+    project: string;
+    location?: string;
+    model?: string;
+    enterprise?: boolean;
+    thinkingLevel?: GeminiThinkingLevel | string;
+    timeoutMs?: number;
+    clientFactory?: GeminiClientFactory;
+  }) {
+    const trimmedProject = opts.project?.trim();
+    if (!trimmedProject) {
+      throw new Error(
+        "GeminiEnterpriseProvider requires a non-empty Google Cloud project ID (GOOGLE_CLOUD_PROJECT)."
+      );
+    }
+    this.providerName = opts.providerName ?? "gemini-enterprise";
+    this.project = trimmedProject;
+    this.location = opts.location?.trim() || DEFAULT_GOOGLE_CLOUD_LOCATION;
+    this.model = opts.model?.trim() || DEFAULT_GEMINI_ENTERPRISE_MODEL;
+    this.modelName = this.model;
+    this.enterprise = opts.enterprise ?? true;
+    this.thinkingLevel = parseGeminiThinkingLevel(opts.thinkingLevel);
+    this.defaultTimeoutMs = opts.timeoutMs ?? DEFAULT_AI_TIMEOUT_MS;
+    this.clientFactory =
+      opts.clientFactory ??
+      (async (sdkOptions: GoogleGenAIOptions) => {
+        const { GoogleGenAI } = await import("@google/genai");
+        return new GoogleGenAI(sdkOptions);
+      });
+  }
+
+  private sanitizeErrorMessage(raw: string): string {
+    // Redact any accidental OAuth2 access tokens or bearer tokens
+    return raw
+      .replace(/ya29\.[A-Za-z0-9._-]+/g, "[REDACTED_TOKEN]")
+      .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+  }
+
+  private isAuthError(msg: string): boolean {
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes("could not load the default credentials") ||
+      lower.includes("application default credentials") ||
+      lower.includes("unauthenticated") ||
+      lower.includes("permission_denied") ||
+      lower.includes("permission denied") ||
+      lower.includes("invalid_grant") ||
+      lower.includes("reauth") ||
+      lower.includes("status: 401") ||
+      lower.includes("status: 403") ||
+      lower.includes("code: 401") ||
+      lower.includes("code: 403")
+    );
+  }
+
+  private extractUsageMetadata(raw?: GeminiUsageMetadata): AIUsageMetadata | undefined {
+    if (!raw) return undefined;
+    const hasAnyCount =
+      typeof raw.promptTokenCount === "number" ||
+      typeof raw.candidatesTokenCount === "number" ||
+      typeof raw.thoughtsTokenCount === "number" ||
+      typeof raw.totalTokenCount === "number";
+    if (!hasAnyCount) return undefined;
+    return {
+      promptTokenCount: raw.promptTokenCount,
+      candidatesTokenCount: raw.candidatesTokenCount,
+      thoughtsTokenCount: raw.thoughtsTokenCount,
+      totalTokenCount: raw.totalTokenCount,
+      estimatedCostUsd: null,
+    };
+  }
+
+  async generate({
+    prompt,
+    maxTokens = DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+    signal,
+    timeoutMs = this.defaultTimeoutMs,
+  }: {
+    prompt: string;
+    maxTokens?: number;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): Promise<string> {
+    this.lastUsageMetadata = undefined;
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        const err = new Error("Timeout");
+        err.name = "TimeoutError";
+        reject(err);
+      }, timeoutMs);
+    });
+
+    const onExternalAbort = () => {
+      controller.abort();
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        if (timer) clearTimeout(timer);
+        throw new Error(`AI provider (${this.providerName}) request was aborted.`);
+      }
+      signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+
+    const httpOptions = {
+      timeout: timeoutMs,
+      retryOptions: {
+        attempts: 1,
+      },
+    };
+
+    try {
+      const sdkOptions: GoogleGenAIOptions = {
+        enterprise: this.enterprise,
+        project: this.project,
+        location: this.location,
+        httpOptions,
+      };
+      const client = await this.clientFactory(sdkOptions);
+
+      const sdkLevel: ThinkingLevel =
+        this.thinkingLevel === "HIGH"
+          ? ThinkingLevel.HIGH
+          : this.thinkingLevel === "MEDIUM"
+            ? ThinkingLevel.MEDIUM
+            : ThinkingLevel.LOW;
+
+      const response = await Promise.race([
+        client.models.generateContent({
+          model: this.model,
+          contents:
+            "Generate 3 field-specific 3-year crop rotation strategies (soil_health, water_resilience, crop_diversity) as JSON matching the required schema.",
+          config: {
+            systemInstruction: prompt,
+            thinkingConfig: {
+              thinkingLevel: sdkLevel,
+            },
+            maxOutputTokens: maxTokens,
+            responseMimeType: "application/json",
+            abortSignal: controller.signal,
+            httpOptions,
+          },
+        }),
+        timeoutPromise,
+      ]);
+
+      this.lastUsageMetadata = this.extractUsageMetadata(response?.usageMetadata);
+
+      const content = response?.text?.trim();
+      if (!content) {
+        throw new Error("Empty response from Gemini Enterprise provider.");
+      }
+      return content;
+    } catch (err) {
+      if (timedOut || (err instanceof Error && err.name === "TimeoutError")) {
+        throw new Error(
+          `AI provider (${this.providerName}) request timed out after ${timeoutMs}ms.`
+        );
+      }
+      if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+        throw new Error(`AI provider (${this.providerName}) request was aborted.`);
+      }
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const safeMessage = this.sanitizeErrorMessage(rawMessage);
+      if (this.isAuthError(safeMessage)) {
+        throw new Error(
+          `Google Cloud ADC authentication failed for project "${this.project}" (${this.location}, model "${this.model}"): ${safeMessage}. Verify Application Default Credentials with "gcloud auth application-default login".`
+        );
+      }
+      throw new Error(safeMessage);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (signal) {
+        signal.removeEventListener("abort", onExternalAbort);
+      }
+    }
+  }
+}
+
+/**
+ * Resolve the configured runtime AI provider from environment variables.
+ *
+ * Primary provider: Google Cloud Gemini Enterprise Agent Platform (`@google/genai`)
+ * authenticated via Application Default Credentials (ADC). Does NOT require `FALLO_AI_API_KEY`.
+ *
+ * Activated when:
+ * - `FALLO_AI_ENABLED` is not `"false"`
+ * - `GOOGLE_GENAI_USE_ENTERPRISE=true` (or `FALLO_AI_PROVIDER` is `"gemini-enterprise"` / `"google-genai"` / `"vertex"` / unset)
+ * - AND `GOOGLE_CLOUD_PROJECT` is set.
+ *
+ * Optional fallback: `OpenAICompatibleProvider` when `FALLO_AI_PROVIDER` is set to
+ * an OpenAI-compatible provider name and `FALLO_AI_API_KEY` is provided.
+ */
+export function resolveRuntimeAIProvider(
+  env: Record<string, string | undefined> = process.env,
+  geminiClientFactory?: GeminiClientFactory
+): AIProviderClient | null {
+  const aiEnabledRaw = env.FALLO_AI_ENABLED?.trim().toLowerCase();
+  if (aiEnabledRaw === "false" || aiEnabledRaw === "0") {
+    return null;
+  }
+
+  const providerPref = env.FALLO_AI_PROVIDER?.trim().toLowerCase();
+  const useEnterpriseRaw = env.GOOGLE_GENAI_USE_ENTERPRISE?.trim().toLowerCase();
+  const gcpProject = env.GOOGLE_CLOUD_PROJECT?.trim();
+  const gcpLocation = env.GOOGLE_CLOUD_LOCATION?.trim() || DEFAULT_GOOGLE_CLOUD_LOCATION;
+  const configuredModel = env.FALLO_AI_MODEL?.trim() || env.GOOGLE_GENAI_MODEL?.trim();
+  const apiKey = env.FALLO_AI_API_KEY?.trim();
+
+  const parsedTimeout = Number(env.FALLO_AI_TIMEOUT_MS);
+  const timeoutMs =
+    Number.isFinite(parsedTimeout) && parsedTimeout >= 1000
+      ? parsedTimeout
+      : DEFAULT_AI_TIMEOUT_MS;
+
+  const isGeminiProviderPref =
+    !providerPref ||
+    providerPref === "gemini-enterprise" ||
+    providerPref === "google-genai" ||
+    providerPref === "vertex" ||
+    providerPref === "gemini";
+
+  // 1. Explicit OpenAI-compatible provider when requested and API key is present
+  if (providerPref && !isGeminiProviderPref) {
+    if (!apiKey) return null;
+    return new OpenAICompatibleProvider({
+      providerName: providerPref,
+      apiKey,
+      baseUrl: env.FALLO_AI_BASE_URL?.trim() || undefined,
+      model: configuredModel || "gpt-4o-mini",
+      timeoutMs,
+    });
+  }
+
+  // 2. Google Cloud Gemini Enterprise Agent Platform via ADC (no API key required)
+  const enterpriseEnabled = useEnterpriseRaw !== "false";
+  if (isGeminiProviderPref && enterpriseEnabled && gcpProject) {
+    const rawLevel = env.FALLO_AI_THINKING_LEVEL?.trim();
+    let thinkingLevel: GeminiThinkingLevel = DEFAULT_GEMINI_THINKING_LEVEL;
+    if (rawLevel) {
+      try {
+        thinkingLevel = parseGeminiThinkingLevel(rawLevel);
+      } catch {
+        thinkingLevel = DEFAULT_GEMINI_THINKING_LEVEL;
+      }
+    }
+    return new GeminiEnterpriseProvider({
+      providerName: "gemini-enterprise",
+      project: gcpProject,
+      location: gcpLocation,
+      model: configuredModel || DEFAULT_GEMINI_ENTERPRISE_MODEL,
+      enterprise: true,
+      thinkingLevel,
+      timeoutMs,
+      clientFactory: geminiClientFactory,
+    });
+  }
+
+  return null;
+}
 
 /**
  * Minimal OpenAI-compatible provider client with timeout, AbortSignal forwarding,
@@ -226,6 +587,7 @@ export const DEFAULT_AI_TIMEOUT_MS = 30_000;
  */
 export class OpenAICompatibleProvider implements AIProviderClient {
   providerName: string;
+  modelName: string;
   private apiKey: string;
   private baseUrl: string;
   private model: string;
@@ -244,6 +606,7 @@ export class OpenAICompatibleProvider implements AIProviderClient {
     this.apiKey = opts.apiKey;
     this.baseUrl = (opts.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
     this.model = opts.model ?? "gpt-4o-mini";
+    this.modelName = this.model;
     this.defaultTimeoutMs = opts.timeoutMs ?? DEFAULT_AI_TIMEOUT_MS;
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
@@ -350,28 +713,44 @@ export function buildSystemPrompt(
     .map((id) => {
       const c = cropLibrary[id];
       if (!c) return null;
-      const nCredit = c.nitrogenBehavior.residualNcredit?.value ?? "N/A";
-      const nDemand = c.nitrogenBehavior.demand ?? "N/A";
-      return `  - ${id} (${c.commonName}, ${c.family}, ${c.type}): water=${c.waterDemand}, drought=${c.droughtTolerance}, N=${nDemand}, N-credit=${nCredit}`;
+      const nCredit = c.nitrogenBehavior.residualNcredit?.value ?? "none";
+      const nDemand = c.nitrogenBehavior.demand ?? "unknown";
+      const windowStr = [
+        c.growingWindow.planting ? `plant:${c.growingWindow.planting}` : null,
+        c.growingWindow.harvest ? `harvest:${c.growingWindow.harvest}` : null,
+        c.growingWindow.termination ? `terminate:${c.growingWindow.termination}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      return `  - ${id} (${c.commonName}, ${c.family}, ${c.type}): water=${c.waterDemand}, drought=${c.droughtTolerance}, N-demand=${nDemand}, N-credit=${nCredit}, window=[${windowStr}]`;
     })
     .filter(Boolean)
     .join("\n");
 
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const monthlySeasonality = monthNames
+    .map((m, idx) => {
+      const t = context.climate.fullRecord.monthlyTemp[idx];
+      const p = context.climate.fullRecord.monthlyPrecip[idx];
+      return `${m}:${t !== null && t !== undefined ? `${t.toFixed(0)}°C` : "?"}/${p !== null && p !== undefined ? `${p.toFixed(0)}mm` : "?"}`;
+    })
+    .join(" ");
+
   const climateSummary = [
-    `Average annual temperature: ${context.climate.fullRecord.avgAnnualTemp?.toFixed(1) ?? "unknown"} °C`,
-    `Average annual precipitation: ${context.climate.fullRecord.avgAnnualPrecip?.toFixed(0) ?? "unknown"} mm`,
-    `Growing-season precip (May–Aug): ${context.climate.stressMetrics.growingSeasonPrecip.avgTotalMm?.toFixed(0) ?? "unknown"} mm`,
-    `Summer dry spells (Jun–Aug): ${context.climate.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays?.toFixed(1) ?? "unknown"} days`,
-    `Heat-stress days (Jul–Aug, >35 °C): ${context.climate.stressMetrics.summerHeatDays.avgDaysAboveThreshold?.toFixed(1) ?? "unknown"} days`,
+    `Annual avg temp: ${context.climate.fullRecord.avgAnnualTemp?.toFixed(1) ?? "unknown"} °C | Annual precip: ${context.climate.fullRecord.avgAnnualPrecip?.toFixed(0) ?? "unknown"} mm`,
+    `Growing-season precip (May–Aug): ${context.climate.stressMetrics.growingSeasonPrecip.avgTotalMm?.toFixed(0) ?? "unknown"} mm | Spring precip (Mar–May): ${context.climate.stressMetrics.springPrecip.avgTotalMm?.toFixed(0) ?? "unknown"} mm`,
+    `Summer dry spells (Jun–Aug): ${context.climate.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays?.toFixed(1) ?? "unknown"} days | Heat-stress days (Jul–Aug, >35 °C): ${context.climate.stressMetrics.summerHeatDays.avgDaysAboveThreshold?.toFixed(1) ?? "unknown"} days`,
+    `Monthly seasonality (Temp/Precip): ${monthlySeasonality}`,
   ].join("\n");
 
+  const d0 = context.soil?.aggregated.depth0_30cm;
   const soilSummary = context.soil
     ? [
-        `AWC (0–30 cm): ${context.soil.aggregated.depth0_30cm.awc?.toFixed(3) ?? "unknown"} cm/cm`,
-        `Drainage: ${context.soil.aggregated.drainage ?? "unknown"}`,
-        `Slope: ${context.soil.aggregated.slope?.toFixed(1) ?? "unknown"}%`,
+        `AWC (0–30 cm): ${d0?.awc !== null && d0?.awc !== undefined ? `${d0.awc.toFixed(3)} cm/cm` : "null"} | OM: ${d0?.om !== null && d0?.om !== undefined ? `${d0.om.toFixed(1)}%` : "null"} | pH: ${d0?.ph !== null && d0?.ph !== undefined ? d0.ph.toFixed(1) : "null"}`,
+        `Texture (sand/silt/clay): ${d0?.sand !== null && d0?.sand !== undefined ? `${d0.sand.toFixed(0)}%` : "null"} / ${d0?.silt !== null && d0?.silt !== undefined ? `${d0.silt.toFixed(0)}%` : "null"} / ${d0?.clay !== null && d0?.clay !== undefined ? `${d0.clay.toFixed(0)}%` : "null"}`,
+        `Drainage: ${context.soil.aggregated.drainage ?? "null"} | Slope: ${context.soil.aggregated.slope !== null && context.soil.aggregated.slope !== undefined ? `${context.soil.aggregated.slope.toFixed(1)}%` : "null"}`,
       ].join("\n")
-    : "No soil data available.";
+    : "No soil data available (soil = null).";
 
   const classificationSummary = [
     `Classified agricultural group: ${classification.group}`,
@@ -382,21 +761,21 @@ export function buildSystemPrompt(
   ].join("\n");
 
   return `You are an agricultural planning assistant for the fallo app.
-Your role is to suggest 3 field-specific crop rotation strategies (each covering 3 years: Soil Health, Water Resilience, and Crop Diversity) tailored to this field.
+Generate 3 distinct, field-specific 3-year crop rotation strategies in a single JSON response:
+1. "soil_health" (Soil Health Building)
+2. "water_resilience" (Water Resilience)
+3. "crop_diversity" (Crop Diversity & Pest Break)
 
 ## COMPATIBILITY RULES (AUTHORITATIVE)
 ${formatCompatibilityRulesForPrompt()}
 
-- Propose up to 3 distinct strategy archetypes: "soil_health", "water_resilience", and "crop_diversity".
-- Keep each strategy's "description" to a single concise sentence stating its objective for this field.
-- Include 2–3 short, scannable "advantages" bullets grounded in the field's actual climate and soil metrics and the verified crop traits.
-- Do not assume or mention a default region (such as North Carolina) unless the field's actual coordinates and region tag place it there.
-- Consider the farmer's priorities when choosing crop emphasis.
-- Return ONLY valid JSON matching the requested schema.
+- Keep each strategy's "description" to 1 concise sentence stating its objective for this field.
+- Include 2–3 short "advantages", 1–2 "disadvantages", and 1–2 "operational" bullets grounded in the field's actual climate/soil metrics and verified crop traits.
+- Do not assume or mention a default state/region (such as North Carolina) unless the field's coordinates and region tag place it there.
+- Return ONLY valid JSON matching the schema below.
 
 ## FIELD CONTEXT
-Field Name: ${context.fieldName}
-Location: ${context.lat.toFixed(4)}, ${context.lon.toFixed(4)}
+Field: ${context.fieldName} (${context.lat.toFixed(4)}, ${context.lon.toFixed(4)})
 ${classificationSummary}
 
 ### Climate
@@ -405,40 +784,36 @@ ${climateSummary}
 ### Soil
 ${soilSummary}
 
-### Farmer priorities (weights)
-- Water Suitability: ${context.priorities.waterSuitability}%
-- Nitrogen Contribution: ${context.priorities.nitrogenContribution}%
-- Soil Coverage: ${context.priorities.soilCoverage}%
-- Diversity / Pest Break: ${context.priorities.diversityPestBreak}%
-- Climate Risk Resilience: ${context.priorities.climateRiskResilience}%
+### Farmer priority weights
+Water Suitability: ${context.priorities.waterSuitability}% | Nitrogen Contribution: ${context.priorities.nitrogenContribution}% | Soil Coverage: ${context.priorities.soilCoverage}% | Diversity / Pest Break: ${context.priorities.diversityPestBreak}% | Climate Risk Resilience: ${context.priorities.climateRiskResilience}%
 
 ## AVAILABLE CROPS (verified catalog for group "${classification.group}")
 ${cropSummaries}
 
 ## OUTPUT SCHEMA
-Return a JSON object with:
-- strategies: array of 1–3 strategy objects, each with id, name, archetype ("soil_health" | "water_resilience" | "crop_diversity"), description (one concise sentence), years (length 3), tradeoffs
-- rationale: a short paragraph explaining how the priorities and climate/soil shaped the recommendation
-
-Strategy object shape:
+Return a single JSON object:
 {
-  "id": "snake_case_id",
-  "name": "Human-readable name",
-  "archetype": "soil_health",
-  "description": "One concise sentence describing the objective for this field.",
-  "years": [
-    { "year": 1, "seasons": [
-      { "season": "Fall", "crop": "crop_id", "activity": "Plant cover crop", "months": [9,10,11] }
-    ]}
+  "strategies": [
+    {
+      "id": "soil_health_plan",
+      "name": "Soil Health Building Plan",
+      "archetype": "soil_health",
+      "description": "One concise sentence describing the objective for this field.",
+      "years": [
+        { "year": 1, "seasons": [{ "season": "Fall–Winter", "crop": "crop_id", "activity": "Brief activity", "months": [10,11,12,1,2,3] }] },
+        { "year": 2, "seasons": [...] },
+        { "year": 3, "seasons": [...] }
+      ],
+      "tradeoffs": {
+        "advantages": ["Short field-specific advantage 1", "Short advantage 2"],
+        "disadvantages": ["Short disadvantage"],
+        "operational": ["Short operational note"],
+        "warnings": []
+      }
+    }
   ],
-  "tradeoffs": {
-    "advantages": ["Short field-specific advantage 1", "Short advantage 2"],
-    "disadvantages": ["..."],
-    "operational": ["..."],
-    "warnings": ["..."]
-  }
-}
-`;
+  "rationale": "1–2 concise sentences explaining how the field's climate, soil, and priorities shaped these 3 plans."
+}`;
 }
 
 function extractJsonString(rawText: string): string {
@@ -469,26 +844,25 @@ function mergeValidationWarnings(
 
 // ─── Public API ───────────────────────────────────────────────────────
 
-/**
- * Deterministically filter the verified crop catalog for a classified
- * agroecological group and geographic region tag.
- */
-export function getAvailableCropsForContext(
-  agGroup: AgGroup,
-  regionTag: string | null
-): string[] {
-  if (!isGroupSupported(agGroup)) return [];
-  return Object.values(cropLibrary)
-    .filter((c) => {
-      if (!c.applicableGroups || !c.applicableGroups.includes(agGroup)) {
-        return false;
-      }
-      if (regionTag && !c.supportedRegions.includes(regionTag)) {
-        return false;
-      }
-      return true;
-    })
-    .map((c) => c.id);
+export { getAvailableCropsForContext };
+
+const inFlightFieldGenerations = new Set<string>();
+
+export function isFieldGenerationInFlight(fieldId: string): boolean {
+  return inFlightFieldGenerations.has(fieldId);
+}
+
+export function tryAcquireFieldGenerationLock(fieldId: string): boolean {
+  if (!fieldId) return false;
+  if (inFlightFieldGenerations.has(fieldId)) {
+    return false;
+  }
+  inFlightFieldGenerations.add(fieldId);
+  return true;
+}
+
+export function releaseFieldGenerationLock(fieldId: string): void {
+  inFlightFieldGenerations.delete(fieldId);
 }
 
 /**
@@ -504,9 +878,28 @@ export function getAvailableCropsForContext(
  */
 export async function generateRotations(
   context: GenerationContext,
-  aiProvider: AIProviderClient | null
+  aiProvider: AIProviderClient | null,
+  options?: { signal?: AbortSignal; timeoutMs?: number }
 ): Promise<GenerationResult> {
-  // 1. Classify deterministically
+  if (!tryAcquireFieldGenerationLock(context.fieldId)) {
+    const classification = classifyAgGroup(context.climate, context.soil);
+    return {
+      classification: {
+        group: classification.group,
+        confidence: classification.confidence,
+        reasons: classification.reasons,
+        inputsUsed: classification.inputsUsed,
+        limitations: classification.limitations,
+      },
+      availableCrops: getAvailableCropsForContext(classification.group, context.regionTag),
+      proposals: [],
+      supportStatus: "unavailable",
+      aiUnavailableReason: `A rotation generation request is already in progress for field "${context.fieldName}" (${context.fieldId}). Please wait for the active request to complete.`,
+    };
+  }
+
+  try {
+    // 1. Classify deterministically
   const classification = classifyAgGroup(context.climate, context.soil);
   const classificationSummary = {
     group: classification.group,
@@ -552,7 +945,7 @@ export async function generateRotations(
       proposals: [],
       supportStatus,
       aiUnavailableReason:
-        "No runtime AI provider is configured. To enable AI-assisted rotation generation, set the FALLO_AI_PROVIDER and FALLO_AI_API_KEY environment variables.",
+        "No runtime AI provider is configured. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials via `gcloud auth application-default login`), or set FALLO_AI_PROVIDER, to enable AI-assisted rotation generation.",
     };
   }
 
@@ -560,7 +953,12 @@ export async function generateRotations(
   const prompt = buildSystemPrompt(context, classification, availableCrops);
   let rawAiText: string;
   try {
-    rawAiText = await aiProvider.generate({ prompt, maxTokens: 4000 });
+    rawAiText = await aiProvider.generate({
+      prompt,
+      maxTokens: DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+      signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
+    });
   } catch (err) {
     return {
       classification: classificationSummary,
@@ -570,6 +968,8 @@ export async function generateRotations(
       aiUnavailableReason: `AI provider (${aiProvider.providerName}) call failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      aiProvider: aiProvider.providerName,
+      aiModel: aiProvider.modelName,
     };
   }
 
@@ -588,6 +988,9 @@ export async function generateRotations(
       aiUnavailableReason: `AI response could not be parsed or validated: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      aiProvider: aiProvider.providerName,
+      aiModel: aiProvider.modelName,
+      usageMetadata: aiProvider.lastUsageMetadata,
     };
   }
 
@@ -600,6 +1003,7 @@ export async function generateRotations(
 
   const acceptedResults: StrategyResult[] = [];
   const rejectedProposals: RejectedProposalInfo[] = [];
+  const generatedAt = new Date().toISOString();
 
   for (const strat of parsed.strategies) {
     const validation = validateProposal(strat, validationCtx);
@@ -624,13 +1028,17 @@ export async function generateRotations(
       },
       generationInfo: {
         source: "ai-assisted",
-        generatedAt: new Date().toISOString(),
+        generatedAt,
         agGroup: classification.group,
         supportStatus,
+        validationStatus: "passed",
         validationErrors: [],
         validationWarnings: validation.warnings,
         rationale: parsed.rationale,
         aiProvider: aiProvider.providerName,
+        aiModel: aiProvider.modelName,
+        fieldId: context.fieldId,
+        usageMetadata: aiProvider.lastUsageMetadata,
       },
     };
 
@@ -655,6 +1063,9 @@ export async function generateRotations(
       rejectedProposals,
       supportStatus: "unavailable",
       aiUnavailableReason: `All AI-generated proposals were rejected by deterministic agronomic validation: ${rejectionSummary}`,
+      aiProvider: aiProvider.providerName,
+      aiModel: aiProvider.modelName,
+      usageMetadata: aiProvider.lastUsageMetadata,
     };
   }
 
@@ -667,5 +1078,12 @@ export async function generateRotations(
     rejectedProposals: rejectedProposals.length > 0 ? rejectedProposals : undefined,
     rationale: parsed.rationale,
     supportStatus,
+    aiProvider: aiProvider.providerName,
+    aiModel: aiProvider.modelName,
+    generatedAt,
+    usageMetadata: aiProvider.lastUsageMetadata,
   };
+  } finally {
+    releaseFieldGenerationLock(context.fieldId);
+  }
 }

@@ -55,15 +55,27 @@ export interface RotationYear {
   seasons: RotationSeason[];
 }
 
+export interface AIUsageMetadata {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
+  totalTokenCount?: number;
+  estimatedCostUsd?: number | null;
+}
+
 export interface GenerationInfo {
   source: "ai-assisted" | "static-archetype";
   generatedAt?: string;
   agGroup?: string;
   supportStatus?: "supported" | "limited-evidence" | "unavailable";
+  validationStatus?: "passed" | "failed";
   validationErrors?: string[];
   validationWarnings?: string[];
   rationale?: string;
   aiProvider?: string;
+  aiModel?: string;
+  fieldId?: string;
+  usageMetadata?: AIUsageMetadata;
 }
 
 export interface RotationStrategy {
@@ -1012,6 +1024,31 @@ export function buildStrategyOverviewBullets(
 }
 
 /**
+ * Deterministically filter the verified crop catalog for a classified
+ * agroecological group and geographic region tag.
+ */
+export function getAvailableCropsForContext(
+  agGroup: string | null | undefined,
+  regionTag: string | null | undefined
+): string[] {
+  if (!agGroup || agGroup === "unknown") return [];
+  if (agGroup !== "temperate_humid" && agGroup !== "semi_arid_temperate") {
+    return [];
+  }
+  return Object.values(cropLibrary)
+    .filter((c) => {
+      if (!c.applicableGroups || !c.applicableGroups.includes(agGroup)) {
+        return false;
+      }
+      if (regionTag && !c.supportedRegions.includes(regionTag)) {
+        return false;
+      }
+      return true;
+    })
+    .map((c) => c.id);
+}
+
+/**
  * Determine whether a static reference strategy template is genuinely applicable
  * to the selected field's agroecological group and geographic region.
  */
@@ -1212,8 +1249,62 @@ export function mergeAndRankStrategies(
 }
 
 /**
- * Resolve a single strategy by ID (checking persisted generated strategies first,
- * then falling back to the static catalog) and return its scored and ranked result.
+ * Verify that a rotation strategy is a genuinely AI-generated strategy
+ * that passed deterministic validation for the target field.
+ * Predefined static archetypes or failed proposals are never eligible
+ * for farmer-facing display.
+ */
+export function isVerifiedAiStrategyForField(
+  strategy: RotationStrategy | null | undefined,
+  fieldId?: string
+): boolean {
+  if (!strategy || !strategy.generationInfo) return false;
+  if (strategy.generationInfo.source !== "ai-assisted") return false;
+  if (strategy.generationInfo.validationStatus === "failed") return false;
+  if (strategy.generationInfo.supportStatus === "unavailable") return false;
+  if (
+    fieldId &&
+    strategy.generationInfo.fieldId &&
+    strategy.generationInfo.fieldId !== fieldId
+  ) {
+    return false;
+  }
+  return Array.isArray(strategy.years) && strategy.years.length === 3;
+}
+
+/**
+ * Score and rank ONLY verified AI-generated strategies for a specific field.
+ * Never merges or falls back to static reference rotations.
+ */
+export function scoreVerifiedAiStrategies(
+  storedStrategies: RotationStrategy[] | null | undefined,
+  fieldId: string | undefined,
+  climate: ClimateData,
+  soil: SoilData | null,
+  priorities: FarmerPriorities,
+  regionTag?: string | null
+): StrategyResult[] {
+  if (!storedStrategies || storedStrategies.length === 0) return [];
+  const validAi = storedStrategies.filter((s) =>
+    isVerifiedAiStrategyForField(s, fieldId)
+  );
+  if (validAi.length === 0) return [];
+  const seenIds = new Set<string>();
+  const uniqueValid: RotationStrategy[] = [];
+  for (const s of validAi) {
+    if (!seenIds.has(s.id)) {
+      seenIds.add(s.id);
+      uniqueValid.push(s);
+    }
+  }
+  return rankStrategyResults(
+    uniqueValid.map((s) => scoreStrategy(s, climate, soil, priorities, regionTag))
+  );
+}
+
+/**
+ * Resolve a single verified AI-generated strategy by ID for the given field
+ * and return its scored and ranked result. Never falls back to static templates.
  */
 export function resolveScoredStrategyById(
   strategyId: string,
@@ -1221,32 +1312,16 @@ export function resolveScoredStrategyById(
   climate: ClimateData,
   soil: SoilData | null,
   priorities: FarmerPriorities,
-  regionTag?: string | null
+  regionTag?: string | null,
+  fieldId?: string
 ): StrategyResult | null {
-  const genList = generatedStrategies ?? [];
-  const fromGenerated = genList.find((s) => s.id === strategyId);
-  const fromStatic = strategies.find((s) => s.id === strategyId);
-  const target = fromGenerated ?? fromStatic;
-  if (!target) return null;
-
-  // Build candidate set giving generated strategy priority if IDs ever collided
-  const candidates: RotationStrategy[] = [];
-  const seen = new Set<string>();
-  for (const g of genList) {
-    if (!seen.has(g.id)) {
-      seen.add(g.id);
-      candidates.push(g);
-    }
-  }
-  for (const s of strategies) {
-    if (!seen.has(s.id)) {
-      seen.add(s.id);
-      candidates.push(s);
-    }
-  }
-
-  const ranked = rankStrategyResults(
-    candidates.map((s) => scoreStrategy(s, climate, soil, priorities, regionTag))
+  const ranked = scoreVerifiedAiStrategies(
+    generatedStrategies,
+    fieldId,
+    climate,
+    soil,
+    priorities,
+    regionTag
   );
   return ranked.find((r) => r.strategy.id === strategyId) ?? null;
 }

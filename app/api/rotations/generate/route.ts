@@ -2,44 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   generateRotations,
   GenerationRequestSchema,
-  OpenAICompatibleProvider,
-  DEFAULT_AI_TIMEOUT_MS,
+  resolveRuntimeAIProvider,
   type GenerationContext,
-  type AIProviderClient,
 } from "@/lib/rotation-generator";
+
+/**
+ * Node.js runtime is required so `@google/genai` and `google-auth-library`
+ * can read Application Default Credentials (ADC) from the server environment.
+ */
+export const runtime = "nodejs";
+export const maxDuration = 120;
 
 /**
  * Secure server-side route for AI-assisted rotation generation.
  *
- * - NEVER exposes AI credentials to the client.
+ * - NEVER exposes AI credentials or ADC tokens to the client.
+ * - Uses Google Cloud's Gemini Enterprise Agent Platform (`@google/genai` with
+ *   `enterprise: true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and ADC)
+ *   when configured, without requiring `FALLO_AI_API_KEY`.
  * - Validates input strictly with GenerationRequestSchema (Zod).
  * - Always runs deterministic classification and available-crop filtering,
  *   even when no runtime AI provider is configured (returning 503 with classification).
  * - Calls the LLM with a timeout and AbortSignal when configured, validates output,
  *   rejects agronomically invalid proposals, and scores accepted proposals.
  */
-
-function getProvider(): AIProviderClient | null {
-  const providerName = process.env.FALLO_AI_PROVIDER?.trim();
-  const apiKey = process.env.FALLO_AI_API_KEY?.trim();
-  if (!providerName || !apiKey) return null;
-
-  const baseUrl = process.env.FALLO_AI_BASE_URL?.trim() || undefined;
-  const model = process.env.FALLO_AI_MODEL?.trim() || "gpt-4o-mini";
-  const parsedTimeout = Number(process.env.FALLO_AI_TIMEOUT_MS);
-  const timeoutMs =
-    Number.isFinite(parsedTimeout) && parsedTimeout >= 1000
-      ? parsedTimeout
-      : DEFAULT_AI_TIMEOUT_MS;
-
-  return new OpenAICompatibleProvider({
-    providerName,
-    apiKey,
-    baseUrl,
-    model,
-    timeoutMs,
-  });
-}
 
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -70,10 +56,12 @@ export async function POST(req: NextRequest) {
     regionTag: data.regionTag,
   };
 
-  const provider = getProvider();
+  const provider = resolveRuntimeAIProvider(process.env);
 
   try {
-    const result = await generateRotations(context, provider);
+    const result = await generateRotations(context, provider, {
+      signal: req.signal,
+    });
 
     if (!provider) {
       return NextResponse.json(
@@ -83,8 +71,7 @@ export async function POST(req: NextRequest) {
           message:
             result.aiUnavailableReason ??
             "No runtime AI provider is configured for this deployment. " +
-              "To enable AI-assisted rotation generation, set FALLO_AI_PROVIDER and FALLO_AI_API_KEY environment variables. " +
-              "The deterministic classifier, validator, and crop catalog are fully functional without AI.",
+              "Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials) to enable Gemini Enterprise rotation generation.",
           aiStatus: "unavailable",
         },
         { status: 503 }

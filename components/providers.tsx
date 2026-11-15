@@ -10,7 +10,9 @@ import React, {
 import {
   type RotationStrategy,
   type FarmerPriorities,
+  type AIUsageMetadata,
   DEFAULT_PRIORITIES,
+  isVerifiedAiStrategyForField,
 } from "@/lib/rotation-scoring";
 
 export interface StoredRotations {
@@ -19,6 +21,11 @@ export interface StoredRotations {
   generatedAt: string;
   agGroup: string;
   version: string;
+  fieldId?: string;
+  aiProvider?: string;
+  aiModel?: string;
+  validationStatus?: "passed";
+  usageMetadata?: AIUsageMetadata;
 }
 
 export interface Field {
@@ -51,6 +58,10 @@ const FieldContext = createContext<FieldContextValue | undefined>(undefined);
 /**
  * Pure state-transition helper for updating a field's generatedRotations across
  * both the stored `fields` list and `activeField` reference.
+ *
+ * When `rotations` is provided, only verified AI-generated strategies for the target
+ * field are accepted. If `rotations` has no valid strategies, existing valid saved
+ * plans on the field are preserved rather than overwritten with empty/invalid data.
  */
 export function applyFieldRotationsUpdate(
   fields: Field[],
@@ -58,12 +69,35 @@ export function applyFieldRotationsUpdate(
   id: string,
   rotations: StoredRotations | null
 ): { fields: Field[]; activeField: Field | null } {
+  if (rotations !== null) {
+    const validStrategies = rotations.strategies.filter((s) =>
+      isVerifiedAiStrategyForField(s, id)
+    );
+    if (validStrategies.length === 0) {
+      return { fields, activeField };
+    }
+    const sanitized: StoredRotations = {
+      ...rotations,
+      strategies: validStrategies,
+      fieldId: id,
+      validationStatus: "passed",
+    };
+    const nextFields = fields.map((f) =>
+      f.id === id ? { ...f, generatedRotations: sanitized } : f
+    );
+    const nextActiveField =
+      activeField && activeField.id === id
+        ? { ...activeField, generatedRotations: sanitized }
+        : activeField;
+    return { fields: nextFields, activeField: nextActiveField };
+  }
+
   const nextFields = fields.map((f) =>
-    f.id === id ? { ...f, generatedRotations: rotations } : f
+    f.id === id ? { ...f, generatedRotations: null } : f
   );
   const nextActiveField =
     activeField && activeField.id === id
-      ? { ...activeField, generatedRotations: rotations }
+      ? { ...activeField, generatedRotations: null }
       : activeField;
   return { fields: nextFields, activeField: nextActiveField };
 }
@@ -190,11 +224,9 @@ export function FieldProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setFieldRotations = useCallback((id: string, rotations: StoredRotations | null) => {
-    setFields((prev) =>
-      prev.map((f) => (f.id === id ? { ...f, generatedRotations: rotations } : f))
-    );
+    setFields((prev) => applyFieldRotationsUpdate(prev, null, id, rotations).fields);
     setActiveFieldState((prev) =>
-      prev && prev.id === id ? { ...prev, generatedRotations: rotations } : prev
+      prev ? applyFieldRotationsUpdate([prev], prev, id, rotations).activeField : null
     );
   }, []);
 

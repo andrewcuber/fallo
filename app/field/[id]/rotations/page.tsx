@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useField } from "@/components/providers";
 import {
@@ -17,17 +17,15 @@ import { PrioritySliders } from "@/components/rotation/priority-sliders";
 import { FactorComparison } from "@/components/rotation/factor-comparison";
 import {
   StrategyResult,
-  scoreAllStrategies,
-  scoreStrategy,
-  rankStrategyResults,
+  scoreVerifiedAiStrategies,
   STRATEGY_OBJECTIVES,
   buildObjectiveFieldContextBullets,
-  isReferenceStrategyApplicable,
+  getAvailableCropsForContext,
   cropLibrary,
 } from "@/lib/rotation-scoring";
 import { classifyAgGroup, type AgGroup } from "@/lib/agro-classifier";
 import {
-  getAvailableCropsForContext,
+  DEFAULT_AI_TIMEOUT_MS,
   type GenerationResult,
   type RejectedProposalInfo,
 } from "@/lib/rotation-generator";
@@ -42,9 +40,9 @@ import {
   Sprout,
   Droplets,
   Layers,
-  ChevronDown,
-  ChevronUp,
   Compass,
+  CheckCircle2,
+  Database,
 } from "lucide-react";
 import { detectRegion } from "@/lib/region";
 
@@ -199,7 +197,7 @@ export default function RotationsPage() {
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [rejectedProposals, setRejectedProposals] = useState<RejectedProposalInfo[]>([]);
-  const [showNonLocalReference, setShowNonLocalReference] = useState(false);
+  const inFlightFieldRef = useRef<string | null>(null);
 
   const fieldId = typeof params.id === "string" ? params.id : undefined;
 
@@ -287,39 +285,43 @@ export default function RotationsPage() {
     [availableCropIds]
   );
 
-  // Score persisted field-specific strategies (when generated)
+  // Score ONLY verified AI-generated strategies for this field (never static predefined templates)
   const generatedResults: StrategyResult[] = useMemo(() => {
-    if (!adaptedClimate || !field?.generatedRotations?.strategies?.length) return [];
-    const scored = field.generatedRotations.strategies.map((s) =>
-      scoreStrategy(s, adaptedClimate, adaptedSoil, priorities, regionTag)
+    if (!adaptedClimate || !field) return [];
+    return scoreVerifiedAiStrategies(
+      field.generatedRotations?.strategies,
+      field.id,
+      adaptedClimate,
+      adaptedSoil,
+      priorities,
+      regionTag
     );
-    return rankStrategyResults(scored);
-  }, [adaptedClimate, adaptedSoil, field?.generatedRotations, priorities, regionTag]);
-
-  // Score reference archetype templates
-  const referenceResults: StrategyResult[] = useMemo(() => {
-    if (!adaptedClimate) return [];
-    return scoreAllStrategies(adaptedClimate, adaptedSoil, priorities, regionTag);
-  }, [adaptedClimate, adaptedSoil, priorities, regionTag]);
-
-  // Check whether reference templates are genuinely applicable to this field's group & region
-  const referenceTemplatesApplicable = useMemo(() => {
-    if (!fieldClassification || referenceResults.length === 0) return false;
-    return referenceResults.every((r) =>
-      isReferenceStrategyApplicable(r.strategy, fieldClassification.group, regionTag)
-    );
-  }, [fieldClassification, referenceResults, regionTag]);
+  }, [adaptedClimate, adaptedSoil, field, priorities, regionTag]);
 
   const handleGenerate = useCallback(async () => {
     if (!field || !adaptedClimate) return;
+    if (generating || inFlightFieldRef.current === field.id) {
+      return;
+    }
+
+    inFlightFieldRef.current = field.id;
     setGenerating(true);
     setGenerateError(null);
     setGenerationStatus(null);
     setRejectedProposals([]);
+
+    const controller = new AbortController();
+    let clientTimedOut = false;
+    const timeoutId = setTimeout(() => {
+      clientTimedOut = true;
+      controller.abort();
+    }, DEFAULT_AI_TIMEOUT_MS);
+
     try {
       const res = await fetch("/api/rotations/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           fieldId: field.id,
           fieldName: field.name,
@@ -345,7 +347,7 @@ export default function RotationsPage() {
       if (data.proposals.length === 0) {
         setGenerationStatus(data.supportStatus ?? "unavailable");
         setGenerateError(
-          data.aiUnavailableReason ?? "Field-specific crop sequences are not yet available."
+          data.aiUnavailableReason ?? "Field-specific crop sequences could not be validated."
         );
         return;
       }
@@ -353,17 +355,30 @@ export default function RotationsPage() {
       const rawStrategies = data.proposals.map((p) => p.strategy);
       setFieldRotations(field.id, {
         strategies: rawStrategies,
-        generatedAt: new Date().toISOString(),
+        generatedAt: data.generatedAt ?? new Date().toISOString(),
         agGroup: data.classification.group,
         version: "1.0",
+        fieldId: field.id,
+        aiProvider: data.aiProvider,
+        aiModel: data.aiModel,
+        validationStatus: "passed",
+        usageMetadata: data.usageMetadata,
       });
       setGenerationStatus(data.supportStatus);
     } catch (err) {
-      setGenerateError(err instanceof Error ? err.message : "Network error");
+      if (clientTimedOut || (err instanceof Error && err.name === "AbortError")) {
+        setGenerateError(
+          `AI generation request timed out after ${Math.round(DEFAULT_AI_TIMEOUT_MS / 1000)} seconds. No automatic retries were sent.`
+        );
+      } else {
+        setGenerateError(err instanceof Error ? err.message : "Network error");
+      }
     } finally {
+      clearTimeout(timeoutId);
+      inFlightFieldRef.current = null;
       setGenerating(false);
     }
-  }, [field, adaptedClimate, adaptedSoil, priorities, regionTag, setFieldRotations]);
+  }, [field, adaptedClimate, adaptedSoil, priorities, regionTag, setFieldRotations, generating]);
 
   if (!isLoaded) {
     return <RotationsSkeleton />;
@@ -384,6 +399,25 @@ export default function RotationsPage() {
   }
 
   const hasGeneratedPlans = generatedResults.length > 0;
+  const savedMeta = field.generatedRotations;
+  const firstGenInfo = generatedResults[0]?.strategy.generationInfo;
+  const activeProvider = savedMeta?.aiProvider ?? firstGenInfo?.aiProvider;
+  const activeModel = savedMeta?.aiModel ?? firstGenInfo?.aiModel;
+  const activeGeneratedAt = savedMeta?.generatedAt ?? firstGenInfo?.generatedAt;
+  const activeUsage = savedMeta?.usageMetadata ?? firstGenInfo?.usageMetadata;
+
+  const climateTemp = adaptedClimate?.fullRecord.avgAnnualTemp;
+  const climatePrecip = adaptedClimate?.fullRecord.avgAnnualPrecip;
+  const gsPrecip = adaptedClimate?.stressMetrics.growingSeasonPrecip.avgTotalMm;
+  const dryDays = adaptedClimate?.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays;
+  const heatDays = adaptedClimate?.stressMetrics.summerHeatDays.avgDaysAboveThreshold;
+  const soilAwc = adaptedSoil?.aggregated.depth0_30cm.awc ?? null;
+  const soilOm = adaptedSoil?.aggregated.depth0_30cm.om ?? null;
+  const soilPh = adaptedSoil?.aggregated.depth0_30cm.ph ?? null;
+  const soilDrainage = adaptedSoil?.aggregated.drainage ?? null;
+  const soilSlope = adaptedSoil?.aggregated.slope ?? null;
+  const soilCoveragePct =
+    adaptedSoil?.dataCoverage.depth0_30cm.awc ?? adaptedSoil?.dataCoverage.slope ?? null;
 
   return (
     <div className="space-y-6">
@@ -391,12 +425,12 @@ export default function RotationsPage() {
       <div className="space-y-1">
         <h2 className="text-2xl font-serif font-bold text-foreground">Rotation Lab</h2>
         <p className="text-sm text-muted-foreground max-w-2xl">
-          Field-specific rotation planning driven by your field&apos;s climate regime, soil properties, and verified crop suitability.
+          AI-assisted, deterministically validated 3-year crop rotation planning tailored to your field&apos;s climate regime, soil properties, and verified crop suitability.
         </p>
         <p className="text-xs text-muted-foreground">
           Field: <strong className="text-foreground">{field.name}</strong> ({field.lat.toFixed(4)},{" "}
           {field.lon.toFixed(4)})
-          {detectedRegion ? ` · ${detectedRegion.label}` : ""}
+          {detectedRegion ? ` · ${detectedRegion.label}` : " · Outside documented US bounding boxes"}
         </p>
       </div>
 
@@ -430,7 +464,7 @@ export default function RotationsPage() {
       {/* Main Content */}
       {!loading && !error && adaptedClimate && fieldClassification && (
         <>
-          {/* 1. Field Agroecological Context & Plan Generation Bar */}
+          {/* 1. Field Agroecological Profile, Data Coverage Summary, & AI Plan Generation */}
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -474,17 +508,17 @@ export default function RotationsPage() {
                     {generating ? (
                       <>
                         <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        Generating...
+                        Generating Field-Specific Plans...
                       </>
                     ) : hasGeneratedPlans ? (
                       <>
                         <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                        Regenerate field plans
+                        Regenerate Field-Specific Plans
                       </>
                     ) : (
                       <>
                         <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                        Generate field-specific plans
+                        Generate Field-Specific Plans
                       </>
                     )}
                   </Button>
@@ -492,6 +526,7 @@ export default function RotationsPage() {
                     <Button
                       size="sm"
                       variant="outline"
+                      disabled={generating}
                       onClick={() => {
                         setFieldRotations(field.id, null);
                         setGenerateError(null);
@@ -507,50 +542,115 @@ export default function RotationsPage() {
             </CardHeader>
 
             <CardContent className="space-y-2.5 pt-0 text-xs">
+              {/* Climate & Soil Data Coverage Summary */}
+              <div className="grid gap-2 md:grid-cols-2">
+                <div className="rounded-md border border-border/70 bg-muted/25 px-3 py-2 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Database className="h-3.5 w-3.5 text-electric" />
+                      Climate Data Coverage (NASA POWER)
+                    </span>
+                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 border border-emerald-100">
+                      Available (~55 km grid)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Annual: {climateTemp !== null && climateTemp !== undefined ? `${climateTemp.toFixed(1)} °C` : "—"},{" "}
+                    {climatePrecip !== null && climatePrecip !== undefined ? `${climatePrecip.toFixed(0)} mm/yr` : "—"} ·
+                    May–Aug precip: {gsPrecip !== null && gsPrecip !== undefined ? `${gsPrecip.toFixed(0)} mm` : "—"} ·
+                    Summer dry spells: {dryDays !== null && dryDays !== undefined ? `${dryDays.toFixed(1)} d` : "—"} ·
+                    Heat days (&gt;35 °C): {heatDays !== null && heatDays !== undefined ? `${heatDays.toFixed(1)} d` : "—"}
+                  </p>
+                </div>
+
+                <div className="rounded-md border border-border/70 bg-muted/25 px-3 py-2 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Database className="h-3.5 w-3.5 text-electric" />
+                      Soil Data Coverage (USDA SSURGO 0–30 cm)
+                    </span>
+                    {adaptedSoil ? (
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 border border-emerald-100">
+                        {soilCoveragePct !== null ? `${soilCoveragePct.toFixed(0)}% coverage` : "Available"}
+                      </span>
+                    ) : (
+                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
+                        Unavailable (lower confidence)
+                      </span>
+                    )}
+                  </div>
+                  {adaptedSoil ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      AWC: {soilAwc !== null ? `${soilAwc.toFixed(3)} cm/cm` : "—"} · OM:{" "}
+                      {soilOm !== null ? `${soilOm.toFixed(1)}%` : "—"} · pH:{" "}
+                      {soilPh !== null ? soilPh.toFixed(1) : "—"} · Drainage: {soilDrainage ?? "—"} · Slope:{" "}
+                      {soilSlope !== null ? `${soilSlope.toFixed(1)}%` : "—"}
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-amber-800">
+                      No USDA SSURGO soil data available for these coordinates (US-only survey). Soil AWC, organic matter, pH, drainage, and slope are recorded as null and lower classification/scoring coverage.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Verified Crop Catalog Coverage */}
               <div className="flex items-start gap-2 rounded-md bg-muted/40 px-3 py-2 text-muted-foreground">
                 <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-electric" />
                 <div className="space-y-1">
                   {availableCropNames.length > 0 ? (
                     <p>
                       <strong className="text-foreground">
-                        {availableCropNames.length} verified crops supported for this group
+                        {availableCropNames.length} locally verified crops supported for group{" "}
+                        <code className="font-mono text-[11px]">{fieldClassification.group}</code>
                         {detectedRegion ? ` & ${detectedRegion.label}` : ""}:
                       </strong>{" "}
                       {availableCropNames.join(", ")}.
                     </p>
                   ) : (
-                    <p>
-                      <strong className="text-foreground">
-                        Local crop catalog coverage pending:
-                      </strong>{" "}
-                      No verified crop records in the catalog currently match agroecological group{" "}
-                      <code className="font-mono text-[11px]">{fieldClassification.group}</code>
-                      {detectedRegion
-                        ? ` in ${detectedRegion.label}`
-                        : " at these coordinates"}
-                      . Locally supported 3-year crop sequences cannot yet be assembled without verified local crop data.
-                    </p>
+                    <div className="space-y-1">
+                      <p>
+                        <strong className="text-foreground">
+                          Verified crop catalog unavailable for this location:
+                        </strong>{" "}
+                        No verified crop records in the catalog currently match agroecological group{" "}
+                        <code className="font-mono text-[11px]">{fieldClassification.group}</code>
+                        {detectedRegion
+                          ? ` in ${detectedRegion.label}`
+                          : ` at (${field.lat.toFixed(4)}, ${field.lon.toFixed(4)})`}
+                        . Fallo does not display predefined or US reference crop rotations for unsupported regions.
+                      </p>
+                      <p className="text-[11px]">
+                        <strong className="text-foreground">Requirements for global rotation support here:</strong>{" "}
+                        (1) Global agroecological zone classification (FAO/IIASA GAEZ v5 thermal &amp; moisture regimes), (2) Global soil profiles via ISRIC SoilGrids WCS/WebDAV (0–30 cm sand/silt/clay, organic carbon, pH, bulk density, and derived AWC), and (3) Regionally verified crop calendars, drought/heat thresholds, and host-disease rules from national/international agricultural research institutes.
+                      </p>
+                    </div>
                   )}
 
                   {!hasGeneratedPlans && availableCropNames.length > 0 && !generateError && (
                     <p className="text-[11px]">
-                      Field-specific 3-year crop sequences have not been generated yet. Configure a runtime AI provider (<code className="font-mono">FALLO_AI_PROVIDER</code> and{" "}
-                      <code className="font-mono">FALLO_AI_API_KEY</code>) to assemble and deterministically validate custom 3-year sequences from the verified crops above.
+                      Click <strong className="text-foreground">Generate Field-Specific Plans</strong> to send one AI request that proposes and deterministically validates three 3-year crop sequences (Soil Health Building, Water Resilience, Crop Diversity &amp; Pest Break) using only the verified crops above.
                     </p>
                   )}
                 </div>
               </div>
 
               {generateError && (
-                <div className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800 border border-amber-200">
-                  {generateError}
+                <div className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800 border border-amber-200 space-y-1">
+                  <p className="font-semibold">AI plan generation notice:</p>
+                  <p>{generateError}</p>
+                  {hasGeneratedPlans && (
+                    <p className="text-emerald-800 font-medium">
+                      Your previously validated AI-generated plans for {field.name} remain preserved below.
+                    </p>
+                  )}
                 </div>
               )}
 
               {rejectedProposals.length > 0 && (
                 <div className="rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 border border-red-100 space-y-1">
                   <p className="font-semibold">
-                    Rejected invalid AI proposal{rejectedProposals.length > 1 ? "s" : ""}:
+                    Rejected invalid AI proposal{rejectedProposals.length > 1 ? "s" : ""} (failed deterministic validation):
                   </p>
                   <ul className="list-disc list-inside space-y-0.5">
                     {rejectedProposals.map((r) => (
@@ -562,34 +662,87 @@ export default function RotationsPage() {
                 </div>
               )}
 
-              {generationStatus && !generateError && hasGeneratedPlans && (
-                <div className="rounded-md bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700 border border-emerald-100">
-                  Validated field-specific plans active ({generationStatus}).
+              {/* Provenance & Real Token Usage Metadata Banner (when AI plans are active) */}
+              {hasGeneratedPlans && (
+                <div className="rounded-md bg-emerald-50/90 px-3 py-2 text-[11px] text-emerald-800 border border-emerald-200 flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700 shrink-0" />
+                    <span className="font-semibold">
+                      Deterministically validated AI-generated plans active
+                    </span>
+                    {activeProvider && (
+                      <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
+                        provider: {activeProvider}
+                      </span>
+                    )}
+                    {activeModel && (
+                      <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
+                        model: {activeModel}
+                      </span>
+                    )}
+                    <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
+                      validation: passed
+                    </span>
+                    {generationStatus && (
+                      <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
+                        status: {generationStatus}
+                      </span>
+                    )}
+                    {activeGeneratedAt && (
+                      <span className="text-[10px] text-emerald-700">
+                        · Generated {new Date(activeGeneratedAt).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+
+                  {activeUsage && (
+                    <div className="flex items-center gap-2 font-mono text-[10px] text-emerald-900 bg-white/80 px-2 py-0.5 rounded border border-emerald-200">
+                      <span>Tokens:</span>
+                      {typeof activeUsage.promptTokenCount === "number" && (
+                        <span>in={activeUsage.promptTokenCount}</span>
+                      )}
+                      {typeof activeUsage.candidatesTokenCount === "number" && (
+                        <span>out={activeUsage.candidatesTokenCount}</span>
+                      )}
+                      {typeof activeUsage.thoughtsTokenCount === "number" && (
+                        <span>thought={activeUsage.thoughtsTokenCount}</span>
+                      )}
+                      {typeof activeUsage.totalTokenCount === "number" && (
+                        <span>total={activeUsage.totalTokenCount}</span>
+                      )}
+                      {typeof activeUsage.estimatedCostUsd === "number" && (
+                        <span>(~${activeUsage.estimatedCostUsd.toFixed(4)})</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* 2A. When Validated Field-Specific Rotations Exist: Show Them as Primary */}
+          {/* 2. Farmer Priority Sliders — Set Weights Before Generation or Re-Rank Validated AI Plans Locally */}
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-electric" />
+                <CardTitle className="text-sm font-semibold text-foreground">
+                  Farmer Priority Weights
+                </CardTitle>
+              </div>
+              <CardDescription className="text-xs">
+                {hasGeneratedPlans
+                  ? "Weight the five suitability factors for your operation. Validated AI-generated plans re-score and re-rank immediately without making a new model call."
+                  : "Set your relative priority weights across the five suitability factors before generating field-specific plans."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <PrioritySliders priorities={priorities} onChange={setPriorities} />
+            </CardContent>
+          </Card>
+
+          {/* 3A. After Generation: Display ONLY Validated AI-Generated 3-Year Plans */}
           {hasGeneratedPlans && (
             <div className="space-y-6">
-              <Card>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center gap-2">
-                    <SlidersHorizontal className="h-4 w-4 text-electric" />
-                    <CardTitle className="text-sm font-semibold text-foreground">
-                      Adjust your priorities
-                    </CardTitle>
-                  </div>
-                  <CardDescription className="text-xs">
-                    Weight the five suitability factors for your operation. Scores update immediately.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <PrioritySliders priorities={priorities} onChange={setPriorities} />
-                </CardContent>
-              </Card>
-
               <div className="grid gap-4 lg:grid-cols-3">
                 {generatedResults.map((result) => (
                   <StrategyCard
@@ -606,7 +759,7 @@ export default function RotationsPage() {
                   <div className="flex items-center gap-2">
                     <BarChart3 className="h-4 w-4 text-electric" />
                     <CardTitle className="text-sm font-semibold text-foreground">
-                      Factor comparison
+                      Factor comparison (validated AI plans)
                     </CardTitle>
                   </div>
                 </CardHeader>
@@ -617,19 +770,17 @@ export default function RotationsPage() {
             </div>
           )}
 
-          {/* 2B. When No Field-Specific Crop Sequences Have Been Generated Yet: Show the 3 Strategy Objectives */}
+          {/* 3B. Before Generation: Display Only Strategy Planning Objectives (No Predefined 3-Year Sequences) */}
           {!hasGeneratedPlans && (
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div>
                   <h3 className="text-sm font-semibold text-foreground">
-                    Target Strategy Objectives for {field.name}
+                    Planning Objectives for {field.name} (Goals — Not Completed Crop Recommendations)
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Three core rotation objectives tailored to this field&apos;s recorded climate and soil conditions.{" "}
-                    {availableCropNames.length > 0
-                      ? "Specific 3-year crop sequences will be populated once a runtime AI provider is configured."
-                      : "Locally supported 3-year crop sequences are not yet available for this location."}
+                    Fallo does not display predefined static 3-year crop rotations. Below are the three planning objectives that will guide AI generation once you click{" "}
+                    <strong className="text-foreground">Generate Field-Specific Plans</strong>.
                   </p>
                 </div>
               </div>
@@ -663,7 +814,7 @@ export default function RotationsPage() {
                   return (
                     <Card key={obj.archetype} className={`h-full flex flex-col ${accentClass}`}>
                       <CardHeader className="pb-2.5 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
                           <div className="flex items-center gap-2">
                             <span
                               className={`inline-flex h-7 w-7 items-center justify-center rounded-md ${badgeClass}`}
@@ -674,6 +825,9 @@ export default function RotationsPage() {
                               {obj.name}
                             </CardTitle>
                           </div>
+                          <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 border border-amber-200">
+                            No AI-generated plan yet
+                          </span>
                         </div>
                         <CardDescription className="text-xs leading-relaxed text-muted-foreground">
                           {obj.objective}
@@ -691,157 +845,14 @@ export default function RotationsPage() {
 
                         <div className="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] text-muted-foreground mt-auto">
                           {availableCropNames.length > 0
-                            ? "3-year crop sequence: Pending runtime AI provider"
-                            : "3-year crop sequence: Local crop catalog unavailable"}
+                            ? "Planning goal only — click Generate Field-Specific Plans above to generate and validate a 3-year crop sequence."
+                            : "No AI-generated plan yet — verified local crop catalog coverage is required before 3-year sequences can be generated."}
                         </div>
                       </CardContent>
                     </Card>
                   );
                 })}
               </div>
-            </div>
-          )}
-
-          {/* 3. Secondary Reference Templates — Shown Directly Only When Regionally Applicable, Otherwise Collapsed */}
-          {referenceResults.length > 0 && (
-            <div className="space-y-4 pt-2 border-t border-border/60">
-              {referenceTemplatesApplicable ? (
-                <>
-                  <div className="flex items-start justify-between gap-4 flex-wrap">
-                    <div className="space-y-0.5">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-semibold text-foreground">
-                          Regional Reference Templates ({detectedRegion?.label})
-                        </h3>
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                          Secondary reference material
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Predefined reference rotations using crops documented for this agroecological group and region, scored against {field.name}&apos;s climate and soil data.
-                      </p>
-                    </div>
-                  </div>
-
-                  {!hasGeneratedPlans && (
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <div className="flex items-center gap-2">
-                          <SlidersHorizontal className="h-4 w-4 text-electric" />
-                          <CardTitle className="text-sm font-semibold text-foreground">
-                            Adjust your priorities
-                          </CardTitle>
-                        </div>
-                        <CardDescription className="text-xs">
-                          Change the sliders to weight the five suitability factors. Reference scores recalculate immediately.
-                        </CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <PrioritySliders priorities={priorities} onChange={setPriorities} />
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  <div className="grid gap-4 lg:grid-cols-3">
-                    {referenceResults.map((result) => (
-                      <StrategyCard
-                        key={result.strategy.id}
-                        result={result}
-                        climate={adaptedClimate}
-                        soil={adaptedSoil}
-                      />
-                    ))}
-                  </div>
-
-                  {!hasGeneratedPlans && (
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <div className="flex items-center gap-2">
-                          <BarChart3 className="h-4 w-4 text-electric" />
-                          <CardTitle className="text-sm font-semibold text-foreground">
-                            Reference factor comparison
-                          </CardTitle>
-                        </div>
-                      </CardHeader>
-                      <CardContent>
-                        <FactorComparison results={referenceResults} />
-                      </CardContent>
-                    </Card>
-                  )}
-                </>
-              ) : (
-                <div className="space-y-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowNonLocalReference(!showNonLocalReference)}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    {showNonLocalReference ? (
-                      <>
-                        <ChevronUp className="h-3.5 w-3.5" />
-                        Hide non-local reference templates (development & scoring preview)
-                      </>
-                    ) : (
-                      <>
-                        <ChevronDown className="h-3.5 w-3.5" />
-                        View temperate-humid reference templates (non-local reference material)
-                      </>
-                    )}
-                  </button>
-
-                  {showNonLocalReference && (
-                    <div className="space-y-4">
-                      <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-800">
-                        <strong>Reference only — not personalized for this field:</strong> These static reference templates include crops documented for temperate-humid US Southeast production and are not fully verified for{" "}
-                        {detectedRegion ? detectedRegion.label : "this location"}. They are provided strictly as secondary reference material to inspect the deterministic scoring engine.
-                      </div>
-
-                      {!hasGeneratedPlans && (
-                        <Card>
-                          <CardHeader className="pb-2">
-                            <div className="flex items-center gap-2">
-                              <SlidersHorizontal className="h-4 w-4 text-electric" />
-                              <CardTitle className="text-sm font-semibold text-foreground">
-                                Adjust priority weights
-                              </CardTitle>
-                            </div>
-                          </CardHeader>
-                          <CardContent>
-                            <PrioritySliders priorities={priorities} onChange={setPriorities} />
-                          </CardContent>
-                        </Card>
-                      )}
-
-                      <div className="grid gap-4 lg:grid-cols-3">
-                        {referenceResults.map((result) => (
-                          <StrategyCard
-                            key={result.strategy.id}
-                            result={result}
-                            climate={adaptedClimate}
-                            soil={adaptedSoil}
-                          />
-                        ))}
-                      </div>
-
-                      {!hasGeneratedPlans && (
-                        <Card>
-                          <CardHeader className="pb-2">
-                            <div className="flex items-center gap-2">
-                              <BarChart3 className="h-4 w-4 text-electric" />
-                              <CardTitle className="text-sm font-semibold text-foreground">
-                                Factor comparison (reference templates)
-                              </CardTitle>
-                            </div>
-                          </CardHeader>
-                          <CardContent>
-                            <FactorComparison results={referenceResults} />
-                          </CardContent>
-                        </Card>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
 

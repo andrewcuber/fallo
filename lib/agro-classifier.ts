@@ -210,9 +210,18 @@ export function classifyAgGroup(
   // If nothing matched, but we have core data, mark as unknown with low confidence
   // that we genuinely cannot assign a known group.
   if (group === "unknown") {
-    reasons.push(
-      `Climate profile (temp ${avgAnnualTemp.toFixed(1)} °C, precip ${avgAnnualPrecip.toFixed(0)} mm) does not match any currently defined agricultural group.`
-    );
+    if (avgAnnualTemp > 25) {
+      reasons.push(
+        `Tropical thermal regime (annual average ${avgAnnualTemp.toFixed(1)} °C, annual precip ${avgAnnualPrecip.toFixed(0)} mm) exceeds temperate/subtropical thresholds (≤ 25 °C). Tropical savanna/monsoon agroecological groups and verified local rainy/dry-season crop calendars are not yet defined in the current catalog.`
+      );
+      limitations.push(
+        "Global tropical coverage requires integrating FAO/IIASA GAEZ v5 agro-ecological zones, ISRIC SoilGrids global soil profiles, and regional research-backed crop calendars (e.g., sorghum, pearl millet, cowpea, groundnut, sesame)."
+      );
+    } else {
+      reasons.push(
+        `Climate profile (temp ${avgAnnualTemp.toFixed(1)} °C, precip ${avgAnnualPrecip.toFixed(0)} mm) does not match any currently defined agricultural group.`
+      );
+    }
     confidence = "low";
   }
 

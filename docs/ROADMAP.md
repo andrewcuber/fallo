@@ -219,6 +219,10 @@
   - Streamlined strategy overview cards (~10-second read) and strategy detail pages (`Sources & Methodology` and detailed factor rubrics collapsed by default; duplicate sections removed).
 - [x] **Long-Term Agroecological Grouping Architecture Recorded:**
   - Documented the multi-factor direction (climate/temperature, rainfall seasonality, soil texture/drainage, water/irrigation assumptions, growing-season length/elevation) while preserving the honest provisional climate-based classifier until source-backed soil thresholds are integrated.
+- [x] **Gemini Enterprise Agent Platform Runtime Integration & Removal of Static Rotations from Farmer UI:**
+  - Added `GeminiEnterpriseProvider` and `resolveRuntimeAIProvider()` in `lib/rotation-generator.ts` using `@google/genai` (`new GoogleGenAI({ enterprise: true, project, location, httpOptions })`) and Application Default Credentials (ADC).
+  - Diagnosed and resolved the 30-second timeout by setting a coordinated 120-second (`120_000` ms) timeout across the SDK (`httpOptions.timeout`), provider `AbortController` (`config.abortSignal`), Next.js route (`export const maxDuration = 120`), and client `fetch`, while configuring `thinkingConfig: { thinkingLevel: "LOW" }`, removing unsupported `temperature`/`topP`/`topK` parameters, and disabling automatic SDK retries (`retryOptions: { attempts: 1 }`).
+  - Removed all predefined static 3-year rotations from farmer-facing pages (`/field/[id]/rotations` and `/field/[id]/rotations/[strategyId]`). Before generation, only field agroecological context, data coverage, available crops, priority sliders, and the 3 planning objectives (`No AI-generated plan yet`) are shown; after generation, only deterministically validated AI-generated plans for that field (`scoreVerifiedAiStrategies`) with provenance and real token usage metadata are displayed.
 
 **Inspection Checkpoint:**
 - Review scoring logic for scientific credibility. Verified: all scores labeled as heuristics; no invented agronomic weights; disease-sequence penalties are documented.

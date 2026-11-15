@@ -17,7 +17,6 @@ import {
   Clock,
   Calendar,
   Sparkles,
-  Info,
   Trophy,
   ChevronDown,
   ChevronUp,
@@ -294,30 +293,54 @@ export function StrategyDetail({ result }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Generation source banner */}
+      {/* Generation provenance & token usage banner */}
       {strategy.generationInfo && (
-        <div
-          className={`rounded-md border px-3 py-2 text-xs space-y-1 ${
-            strategy.generationInfo.source === "ai-assisted"
-              ? "bg-purple-50 border-purple-100 text-purple-800"
-              : "bg-card border-border text-muted-foreground"
-          }`}
-        >
-          <div className="flex items-center gap-1.5 font-semibold">
-            {strategy.generationInfo.source === "ai-assisted" ? (
-              <>
-                <Sparkles className="h-3.5 w-3.5" />
-                Field-specific AI-assisted proposal (deterministically validated)
-              </>
-            ) : (
-              <>
-                <Info className="h-3.5 w-3.5" />
-                Regional reference template
-              </>
-            )}
+        <div className="rounded-md border bg-purple-50 border-purple-100 text-purple-900 px-3 py-2 text-xs space-y-1.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 font-semibold text-purple-800">
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Field-specific AI-assisted proposal (deterministically validated)</span>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap font-mono text-[10px]">
+              {strategy.generationInfo.aiProvider && (
+                <span className="rounded bg-white/80 px-1.5 py-0.5 border border-purple-200">
+                  provider: {strategy.generationInfo.aiProvider}
+                </span>
+              )}
+              {strategy.generationInfo.aiModel && (
+                <span className="rounded bg-white/80 px-1.5 py-0.5 border border-purple-200">
+                  model: {strategy.generationInfo.aiModel}
+                </span>
+              )}
+              {strategy.generationInfo.agGroup && (
+                <span className="rounded bg-white/80 px-1.5 py-0.5 border border-purple-200">
+                  group: {strategy.generationInfo.agGroup}
+                </span>
+              )}
+              <span className="rounded bg-white/80 px-1.5 py-0.5 border border-purple-200">
+                validation: {strategy.generationInfo.validationStatus ?? "passed"}
+              </span>
+            </div>
           </div>
           {strategy.generationInfo.rationale && (
-            <p className="text-[11px]">{strategy.generationInfo.rationale}</p>
+            <p className="text-[11px] text-purple-800/90">{strategy.generationInfo.rationale}</p>
+          )}
+          {strategy.generationInfo.usageMetadata && (
+            <div className="flex items-center gap-2 font-mono text-[10px] text-purple-800/90 pt-0.5">
+              <span>Token usage:</span>
+              {typeof strategy.generationInfo.usageMetadata.promptTokenCount === "number" && (
+                <span>input={strategy.generationInfo.usageMetadata.promptTokenCount}</span>
+              )}
+              {typeof strategy.generationInfo.usageMetadata.candidatesTokenCount === "number" && (
+                <span>output={strategy.generationInfo.usageMetadata.candidatesTokenCount}</span>
+              )}
+              {typeof strategy.generationInfo.usageMetadata.thoughtsTokenCount === "number" && (
+                <span>thought={strategy.generationInfo.usageMetadata.thoughtsTokenCount}</span>
+              )}
+              {typeof strategy.generationInfo.usageMetadata.totalTokenCount === "number" && (
+                <span>total={strategy.generationInfo.usageMetadata.totalTokenCount}</span>
+              )}
+            </div>
           )}
         </div>
       )}

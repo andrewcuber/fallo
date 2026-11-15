@@ -157,6 +157,35 @@ export function validateProposal(
     );
   }
 
+  // ── 2b. Regional applicability ──
+  if (ctx.regionTag) {
+    const wrongRegionCrops = Array.from(
+      new Set(
+        allCrops
+          .filter((c): c is Crop => !!c)
+          .filter((c) => {
+            if (!c.supportedRegions || c.supportedRegions.length === 0) return false;
+            return !c.supportedRegions.includes(ctx.regionTag!);
+          })
+          .map((c) => c.id)
+      )
+    );
+    const passRegion = wrongRegionCrops.length === 0;
+    checks.push({
+      name: "Regional applicability",
+      passed: passRegion,
+      severity: passRegion ? "info" : "error",
+      message: passRegion
+        ? `All crops are documented for region "${ctx.regionTag}".`
+        : `Crops not documented for region "${ctx.regionTag}": ${wrongRegionCrops.join(", ")}`,
+    });
+    if (!passRegion) {
+      errors.push(
+        `Crops not documented for region "${ctx.regionTag}": ${wrongRegionCrops.join(", ")}`
+      );
+    }
+  }
+
   // ── 3. Required properties present ──
   const missingPropsCrops = allCrops
     .filter((c): c is Crop => !!c)
