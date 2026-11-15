@@ -231,7 +231,7 @@ function SourcesAndMethodologySection({ result }: { result: StrategyResult }) {
                 <strong>Climate inputs:</strong> NASA POWER Agroclimatology Daily API (0.5° grid, ~55 km regional context).
               </li>
               <li>
-                <strong>Soil inputs:</strong> USDA NRCS SSURGO depth-weighted 0–30 cm map-unit component averages (US) or FAO HWSD v2.2 &amp; ISRIC SoilGrids v2.0 estimated 0–30 cm topsoil data (global).
+                <strong>Soil inputs:</strong> USDA NRCS SSURGO depth-weighted 0–30 cm map-unit component averages (US) or macro-regional 0–30 cm topsoil reference estimates compiled from published FAO HWSD v2.2 &amp; ISRIC SoilGrids v2.0 regional summaries (outside SSURGO coverage).
               </li>
               <li>
                 <strong>Data Coverage:</strong> Tracked separately from suitability fit so missing inputs never silently penalize or inflate scores.
@@ -292,12 +292,12 @@ export function StrategyDetail({ result }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* AI-generated plan rationale banner */}
+      {/* SI-generated plan rationale banner */}
       {strategy.generationInfo && (
         <div className="rounded-md border bg-purple-50 border-purple-100 text-purple-900 px-3 py-2 text-xs space-y-1">
           <div className="flex items-center gap-1.5 font-semibold text-purple-800">
             <Sparkles className="h-3.5 w-3.5" />
-            <span>AI-generated crop rotation plan</span>
+            <span>SI-generated crop rotation plan</span>
           </div>
           {strategy.generationInfo.rationale && (
             <p className="text-[11px] text-purple-800/90 leading-relaxed">

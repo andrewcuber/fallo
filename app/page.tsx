@@ -133,7 +133,7 @@ export default function OverviewPage() {
               <CardTitle>Soil Profile</CardTitle>
               <CardDescription>
                 Review soil texture, drainage, and organic matter from USDA
-                SSURGO or ISRIC SoilGrids.
+                SSURGO surveys or regional topsoil reference profiles.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -145,8 +145,8 @@ export default function OverviewPage() {
               </div>
               <CardTitle>Rotation Lab</CardTitle>
               <CardDescription>
-                Compare rotation strategies side by side and adjust priorities to
-                see what fits your farm.
+                Generate and compare Super Intelligence (SI)-assisted 3-year
+                crop rotation plans tailored to your farm&apos;s priorities.
               </CardDescription>
             </CardHeader>
           </Card>

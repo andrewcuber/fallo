@@ -318,29 +318,8 @@ export async function GET(request: NextRequest) {
       wrbSoilGroup: fb.wrbSoilGroup,
       mapUnit: fb.mapUnit,
       totalComponentPercent: fb.totalComponentPercent,
-      components: [
-        {
-          cokey: fb.mapUnit.mukey,
-          name: fb.wrbSoilGroup,
-          percent: 100,
-          kind: "FAO HWSD v2.2 / WRB Reference Soil Group",
-          majcompflag: "Yes",
-          drainage: fb.aggregated.drainage,
-          slope: fb.aggregated.slope,
-          horizons: [
-            {
-              depthTop: 0,
-              depthBottom: 30,
-              sand: fb.aggregated.depth0_30cm.sand,
-              silt: fb.aggregated.depth0_30cm.silt,
-              clay: fb.aggregated.depth0_30cm.clay,
-              om: fb.aggregated.depth0_30cm.om,
-              ph: fb.aggregated.depth0_30cm.ph,
-              awc: fb.aggregated.depth0_30cm.awc,
-            },
-          ],
-        },
-      ],
+      // Polygon component records only exist for USDA SSURGO surveys; do not synthesize fake survey components for regional reference estimates.
+      components: [],
       aggregated: fb.aggregated,
       uncertainty: fb.uncertainty,
       propertySources: fb.propertySources,
@@ -351,7 +330,7 @@ export async function GET(request: NextRequest) {
 
   if (!isInsideUS) {
     const response = buildGlobalFallbackResponse(
-      `Location (${geo.countryName} — ${geo.admin1Name}) is outside USDA SSURGO (US-only) coverage. Using regional reference and estimated 0–30 cm topsoil data from FAO HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m).`
+      `Location (${geo.countryName} — ${geo.admin1Name}) is outside USDA SSURGO (US-only) survey coverage. Displaying a macro-regional 0–30 cm topsoil reference estimate compiled from published FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries (not a coordinate-specific spatial extraction).`
     );
     cache.set(cacheKey, response);
     return NextResponse.json(response);
@@ -370,7 +349,7 @@ export async function GET(request: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     const response = buildGlobalFallbackResponse(
-      `USDA SSURGO spatial query did not complete (${message}). Using regional reference and estimated 0–30 cm topsoil data from FAO HWSD v2.2 & ISRIC SoilGrids v2.0.`
+      `USDA SSURGO spatial query did not complete (${message}). Displaying a macro-regional 0–30 cm topsoil reference estimate from FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries.`
     );
     cache.set(cacheKey, response);
     return NextResponse.json(response);
@@ -379,7 +358,7 @@ export async function GET(request: NextRequest) {
   try {
     if (!mukeyRows || mukeyRows.length === 0) {
       const response = buildGlobalFallbackResponse(
-        "No USDA SSURGO map unit found at this coordinate. Using regional reference and estimated 0–30 cm topsoil data from FAO HWSD v2.2 & ISRIC SoilGrids v2.0."
+        "No USDA SSURGO map unit found at this coordinate. Displaying a macro-regional 0–30 cm topsoil reference estimate from FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries."
       );
       cache.set(cacheKey, response);
       return NextResponse.json(response);

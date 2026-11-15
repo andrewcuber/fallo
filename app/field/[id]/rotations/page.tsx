@@ -24,7 +24,16 @@ import {
   evaluateFieldCropEvidenceLevel,
   cropLibrary,
 } from "@/lib/rotation-scoring";
-import { classifyAgGroup, type AgGroup } from "@/lib/agro-classifier";
+import {
+  classifyAgGroup,
+  AG_GROUP_LABELS,
+  formatAgGroupLabel,
+  formatAgGroupDescription,
+  formatMoistureZoneLabel,
+  formatMoistureZoneDescription,
+  formatWaterRegimeLabel,
+  formatWaterRegimeDescription,
+} from "@/lib/agro-classifier";
 import {
   DEFAULT_AI_TIMEOUT_MS,
   type GenerationResult,
@@ -145,23 +154,6 @@ interface SoilData {
   limitations: string[];
   cached?: boolean;
 }
-
-const AG_GROUP_LABELS: Record<AgGroup, string> = {
-  temperate_humid: "Temperate Humid",
-  semi_arid_temperate: "Semi-Arid Temperate",
-  subtropical_humid: "Subtropical Humid",
-  temperate_mediterranean: "Temperate Mediterranean",
-  tropical_humid: "Tropical Humid",
-  tropical_subhumid: "Tropical Subhumid",
-  tropical_savanna: "Tropical Savanna (Sudano-Sahelian / Wet-Dry)",
-  tropical_monsoon: "Tropical Monsoon",
-  tropical_semi_arid: "Tropical Semi-Arid (Sahelian / Dry Savanna)",
-  arid: "Arid (Irrigation-Dependent)",
-  continental: "Continental",
-  boreal: "Boreal / Sub-Boreal",
-  highland_montane: "Highland / Montane",
-  unknown: "Unclassified / Insufficient Data",
-};
 
 function adaptClimate(data: ClimateData | null): import("@/lib/rotation-scoring").ClimateData | null {
   if (!data) return null;
@@ -418,7 +410,7 @@ export default function RotationsPage() {
       <div className="space-y-1">
         <h2 className="text-2xl font-serif font-bold text-foreground">Rotation Lab</h2>
         <p className="text-sm text-muted-foreground max-w-2xl">
-          AI-generated 3-year crop rotation planning tailored to your field&apos;s climate regime, soil properties, and local crop suitability.
+          Super Intelligence (SI)-generated 3-year crop rotation planning tailored to your field&apos;s climate regime, soil properties, and local crop suitability.
         </p>
         <p className="text-xs text-muted-foreground">
           Field: <strong className="text-foreground">{field.name}</strong> ({field.lat.toFixed(4)},{" "}
@@ -460,20 +452,17 @@ export default function RotationsPage() {
       {/* Main Content */}
       {!loading && !error && adaptedClimate && fieldClassification && (
         <>
-          {/* 1. Field Agroecological Profile, Data Coverage Summary, & AI Plan Generation */}
+          {/* 1. Field Agroecological Profile, Data Coverage Summary, & SI Plan Generation */}
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   <div className="flex items-center gap-2 flex-wrap">
                     <Compass className="h-4 w-4 text-electric" />
                     <CardTitle className="text-sm font-semibold text-foreground">
                       Field Agroecological Profile:{" "}
                       {AG_GROUP_LABELS[fieldClassification.group]}
                     </CardTitle>
-                    <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                      {fieldClassification.group}
-                    </span>
                     <span
                       className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
                         fieldClassification.confidence === "high"
@@ -483,7 +472,7 @@ export default function RotationsPage() {
                           : "bg-red-50 text-red-700 border border-red-100"
                       }`}
                     >
-                      {fieldClassification.confidence} confidence (GAEZ v5 thermal/moisture)
+                      {fieldClassification.confidence} confidence
                     </span>
                     {fieldEvidence && (
                       <span
@@ -499,19 +488,27 @@ export default function RotationsPage() {
                       </span>
                     )}
                   </div>
-                  <CardDescription className="text-xs">
+                  <CardDescription className="text-xs leading-relaxed">
+                    {formatAgGroupDescription(fieldClassification.group)}{" "}
                     {fieldClassification.reasons[0] ??
-                      "Classified from NASA POWER / GAEZ v5 climate history and recorded soil context."}
-                    {fieldClassification.estimatedLgpDays !== null &&
-                      fieldClassification.estimatedLgpDays !== undefined && (
-                        <>
-                          {" "}
-                          · GAEZ v5 LGP: <strong>{fieldClassification.estimatedLgpDays} days</strong>{" "}
-                          ({fieldClassification.gaezMoistureZone}) · Water regime:{" "}
-                          <strong>{fieldClassification.waterRegime?.replace(/_/g, " ")}</strong>
-                        </>
-                      )}
+                      "Classified from NASA POWER climate history and recorded soil context."}
                   </CardDescription>
+                  {fieldClassification.estimatedLgpDays !== null &&
+                    fieldClassification.estimatedLgpDays !== undefined && (
+                      <div className="rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] text-muted-foreground space-y-0.5">
+                        <p>
+                          <strong className="text-foreground">Growing season &amp; moisture:</strong>{" "}
+                          {formatMoistureZoneLabel(fieldClassification.gaezMoistureZone)} (~
+                          {fieldClassification.estimatedLgpDays} moist growing-period days/year) ·{" "}
+                          <strong className="text-foreground">Water regime:</strong>{" "}
+                          {formatWaterRegimeLabel(fieldClassification.waterRegime)}
+                        </p>
+                        <p className="text-muted-foreground/90">
+                          {formatMoistureZoneDescription(fieldClassification.gaezMoistureZone)}{" "}
+                          {formatWaterRegimeDescription(fieldClassification.waterRegime)}
+                        </p>
+                      </div>
+                    )}
                   {geoContext?.disputedOrBorderNote && (
                     <p className="text-[11px] text-muted-foreground flex items-center gap-1 pt-0.5">
                       <Globe className="h-3 w-3 text-electric shrink-0" />
@@ -586,19 +583,23 @@ export default function RotationsPage() {
                 </div>
 
                 <div className="rounded-md border border-border/70 bg-muted/25 px-3 py-2 space-y-1">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <span className="font-semibold text-foreground flex items-center gap-1.5">
                       <Database className="h-3.5 w-3.5 text-electric" />
-                      Soil Data Coverage (
                       {adaptedSoil?.source.toUpperCase().includes("SSURGO")
-                        ? "USDA SSURGO 0–30 cm"
-                        : "FAO HWSD v2.2 & ISRIC SoilGrids 0–30 cm"}
-                      )
+                        ? "Soil Data Coverage (USDA SSURGO 0–30 cm Survey)"
+                        : "Soil Context (Regional Topsoil Reference Estimate)"}
                     </span>
                     {adaptedSoil ? (
-                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 border border-emerald-100">
-                        {soilCoveragePct !== null ? `${soilCoveragePct.toFixed(0)}% coverage` : "Available"}
-                      </span>
+                      adaptedSoil.source.toUpperCase().includes("SSURGO") ? (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 border border-emerald-100">
+                          {soilCoveragePct !== null ? `${soilCoveragePct.toFixed(0)}% map-unit coverage` : "Survey available"}
+                        </span>
+                      ) : (
+                        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
+                          Regional reference (not coordinate-extracted)
+                        </span>
+                      )
                     ) : (
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
                         Unavailable (lower confidence)
@@ -611,7 +612,13 @@ export default function RotationsPage() {
                       {soilOm !== null ? `${soilOm.toFixed(1)}%` : "—"} · pH:{" "}
                       {soilPh !== null ? soilPh.toFixed(1) : "—"} · Drainage: {soilDrainage ?? "—"} · Slope:{" "}
                       {soilSlope !== null ? `${soilSlope.toFixed(1)}%` : "—"}
-                      {soil?.mapUnit?.name ? ` · Unit: ${soil.mapUnit.name}` : ""}
+                      {soil?.mapUnit?.name
+                        ? ` · ${
+                            adaptedSoil.source.toUpperCase().includes("SSURGO")
+                              ? "Unit"
+                              : "Reference group"
+                          }: ${soil.mapUnit.name}`
+                        : ""}
                     </p>
                   ) : (
                     <p className="text-[11px] text-amber-800">
@@ -628,9 +635,9 @@ export default function RotationsPage() {
                   {availableCropNames.length > 0 ? (
                     <p>
                       <strong className="text-foreground">
-                        {availableCropNames.length} locally verified crops supported for group{" "}
-                        <code className="font-mono text-[11px]">{fieldClassification.group}</code>
-                        {detectedRegion ? ` & ${detectedRegion.label}` : ""}:
+                        {availableCropNames.length} locally verified crops supported for{" "}
+                        {formatAgGroupLabel(fieldClassification.group)}
+                        {detectedRegion ? ` (${detectedRegion.label})` : ""}:
                       </strong>{" "}
                       {availableCropNames.join(", ")}.
                     </p>
@@ -640,23 +647,26 @@ export default function RotationsPage() {
                         <strong className="text-foreground">
                           Verified crop catalog unavailable for this location:
                         </strong>{" "}
-                        No verified crop records in the catalog currently match agroecological group{" "}
-                        <code className="font-mono text-[11px]">{fieldClassification.group}</code>
+                        No verified crop records in the catalog currently match the{" "}
+                        <strong className="text-foreground">
+                          {formatAgGroupLabel(fieldClassification.group)}
+                        </strong>{" "}
+                        climate zone
                         {detectedRegion
                           ? ` in ${detectedRegion.label}`
                           : ` at (${field.lat.toFixed(4)}, ${field.lon.toFixed(4)})`}
-                        . Fallo does not display predefined or US reference crop rotations for unsupported regions.
+                        . fallo does not display predefined or US reference crop rotations for unsupported regions.
                       </p>
                       <p className="text-[11px]">
-                        <strong className="text-foreground">Requirements for global rotation support here:</strong>{" "}
-                        (1) Global agroecological zone classification (FAO/IIASA GAEZ v5 thermal &amp; moisture regimes), (2) Global soil profiles via ISRIC SoilGrids WCS/WebDAV (0–30 cm sand/silt/clay, organic carbon, pH, bulk density, and derived AWC), and (3) Regionally verified crop calendars, drought/heat thresholds, and host-disease rules from national/international agricultural research institutes.
+                        <strong className="text-foreground">Requirements for rotation support here:</strong>{" "}
+                        Regionally verified crop calendars, drought/heat thresholds, and host-disease rules from national or international agricultural research institutes for this climate zone.
                       </p>
                     </div>
                   )}
 
                   {!hasGeneratedPlans && availableCropNames.length > 0 && !generateError && !generating && (
                     <p className="text-[11px]">
-                      Click <strong className="text-foreground">Generate Field-Specific Plans</strong> to create three AI-generated 3-year crop rotation plans (Soil Health Building, Water Resilience, Crop Diversity &amp; Pest Break) using the verified crops above.
+                      Click <strong className="text-foreground">Generate Field-Specific Plans</strong> to create three SI-generated 3-year crop rotation plans (Soil Health Building, Water Resilience, Crop Diversity &amp; Pest Break) using the verified crops above.
                     </p>
                   )}
                 </div>
@@ -685,7 +695,7 @@ export default function RotationsPage() {
                   <p className="font-semibold">{generateError}</p>
                   {hasGeneratedPlans && (
                     <p className="text-[11px] text-emerald-800 font-medium">
-                      Your existing AI-generated plans for {field.name} remain available below.
+                      Your existing SI-generated plans for {field.name} remain available below.
                     </p>
                   )}
                 </div>
@@ -695,14 +705,14 @@ export default function RotationsPage() {
                 <div className="rounded-md bg-emerald-50/90 px-3 py-2 text-xs text-emerald-800 border border-emerald-200 flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
                   <span className="font-medium">
-                    AI-generated crop rotation plans tailored to {field.name}
+                    SI-generated crop rotation plans tailored to {field.name}
                   </span>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* 2. Farmer Priority Sliders — Set Weights Before Generation or Re-Rank Validated AI Plans Locally */}
+          {/* 2. Farmer Priority Sliders — Set Weights Before Generation or Re-Rank SI Plans Locally */}
           <Card>
             <CardHeader className="pb-2">
               <div className="flex items-center gap-2">
@@ -713,7 +723,7 @@ export default function RotationsPage() {
               </div>
               <CardDescription className="text-xs">
                 {hasGeneratedPlans
-                  ? "Weight the five suitability factors for your operation. AI-generated plans re-score and re-rank immediately."
+                  ? "Weight the five suitability factors for your operation. SI-generated plans re-score and re-rank immediately."
                   : "Set your relative priority weights across the five suitability factors before generating field-specific plans."}
               </CardDescription>
             </CardHeader>
@@ -722,7 +732,7 @@ export default function RotationsPage() {
             </CardContent>
           </Card>
 
-          {/* 3A. After Generation: Display AI-Generated 3-Year Plans */}
+          {/* 3A. After Generation: Display SI-Generated 3-Year Plans */}
           {hasGeneratedPlans && (
             <div className="space-y-6">
               <div className="grid gap-4 lg:grid-cols-3">
@@ -741,7 +751,7 @@ export default function RotationsPage() {
                   <div className="flex items-center gap-2">
                     <BarChart3 className="h-4 w-4 text-electric" />
                     <CardTitle className="text-sm font-semibold text-foreground">
-                      Factor comparison (AI-generated plans)
+                      Factor comparison (SI-generated plans)
                     </CardTitle>
                   </div>
                 </CardHeader>
@@ -761,7 +771,7 @@ export default function RotationsPage() {
                     Planning Objectives for {field.name} (Goals — Not Completed Crop Recommendations)
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Fallo does not display predefined static 3-year crop rotations. Below are the three planning objectives that will guide AI generation once you click{" "}
+                    fallo does not display predefined static 3-year crop rotations. Below are the three planning objectives that will guide Super Intelligence (SI) generation once you click{" "}
                     <strong className="text-foreground">Generate Field-Specific Plans</strong>.
                   </p>
                 </div>
@@ -808,7 +818,7 @@ export default function RotationsPage() {
                             </CardTitle>
                           </div>
                           <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 border border-amber-200">
-                            No AI-generated plan yet
+                            No SI-generated plan yet
                           </span>
                         </div>
                         <CardDescription className="text-xs leading-relaxed text-muted-foreground">
@@ -828,7 +838,7 @@ export default function RotationsPage() {
                         <div className="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] text-muted-foreground mt-auto">
                           {availableCropNames.length > 0
                             ? "Planning goal only — click Generate Field-Specific Plans above to create a 3-year crop rotation plan."
-                            : "No AI-generated plan yet — verified local crop catalog coverage is required before 3-year sequences can be generated."}
+                            : "No SI-generated plan yet — verified local crop catalog coverage is required before 3-year sequences can be generated."}
                         </div>
                       </CardContent>
                     </Card>
@@ -840,7 +850,7 @@ export default function RotationsPage() {
 
           {/* Concise Scoring Disclaimer */}
           <div className="rounded-lg border border-border bg-card/70 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-            <strong className="text-foreground">Decision-support note:</strong> Suitability scores (0–100) are deterministic heuristics computed from NASA POWER regional climate (~55 km grid) and 0–30 cm topsoil data (USDA SSURGO survey averages or FAO HWSD v2.2 &amp; ISRIC SoilGrids estimated topsoil data)—not calibrated yield predictions.{" "}
+            <strong className="text-foreground">Decision-support note:</strong> Suitability scores (0–100) are deterministic heuristics computed from NASA POWER regional climate (~55 km grid) and 0–30 cm topsoil context (USDA SSURGO survey averages in the US, or macro-regional topsoil reference estimates elsewhere)—not calibrated yield predictions.{" "}
             <strong className="text-foreground">Data coverage</strong> indicates input completeness, not agronomic certainty.
           </div>
         </>

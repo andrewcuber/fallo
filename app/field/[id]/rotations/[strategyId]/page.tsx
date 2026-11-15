@@ -305,10 +305,10 @@ export default function StrategyDetailPage() {
         <Card className="border-dashed">
           <CardContent className="flex flex-col items-center justify-center py-16 text-center">
             <h3 className="text-lg font-serif font-semibold text-foreground">
-              No AI-generated plan found
+              No SI-generated plan found
             </h3>
             <p className="mt-2 max-w-md text-muted-foreground text-sm">
-              No AI-generated 3-year crop rotation plan was found for this field. Return to the Rotation Lab to generate field-specific plans.
+              No SI-generated 3-year crop rotation plan was found for this field. Return to the Rotation Lab to generate field-specific plans.
             </p>
             <Link href={`/field/${field.id}/rotations`}>
               <Button variant="outline" size="sm" className="mt-4">

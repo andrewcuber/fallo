@@ -91,14 +91,14 @@ export const GLOBAL_DATA_PROVIDERS: Record<DataProviderId, DataProviderDescripto
     name: "FAO / IIASA Global Agro-Ecological Zones (GAEZ v5)",
     officialUrl: "https://www.fao.org/gaez/en",
     geographicCoverage: "Global land surface",
-    spatialResolution: "5 arc-minutes (~9 km at equator) / 30 arc-seconds",
-    temporalResolution: "Historical baseline & multi-decade agro-climatic indicators",
+    spatialResolution: "5 arc-minutes (~9 km reference framework)",
+    temporalResolution: "Historical baseline & multi-decade agro-climatic methodology",
     accessMethod:
-      "Selective server-side agro-climatic & LGP extraction engine implementing GAEZ v5 thermal zones, moisture regimes, Length of Growing Period (LGP), and rainfed vs. irrigated suitability rules",
+      "Server-side rule-based agro-climatic classifier computing GAEZ v5 thermal zones, moisture regimes, and estimated Length of Growing Period (LGP) from the coordinate's live NASA POWER climate series",
     integrationStatus: "selective_extraction_integrated",
     licenseAndAttribution: "CC BY-NC-SA 3.0 IGO (FAO & IIASA)",
     uncertaintyAndLimitations:
-      "Macro-scale agroecological suitability (~9 km grid). GAEZ crop suitability indicates biophysical potential, not verified 3-year rotation sequence compatibility.",
+      "Derived deterministically from live NASA POWER monthly temperature, precipitation, and elevation records using GAEZ v5 threshold rules (not a direct 5 arc-minute raster lookup).",
   },
   fao_crop_calendar: {
     id: "fao_crop_calendar",
@@ -108,7 +108,7 @@ export const GLOBAL_DATA_PROVIDERS: Record<DataProviderId, DataProviderDescripto
     spatialResolution: "Sub-national agroecological zone & country level",
     temporalResolution: "Seasonal planting, vegetative, reproductive, and harvest windows",
     accessMethod:
-      "Structured server-side agroecological crop calendar database indexed by region, hemisphere, and rainy/dry/irrigated season",
+      "Curated agroecological crop calendar catalog in data/crops.json indexed by region, hemisphere, and rainy/dry/irrigated season",
     integrationStatus: "selective_extraction_integrated",
     licenseAndAttribution: "CC BY-NC-SA 3.0 IGO (Food and Agriculture Organization of the UN)",
     uncertaintyAndLimitations:
@@ -122,7 +122,7 @@ export const GLOBAL_DATA_PROVIDERS: Record<DataProviderId, DataProviderDescripto
     spatialResolution: "National level",
     temporalResolution: "Annual production series",
     accessMethod:
-      "Preprocessed national/regional cultivation verification matrix derived from FAOSTAT QCL",
+      "Reference national/regional cultivation verification used to curate supportedRegions in data/crops.json",
     integrationStatus: "selective_extraction_integrated",
     licenseAndAttribution: "CC BY-NC-SA 3.0 IGO (FAO)",
     uncertaintyAndLimitations:
@@ -130,101 +130,101 @@ export const GLOBAL_DATA_PROVIDERS: Record<DataProviderId, DataProviderDescripto
   },
   isric_soilgrids_wcs: {
     id: "isric_soilgrids_wcs",
-    name: "ISRIC SoilGrids v2.0 (250m Global Soil Information)",
+    name: "ISRIC SoilGrids v2.0 (250m Global Soil Information — Regional Reference)",
     officialUrl: "https://docs.isric.org/globaldata/soilgrids/",
     geographicCoverage: "Global land surface",
-    spatialResolution: "250 m pixel resolution across 6 standard depths (0–5, 5–15, 15–30 cm for topsoil)",
-    temporalResolution: "Static digital soil mapping predictions (v2.0)",
+    spatialResolution: "Macro-regional reference summaries derived from 250 m SoilGrids v2.0 literature",
+    temporalResolution: "Static digital soil mapping reference baseline (v2.0)",
     accessMethod:
-      "OGC Web Coverage Service (WCS) / WebDAV Cloud-Optimized GeoTIFF point adapter with Q0.05/Q0.50/Q0.95 uncertainty preservation and HWSD v2.2 fallback",
+      "Curated macro-regional 0–30 cm topsoil reference profiles with indicative regional variability ranges (Q0.05–Q0.95); not a live coordinate-level WCS/WebDAV raster query",
     integrationStatus: "fallback_and_harmonized_reference",
     licenseAndAttribution: "CC BY 4.0 (ISRIC — World Soil Information)",
     uncertaintyAndLimitations:
-      "Machine-learning predictions at 250 m resolution with prediction intervals (Q0.05–Q0.95), never field laboratory measurements. REST v2.0 API is paused; WCS/WebDAV and harmonized HWSD v2.2 provide global coverage.",
+      "ISRIC's public SoilGrids v2.0 REST API is paused. Outside the US, fallo provides representative regional topsoil estimates rather than coordinate-specific raster extractions or field laboratory measurements.",
   },
   fao_hwsd_v22: {
     id: "fao_hwsd_v22",
-    name: "FAO / IIASA Harmonized World Soil Database (HWSD v2.2)",
+    name: "FAO / IIASA Harmonized World Soil Database (HWSD v2.2 — Regional Reference)",
     officialUrl: "https://www.fao.org/agroinformatics/training-and-resources/data-sets/en",
     geographicCoverage: "Global land surface",
-    spatialResolution: "30 arc-seconds (~1 km) across 7 depth layers (D1–D7; D1+D2 = 0–40 cm harmonized to 0–30 cm)",
-    temporalResolution: "Harmonized global soil inventory (v2.2, released Nov 2026)",
+    spatialResolution: "Macro-regional reference profiles compiled from HWSD v2.2 soil mapping units",
+    temporalResolution: "Global soil reference inventory (v2.2)",
     accessMethod:
-      "Server-side harmonized regional soil mapping unit & topsoil attribute extractor (0–30 cm depth-weighted sand, silt, clay, SOC->OM, pH, bulk density, coarse fragments, drainage, and AWC)",
-    integrationStatus: "selective_extraction_integrated",
+      "Curated regional reference topsoil profiles (0–30 cm representative sand, silt, clay, SOC->OM, pH, bulk density, drainage, and estimated AWC) matched by agroecological region; not a live 1 km raster extraction",
+    integrationStatus: "fallback_and_harmonized_reference",
     licenseAndAttribution: "CC BY-NC-SA 3.0 IGO (FAO / IIASA / ISRIC)",
     uncertaintyAndLimitations:
-      "1 km soil mapping units. Organic carbon (SOC %) is converted to organic matter (OM %) via the conventional Van Bemmelen factor (OM = SOC × 1.724) and explicitly labeled.",
+      "Values outside USDA SSURGO coverage are representative regional reference estimates, not coordinate-specific raster extractions. Organic carbon (SOC %) is converted to organic matter (OM %) via the Van Bemmelen factor (OM = SOC × 1.724).",
   },
   ucsb_chirps_v3: {
     id: "ucsb_chirps_v3",
-    name: "UCSB CHG CHIRPS v3 (Climate Hazards Center InfraRed Precipitation with Station data)",
+    name: "UCSB CHG CHIRPS v3 (Seasonal Rainfall Regime Reference)",
     officialUrl: "https://www.chc.ucsb.edu/data",
     geographicCoverage: "Quasi-global (60°S to 60°N)",
-    spatialResolution: "0.05° (~5.5 km)",
-    temporalResolution: "1981–present (pentadal/monthly/daily)",
+    spatialResolution: "Regional wet/dry season threshold methodology",
+    temporalResolution: "Climatological monthly wet/dry season characterization",
     accessMethod:
-      "Tropical & semi-arid rainfall seasonality, wet/dry season onset/cessation, and precipitation concentration index (PCI) analyzer for latitudes within 60°S–60°N",
-    integrationStatus: "selective_extraction_integrated",
+      "Tropical & semi-arid wet/dry-season month classification applied to the field's monthly precipitation profile for latitudes within 60°S–60°N",
+    integrationStatus: "fallback_and_harmonized_reference",
     licenseAndAttribution: "Public Domain / Open Data (UCSB Climate Hazards Center & USGS)",
     uncertaintyAndLimitations:
-      "Covers 60°S to 60°N only; high-latitude fields (>60°N/S) fall back exclusively to NASA POWER / ERA5-Land.",
+      "Applies CHIRPS wet/dry-season threshold rules to the retrieved monthly precipitation profile rather than querying a separate 0.05° raster file.",
   },
   copernicus_era5_land: {
     id: "copernicus_era5_land",
-    name: "Copernicus Climate Change Service (C3S) ERA5-Land",
+    name: "Copernicus Climate Change Service (C3S) ERA5-Land (Water-Balance Reference)",
     officialUrl: "https://confluence.ecmwf.int/pages/viewpage.action?pageId=439587283",
     geographicCoverage: "Global land surface",
-    spatialResolution: "0.1° × 0.1° (~9 km)",
-    temporalResolution: "1950–present hourly/monthly land-surface reanalysis",
+    spatialResolution: "Regional water-balance & aridity reference methodology",
+    temporalResolution: "Climatological evaporative demand reference",
     accessMethod:
-      "Server-side evaporative demand (PET), aridity index, and root-zone soil-moisture stress cross-check",
+      "Reference evaporative demand (PET) and aridity index formulation applied alongside NASA POWER observations",
     integrationStatus: "fallback_and_harmonized_reference",
     licenseAndAttribution: "Copernicus C3S License (free and open access with attribution)",
     uncertaintyAndLimitations:
-      "Full CDS NetCDF downloads require asynchronous CDS API keys; fallo integrates ERA5-Land reference water-balance and root-zone wetness cross-checks alongside NASA POWER GWETROOT.",
+      "Provides water-balance and aridity reference equations alongside live NASA POWER data rather than asynchronous CDS NetCDF downloads.",
   },
   worldclim_v21: {
     id: "worldclim_v21",
-    name: "WorldClim v2.1 Historical Climate Normals",
+    name: "WorldClim v2.1 Bioclimatic Reference Thresholds",
     officialUrl: "https://www.worldclim.org/",
     geographicCoverage: "Global land surface",
-    spatialResolution: "30 arc-seconds (~1 km) to 10 arc-minutes",
-    temporalResolution: "1970–2000 30-year climate normals",
+    spatialResolution: "Regional bioclimatic classification thresholds",
+    temporalResolution: "Long-term climate classification reference",
     accessMethod:
-      "Historical climate-normal cross-check against recent NASA POWER 20-year observations",
+      "Bioclimatic thermal and seasonal temperature-amplitude thresholds used in agroecological group classification",
     integrationStatus: "fallback_and_harmonized_reference",
     licenseAndAttribution: "CC BY-SA 4.0 (Fick & Hijmans, 2017)",
     uncertaintyAndLimitations:
-      "Represents 1970–2000 baseline climatology; used for long-term thermal/moisture cross-checking, not recent weather.",
+      "Used for thermal-amplitude classification rules against NASA POWER 20-year records rather than direct 1 km raster extraction.",
   },
   esa_worldcover_10m: {
     id: "esa_worldcover_10m",
-    name: "ESA WorldCover 10m v200",
+    name: "ESA WorldCover 10m v200 (Agro-Landscape Reference)",
     officialUrl: "https://esa-worldcover.org/en/data-access",
     geographicCoverage: "Global land surface",
-    spatialResolution: "10 m Sentinel-1 / Sentinel-2 land cover classification",
-    temporalResolution: "Annual baseline (v200)",
+    spatialResolution: "Regional agricultural zone reference",
+    temporalResolution: "Baseline agro-landscape reference",
     accessMethod:
-      "Selective land-cover context classification (cropland, grassland, shrubland, forest, barren/arid, water)",
+      "Regional cropland/dryland context reference; does not perform live 10 m satellite tile extraction",
     integrationStatus: "fallback_and_harmonized_reference",
     licenseAndAttribution: "CC BY 4.0 (ESA WorldCover Consortium)",
     uncertaintyAndLimitations:
-      "A 10 m cropland or grassland classification provides landscape context only; it is NOT a verified farm boundary or proof that a specific point is suitable for planting.",
+      "Provides regional agricultural zone context only; it is NOT a live 10 m pixel lookup or verified farm boundary.",
   },
   copernicus_dem_glo30: {
     id: "copernicus_dem_glo30",
-    name: "Copernicus DEM GLO-30",
+    name: "NASA POWER Grid Elevation & Copernicus DEM GLO-30 Highland Thresholds",
     officialUrl: "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM",
     geographicCoverage: "Global land surface",
-    spatialResolution: "30 m (1 arc-second)",
-    temporalResolution: "Static Digital Surface Model (TanDEM-X derived)",
+    spatialResolution: "Grid-cell surface elevation from NASA POWER with highland/montane classification rules",
+    temporalResolution: "Static elevation baseline",
     accessMethod:
-      "Elevation and highland/montane terrain classifier with Open-Elevation / Copernicus GLO-30 point lookup & NASA POWER elevation cross-check",
+      "Highland/montane terrain classifier using elevation reported by NASA POWER at the field coordinates",
     integrationStatus: "selective_extraction_integrated",
-    licenseAndAttribution: "Copernicus WorldDEM-30 Open License (DLR / Airbus / ESA)",
+    licenseAndAttribution: "Public Domain (NASA POWER) / Copernicus WorldDEM-30 Open License",
     uncertaintyAndLimitations:
-      "GLO-30 is a Digital Surface Model (DSM) that includes tree canopy and buildings; it must not be silently treated as a bare-earth Digital Terrain Model (DTM).",
+      "Uses grid-cell elevation from the live NASA POWER response to identify highland/montane thermal zones (>=1,500 m at low latitudes).",
   },
   geoboundaries_natural_earth: {
     id: "geoboundaries_natural_earth",
@@ -623,18 +623,16 @@ export function resolveGlobalSoilFallback(
   };
 
   const harmonizationNotes = [
-    `Estimated 0–30 cm topsoil profile from regional reference data: FAO/IIASA Harmonized World Soil Database (HWSD v2.2, 1 km resolution, layers D1 0–20 cm & D2 20–40 cm) cross-referenced with ISRIC SoilGrids v2.0 250m predictions (${matchedUnit.wrbSoilGroup}).`,
-    `Organic matter (${omPct.toFixed(2)}%) is derived from reported Soil Organic Carbon (SOC = ${matchedUnit.socPct.toFixed(2)}%) using the conventional Van Bemmelen factor (OM = SOC × 1.724).`,
-    `Available Water Capacity (AWC = ${matchedUnit.awc.toFixed(3)} cm/cm) is estimated for 0–30 cm accounting for texture, organic carbon, bulk density (${matchedUnit.bulkDensityGcm3.toFixed(2)} g/cm³), and coarse fragments (${matchedUnit.coarseFragmentsPct.toFixed(0)}%).`,
-    `Values are regional digital soil mapping predictions with Q0.05–Q0.95 uncertainty intervals (±${spread}%), NOT laboratory soil tests from the farmer's field.`,
+    `Regional reference topsoil estimate (0–30 cm): values represent typical soil characteristics for this agroecological region (${matchedUnit.wrbSoilGroup}) compiled from published FAO/IIASA HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries—NOT a coordinate-specific spatial extraction or field soil test.`,
+    `Organic matter (${omPct.toFixed(2)}%) is estimated from regional reference Soil Organic Carbon (SOC = ${matchedUnit.socPct.toFixed(2)}%) using the conventional Van Bemmelen factor (OM = SOC × 1.724).`,
+    `Available Water Capacity (AWC = ${matchedUnit.awc.toFixed(3)} cm/cm) is a regional reference estimate for 0–30 cm topsoil based on representative texture, organic carbon, bulk density (${matchedUnit.bulkDensityGcm3.toFixed(2)} g/cm³), and coarse fragments (${matchedUnit.coarseFragmentsPct.toFixed(0)}%).`,
+    `Indicative regional range (±${spread}%) reflects broad soil variability across this zone; on-site soil testing is recommended before making management decisions.`,
   ];
 
-  // Coverage is set to 72% (Partial) to reflect modeled 250m–1km global soil inventory rather than 1:24,000 field survey
-  const modeledCoveragePct = 72;
   const sourceStr =
-    "FAO/IIASA HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m WCS/WebDAV regional reference & estimated topsoil data)";
+    "Regional topsoil reference estimate (compiled from published FAO/IIASA HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries; not coordinate-specific extraction)";
   const coverageStr =
-    "Estimated 0–30 cm topsoil data from regional reference sources (FAO HWSD v2.2 1 km & ISRIC SoilGrids v2.0 250 m with Q0.05–Q0.95 uncertainty intervals).";
+    "Macro-regional 0–30 cm topsoil reference estimate based on published FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries. Not a coordinate-specific spatial extraction or laboratory soil test.";
 
   const aggregated = {
     depth0_30cm: {
@@ -651,23 +649,25 @@ export function resolveGlobalSoilFallback(
     slope: matchedUnit.slope,
   };
 
+  // Component coverage percentages only apply to surveyed USDA SSURGO map units;
+  // for regional reference estimates they are recorded as null rather than inventing a percentage.
   const dataCoverage = {
     depth0_30cm: {
-      sand: modeledCoveragePct,
-      silt: modeledCoveragePct,
-      clay: modeledCoveragePct,
-      om: modeledCoveragePct,
-      ph: modeledCoveragePct,
-      awc: modeledCoveragePct,
+      sand: null,
+      silt: null,
+      clay: null,
+      om: null,
+      ph: null,
+      awc: null,
     },
-    drainage: modeledCoveragePct,
-    slope: modeledCoveragePct,
+    drainage: null,
+    slope: null,
   };
 
   const soilData: SoilData = {
     aggregated,
     dataCoverage,
-    totalComponentPercent: modeledCoveragePct,
+    totalComponentPercent: 0,
     source: sourceStr,
     limitations: harmonizationNotes,
   };
@@ -692,17 +692,17 @@ export function resolveGlobalSoilFallback(
     organicCarbonPct: matchedUnit.socPct,
     uncertainty0_30cm,
     propertySources: {
-      sand: "FAO HWSD v2.2 (D1/D2 0–30 cm) & ISRIC SoilGrids v2.0 250m",
-      silt: "FAO HWSD v2.2 (D1/D2 0–30 cm) & ISRIC SoilGrids v2.0 250m",
-      clay: "FAO HWSD v2.2 (D1/D2 0–30 cm) & ISRIC SoilGrids v2.0 250m",
-      organicCarbon: "FAO HWSD v2.2 / ISRIC SoilGrids v2.0 (SOC %)",
-      om: "Harmonized from SOC % via Van Bemmelen factor (SOC × 1.724)",
-      ph: "FAO HWSD v2.2 pH (H2O) 0–30 cm",
-      bulkDensity: "FAO HWSD v2.2 reference bulk density (g/cm³)",
-      coarseFragments: "FAO HWSD v2.2 gravel/coarse fragments (%vol)",
-      awc: "FAO HWSD v2.2 / Saxton & Rawls (2006) pedotransfer 0–30 cm AWC",
-      drainage: "FAO HWSD v2.2 drainage class",
-      slope: "Copernicus DEM GLO-30 / HWSD terrain slope estimate",
+      sand: "Regional reference estimate (FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summary)",
+      silt: "Regional reference estimate (FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summary)",
+      clay: "Regional reference estimate (FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summary)",
+      organicCarbon: "Regional reference SOC % (FAO HWSD v2.2 / ISRIC SoilGrids v2.0 regional summary)",
+      om: "Estimated from regional reference SOC % via Van Bemmelen factor (SOC × 1.724)",
+      ph: "Regional reference pH (H2O) 0–30 cm (FAO HWSD v2.2 regional summary)",
+      bulkDensity: "Regional reference bulk density (g/cm³, FAO HWSD v2.2 regional summary)",
+      coarseFragments: "Regional reference coarse fragments (%vol, FAO HWSD v2.2 regional summary)",
+      awc: "Regional reference 0–30 cm AWC (Saxton & Rawls 2006 pedotransfer from regional texture/SOC)",
+      drainage: "Typical regional drainage class (FAO HWSD v2.2 reference soil group)",
+      slope: "Typical regional cropland terrain slope estimate",
     },
     harmonizationNotes,
   };

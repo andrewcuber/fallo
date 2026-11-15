@@ -303,11 +303,21 @@ function scoreWaterSuitability(strategy: RotationStrategy, climate: ClimateData,
   else limitations.push("Heat-stress day count unavailable.");
 
   if (hasSoil) {
+    const isSsurgo = soil?.source?.toUpperCase().includes("SSURGO") ?? false;
     if (awc !== null) inputsUsed.push(`Available water capacity (0–30 cm): ${awc.toFixed(3)} cm/cm`);
     else limitations.push("AWC data unavailable (0–30 cm only).");
-    if (soilCov !== null && soilCov < 80)
-      limitations.push(`Soil data coverage is ${soilCov.toFixed(0)}%; properties may not represent the full field.`);
-    citations.push({ text: "USDA NRCS SSURGO — depth-weighted 0–30 cm averages", url: "https://sdmdataaccess.sc.egov.usda.gov" });
+    if (isSsurgo) {
+      if (soilCov !== null && soilCov < 80) {
+        limitations.push(`Soil data coverage is ${soilCov.toFixed(0)}%; properties may not represent the full field.`);
+      }
+      citations.push({ text: "USDA NRCS SSURGO — depth-weighted 0–30 cm averages", url: "https://sdmdataaccess.sc.egov.usda.gov" });
+    } else {
+      limitations.push("Soil properties use a macro-regional topsoil reference estimate rather than a field-specific soil survey.");
+      citations.push({
+        text: "FAO/IIASA HWSD v2.2 & ISRIC SoilGrids v2.0 — regional topsoil reference estimates",
+        url: "https://www.fao.org/agroinformatics/training-and-resources/data-sets/en",
+      });
+    }
   } else {
     limitations.push("No soil data available; AWC and slope not included in scoring.");
   }
@@ -1112,10 +1122,10 @@ export function evaluateFieldCropEvidenceLevel(params: {
 
   return {
     level: "level_2_global_modeled",
-    label: "Level 2 — Global modeled or partial local evidence",
-    summary: `Supported by ${availableCropIds.length} regionally documented crops (${distinctFamilies.length} botanical families) using FAO GAEZ v5 / NASA POWER climate regimes and ${
+    label: "Level 2 — Regional reference & modeled climate evidence",
+    summary: `Supported by ${availableCropIds.length} regionally documented crops (${distinctFamilies.length} botanical families) using NASA POWER / GAEZ v5 climate regimes and ${
       soil
-        ? "harmonized FAO HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m) global topsoil estimates"
+        ? "macro-regional topsoil reference estimates (compiled from FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries)"
         : "climate-only baseline (soil profile unavailable)"
     }. Verify local cultivar maturity and on-site soil tests.`,
     distinctFamilies,

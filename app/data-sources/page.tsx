@@ -39,24 +39,21 @@ export default function DataSourcesPage() {
                 <CloudSun className="h-5 w-5 text-electric" />
               </div>
               <div>
-                <CardTitle>NASA POWER &amp; Global Climate / Seasonality Baseline</CardTitle>
+                <CardTitle>NASA POWER Live Climate API &amp; Agro-Climatic Seasonality Rules</CardTitle>
                 <CardDescription>
-                  NASA POWER Daily API · UCSB CHIRPS v3 · Copernicus ERA5-Land · WorldClim v2.1
+                  Live coordinate extraction from NASA POWER Daily API · Methodological rules from FAO GAEZ v5, UCSB CHIRPS v3, ERA5-Land &amp; WorldClim v2.1
                 </CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Provides 20-year daily temperature, precipitation, solar radiation, and root-zone wetness
-              from NASA MERRA-2/GEOS reanalysis (~0.5° grid), supplemented by UCSB CHIRPS v3 (0.05°
-              quasi-global 60°S–60°N rainfall seasonality), ERA5-Land (~9 km), and WorldClim v2.1
-              (1 km long-term bioclimatic normals).
+              At every field coordinate, fallo queries the <strong>NASA POWER Agroclimatology Daily API</strong> live to retrieve 20-year daily temperature, precipitation, solar radiation, root-zone soil wetness, and grid-cell elevation (~0.5° MERRA-2/GEOS grid, ~55 km). From that retrieved time series, fallo deterministically computes thermal zones, moisture regimes, estimated Length of Growing Period (LGP), and wet/dry season windows using published FAO GAEZ v5, CHIRPS v3, ERA5-Land, and WorldClim v2.1 agro-climatic threshold methodologies.
             </p>
             <div className="flex flex-wrap gap-2">
               <span className="inline-flex items-center gap-1 rounded-full bg-electric/10 px-2.5 py-0.5 text-xs font-medium text-electric">
                 <CheckCircle2 className="h-3 w-3" />
-                Free, no API key
+                Live coordinate query (NASA POWER)
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground">
                 <Globe className="h-3 w-3" />
@@ -68,14 +65,12 @@ export default function DataSourcesPage() {
               </span>
             </div>
             <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground border border-border">
-              <strong>Important limitation:</strong> Reanalysis and satellite-gauge climate products
-              represent regional climate context, not in-field weather stations. Use them to evaluate
-              long-term seasonal regimes and drought/heat frequency rather than daily irrigation scheduling.
+              <strong>Important limitation:</strong> Reanalysis climate data represent ~55 km regional context, not in-field weather stations. Use them to evaluate long-term seasonal regimes and drought/heat frequency rather than daily irrigation scheduling.
             </div>
           </CardContent>
         </Card>
 
-        {/* Soil Architecture: USDA SSURGO + FAO HWSD v2.2 & ISRIC SoilGrids */}
+        {/* Soil Architecture: USDA SSURGO + Regional Reference Profiles */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-3">
@@ -83,42 +78,32 @@ export default function DataSourcesPage() {
                 <Database className="h-5 w-5 text-electric" />
               </div>
               <div>
-                <CardTitle>Dual-Tier Soil Architecture: USDA SSURGO &amp; FAO HWSD v2.2 / ISRIC SoilGrids v2.0</CardTitle>
+                <CardTitle>Dual-Tier Soil Architecture: USDA SSURGO Survey &amp; Global Regional Reference Profiles</CardTitle>
                 <CardDescription>
-                  Primary US polygon survey (SSURGO) with global 0–30 cm regional reference &amp; estimated topsoil data (HWSD v2.2 1 km &amp; SoilGrids 250 m)
+                  Live US polygon survey extraction (USDA SSURGO) · Macro-regional 0–30 cm topsoil reference estimates outside SSURGO coverage (compiled from FAO HWSD v2.2 &amp; ISRIC SoilGrids v2.0)
                 </CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Inside the United States, fallo queries USDA NRCS Soil Data Access (SSURGO) for depth-weighted
-              0–30 cm topsoil properties. Outside the US (or where SSURGO has no polygon coverage), fallo
-              resolves estimated 0–30 cm topsoil data from regional reference sources combining FAO/IIASA Harmonized
-              World Soil Database v2.2 (1 km, 7 depth layers) and ISRIC SoilGrids v2.0 (250 m WCS/WebDAV
-              mean &amp; Q0.05–Q0.95 prediction intervals), converting soil organic carbon (SOC) to organic
-              matter via the Van Bemmelen factor (1.724) and deriving available water capacity (AWC) via
-              Saxton &amp; Rawls (2006) pedotransfer functions.
+              <strong>United States (live coordinate extraction):</strong> Inside the US, fallo queries USDA NRCS Soil Data Access (SSURGO) live at the field&apos;s coordinates for polygon map-unit components and depth-weighted 0–30 cm topsoil properties (sand, silt, clay, organic matter, pH, available water capacity, drainage, and slope).
+            </p>
+            <p className="text-sm text-muted-foreground">
+              <strong>Outside USDA SSURGO coverage (macro-regional reference estimates):</strong> Because ISRIC&apos;s public SoilGrids v2.0 REST API is paused, non-US locations do not perform live coordinate-specific raster or WCS queries. Instead, fallo resolves a representative 0–30 cm topsoil reference profile for the field&apos;s agroecological region compiled from published FAO/IIASA HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries (converting reference SOC % to OM % via the Van Bemmelen factor 1.724 and estimating AWC via Saxton &amp; Rawls 2006 pedotransfer equations).
             </p>
             <div className="flex flex-wrap gap-2">
               <span className="inline-flex items-center gap-1 rounded-full bg-electric/10 px-2.5 py-0.5 text-xs font-medium text-electric">
                 <CheckCircle2 className="h-3 w-3" />
-                USDA SSURGO (US primary)
+                USDA SSURGO (live US spatial query)
               </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-electric/10 px-2.5 py-0.5 text-xs font-medium text-electric">
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
                 <Globe className="h-3 w-3" />
-                FAO HWSD v2.2 (1 km) &amp; ISRIC SoilGrids (250 m)
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground">
-                <AlertTriangle className="h-3 w-3" />
-                Q0.05–Q0.95 uncertainty intervals tracked
+                Non-US: Macro-regional reference estimates (not coordinate-extracted)
               </span>
             </div>
             <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground border border-border">
-              <strong>Important limitation:</strong> Global HWSD v2.2 and SoilGrids v2.0 values are regional
-              soil-landscape and machine-learning predictions with explicit Q0.05–Q0.95 uncertainty ranges.
-              Per-property provenance is preserved so primary survey data and global modeled estimates are
-              never silently conflated.
+              <strong>Important limitation:</strong> Global reference soil values represent typical topsoil characteristics for a broad agroecological zone, not a coordinate-specific spatial extraction or laboratory soil test. fallo labels regional reference profiles explicitly and never reports synthetic map-unit component percentages for non-SSURGO locations.
             </div>
           </CardContent>
         </Card>
@@ -205,11 +190,31 @@ export default function DataSourcesPage() {
             {GLOBAL_DATA_PROVIDER_LIST.map((p) => (
               <div key={p.id} className="py-3 space-y-1">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="font-semibold text-foreground">{p.name}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-foreground">{p.name}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                        p.integrationStatus === "live_api_integrated"
+                          ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                          : p.integrationStatus === "selective_extraction_integrated"
+                          ? "bg-blue-50 text-blue-700 border border-blue-200"
+                          : "bg-amber-50 text-amber-800 border border-amber-200"
+                      }`}
+                    >
+                      {p.integrationStatus === "live_api_integrated"
+                        ? "Live coordinate query"
+                        : p.integrationStatus === "selective_extraction_integrated"
+                        ? "Rule-based classifier / catalog"
+                        : "Regional reference baseline"}
+                    </span>
+                  </div>
                   <span className="font-mono text-[11px] text-muted-foreground">
                     {p.spatialResolution} · {p.licenseAndAttribution}
                   </span>
                 </div>
+                <p className="text-muted-foreground">
+                  <strong>How used in fallo:</strong> {p.accessMethod}
+                </p>
                 <p className="text-muted-foreground">
                   <strong>Coverage:</strong> {p.geographicCoverage} · <strong>Temporal:</strong>{" "}
                   {p.temporalResolution}

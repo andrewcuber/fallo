@@ -32,6 +32,196 @@ export type AgGroup =
   | "highland_montane"
   | "unknown";
 
+export interface DisplayTermInfo {
+  label: string;
+  description: string;
+}
+
+export const AG_GROUP_DISPLAY: Record<AgGroup, DisplayTermInfo> = {
+  temperate_humid: {
+    label: "Temperate Humid",
+    description:
+      "Moderate seasonal temperatures with reliable rainfall across the growing season.",
+  },
+  semi_arid_temperate: {
+    label: "Semi-Arid Temperate",
+    description:
+      "Temperate four-season climate with limited annual rainfall and periodic summer dry spells.",
+  },
+  subtropical_humid: {
+    label: "Subtropical Humid",
+    description:
+      "Long, warm growing seasons, mild winters, and abundant year-round precipitation.",
+  },
+  temperate_mediterranean: {
+    label: "Mediterranean (Winter-Wet, Summer-Dry)",
+    description:
+      "Mild, rainy cool seasons followed by warm, dry summers suited to winter grains and pulses.",
+  },
+  tropical_humid: {
+    label: "Humid Tropical",
+    description:
+      "Warm temperatures year-round with abundant rainfall and a short or absent dry season.",
+  },
+  tropical_subhumid: {
+    label: "Subhumid Tropical",
+    description:
+      "Warm year-round temperatures with a long rainy growing season and a moderate dry season.",
+  },
+  tropical_savanna: {
+    label: "Tropical Savanna (Wet–Dry Season)",
+    description:
+      "Warm tropical climate where rainfall is concentrated in a single rainy season followed by a pronounced dry season.",
+  },
+  tropical_monsoon: {
+    label: "Tropical Monsoon",
+    description:
+      "Warm tropical climate with heavy monsoon rains and a distinct dry season.",
+  },
+  tropical_semi_arid: {
+    label: "Semi-Arid Tropical (Dry Savanna)",
+    description:
+      "Hot tropical conditions with a short rainy season and elevated drought risk.",
+  },
+  arid: {
+    label: "Arid (Irrigation-Dependent)",
+    description:
+      "Very low annual rainfall where dependable crop production relies on irrigation.",
+  },
+  continental: {
+    label: "Continental (Cold Winter, Warm Summer)",
+    description:
+      "Wide seasonal temperature swings with cold winters and a defined spring-to-autumn growing window.",
+  },
+  boreal: {
+    label: "Boreal / Cold Short-Season",
+    description:
+      "Cold high-latitude climate with a brief frost-free growing period.",
+  },
+  highland_montane: {
+    label: "Highland / Montane",
+    description:
+      "High-elevation agricultural zone where altitude moderates tropical or subtropical temperatures.",
+  },
+  unknown: {
+    label: "Unclassified Climate Zone",
+    description:
+      "Climate observations are incomplete or outside supported agricultural zones.",
+  },
+};
+
+export const AG_GROUP_LABELS: Record<AgGroup, string> = {
+  temperate_humid: AG_GROUP_DISPLAY.temperate_humid.label,
+  semi_arid_temperate: AG_GROUP_DISPLAY.semi_arid_temperate.label,
+  subtropical_humid: AG_GROUP_DISPLAY.subtropical_humid.label,
+  temperate_mediterranean: AG_GROUP_DISPLAY.temperate_mediterranean.label,
+  tropical_humid: AG_GROUP_DISPLAY.tropical_humid.label,
+  tropical_subhumid: AG_GROUP_DISPLAY.tropical_subhumid.label,
+  tropical_savanna: AG_GROUP_DISPLAY.tropical_savanna.label,
+  tropical_monsoon: AG_GROUP_DISPLAY.tropical_monsoon.label,
+  tropical_semi_arid: AG_GROUP_DISPLAY.tropical_semi_arid.label,
+  arid: AG_GROUP_DISPLAY.arid.label,
+  continental: AG_GROUP_DISPLAY.continental.label,
+  boreal: AG_GROUP_DISPLAY.boreal.label,
+  highland_montane: AG_GROUP_DISPLAY.highland_montane.label,
+  unknown: AG_GROUP_DISPLAY.unknown.label,
+};
+
+export const MOISTURE_ZONE_DISPLAY: Record<string, DisplayTermInfo> = {
+  humid: {
+    label: "Humid (abundant year-round moisture)",
+    description:
+      "Precipitation supports crop growth for most of the year (270+ moist growing days).",
+  },
+  subhumid: {
+    label: "Subhumid (reliable seasonal moisture)",
+    description:
+      "Extended rainy season supporting 180–269 growing-period days, followed by a moderate dry season.",
+  },
+  moist_semi_arid: {
+    label: "Semi-arid with seasonal moisture",
+    description:
+      "Moderate seasonal rainfall (120–179 growing-period days) with a pronounced dry season; timely planting and drought-adapted crops reduce moisture stress.",
+  },
+  dry_semi_arid: {
+    label: "Dry semi-arid (short rainy season)",
+    description:
+      "Limited seasonal rainfall (60–119 growing-period days) with frequent dry spells; favors short-duration drought-tolerant crops or supplemental water.",
+  },
+  arid: {
+    label: "Arid (very low natural rainfall)",
+    description:
+      "Minimal natural precipitation (fewer than 60 moist days per year); reliable harvests require irrigation.",
+  },
+  hyper_arid: {
+    label: "Hyper-arid (extreme moisture deficit)",
+    description:
+      "Year-round desert moisture deficit where cropping is only possible under full irrigation.",
+  },
+  unknown: {
+    label: "Moisture regime unavailable",
+    description:
+      "Insufficient precipitation data to characterize seasonal moisture conditions.",
+  },
+};
+
+export const WATER_REGIME_DISPLAY: Record<string, DisplayTermInfo> = {
+  rainfed_viable: {
+    label: "Rainfed cropping viable",
+    description:
+      "Natural precipitation is generally sufficient for regionally adapted crops during the primary growing season.",
+  },
+  supplementary_irrigation_recommended: {
+    label: "Rainfed in wet season; supplemental irrigation helpful",
+    description:
+      "Rainfed crops are viable during the main rainy season, while dry-season crops or mid-season dry spells benefit from supplemental irrigation.",
+  },
+  irrigation_required: {
+    label: "Irrigation required for reliable production",
+    description:
+      "Natural rainfall is too low to sustain dependable commercial crop yields without irrigation.",
+  },
+};
+
+export function formatAgGroupLabel(group: AgGroup | string | null | undefined): string {
+  if (!group) return AG_GROUP_DISPLAY.unknown.label;
+  return (
+    AG_GROUP_DISPLAY[group as AgGroup]?.label ??
+    group.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+export function formatAgGroupDescription(group: AgGroup | string | null | undefined): string {
+  if (!group) return AG_GROUP_DISPLAY.unknown.description;
+  return AG_GROUP_DISPLAY[group as AgGroup]?.description ?? "";
+}
+
+export function formatMoistureZoneLabel(zone: string | null | undefined): string {
+  if (!zone) return MOISTURE_ZONE_DISPLAY.unknown.label;
+  return (
+    MOISTURE_ZONE_DISPLAY[zone]?.label ??
+    zone.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+export function formatMoistureZoneDescription(zone: string | null | undefined): string {
+  if (!zone) return MOISTURE_ZONE_DISPLAY.unknown.description;
+  return MOISTURE_ZONE_DISPLAY[zone]?.description ?? "";
+}
+
+export function formatWaterRegimeLabel(regime: string | null | undefined): string {
+  if (!regime) return "Rainfed or irrigated depending on season";
+  return (
+    WATER_REGIME_DISPLAY[regime]?.label ??
+    regime.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+export function formatWaterRegimeDescription(regime: string | null | undefined): string {
+  if (!regime) return "";
+  return WATER_REGIME_DISPLAY[regime]?.description ?? "";
+}
+
 export interface ClassificationResult {
   group: AgGroup;
   confidence: "high" | "moderate" | "low";
@@ -145,7 +335,7 @@ export function classifyAgGroup(
 
   if (gaez.estimatedLgpDays !== null) {
     inputsUsed.push(
-      `FAO/IIASA GAEZ v5 estimated LGP: ${gaez.estimatedLgpDays} days (${gaez.moistureZone})`
+      `Estimated growing period (GAEZ v5 LGP): ${gaez.estimatedLgpDays} days (${formatMoistureZoneLabel(gaez.moistureZone)})`
     );
   }
 

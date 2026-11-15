@@ -220,6 +220,8 @@ export default function SoilPage() {
   const awc = depth0_30cm?.awc ?? null;
   const hasTexture = sand !== null || silt !== null || clay !== null;
 
+  const isSsurgoSurvey = data?.source.toUpperCase().includes("SSURGO") ?? false;
+
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -229,14 +231,15 @@ export default function SoilPage() {
         </h2>
         <p className="text-muted-foreground max-w-2xl">
           {data
-            ? data.source.toUpperCase().includes("SSURGO")
+            ? isSsurgoSurvey
               ? `USDA SSURGO soil survey data for ${field.name}. Properties are depth-weighted averages for the upper 30 cm.`
-              : `Regional reference and estimated topsoil data (0–30 cm) for ${field.name}.`
+              : `Regional reference topsoil estimate (0–30 cm) for ${field.name} — representative soil properties for this agroecological zone, not a coordinate-specific spatial extraction.`
             : `Soil texture, drainage, and properties for ${field.name}`}
         </p>
         <p className="text-xs text-muted-foreground">
           Coordinates: {field.lat.toFixed(4)}, {field.lon.toFixed(4)}
-          {data?.mapUnit && ` · Map unit: ${data.mapUnit.name}`}
+          {data?.mapUnit &&
+            ` · ${isSsurgoSurvey ? "Map unit" : "Regional reference soil group"}: ${data.mapUnit.name}`}
         </p>
       </div>
 
@@ -272,6 +275,18 @@ export default function SoilPage() {
       {/* Data */}
       {data && !loading && (
         <>
+          {!isSsurgoSurvey && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-900 space-y-1">
+              <p className="font-semibold flex items-center gap-1.5">
+                <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                Regional Topsoil Reference Estimate (Not Coordinate-Extracted)
+              </p>
+              <p className="leading-relaxed text-amber-900/90">
+                This location is outside USDA SSURGO polygon survey coverage. The values below represent typical 0–30 cm topsoil properties for this agroecological region compiled from published FAO HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries. They are not spatially extracted at your exact coordinates and do not replace on-site soil testing.
+              </p>
+            </div>
+          )}
+
           {/* Aggregated Metric Cards */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card className="h-full sm:col-span-2">
@@ -360,16 +375,20 @@ export default function SoilPage() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base font-semibold text-foreground">
-                Component Composition
+                {isSsurgoSurvey ? "Component Composition" : "Regional Reference Soil Group"}
               </CardTitle>
               <CardDescription className="text-xs">
-                Named soil components in the map unit. Percentages reflect the share of each component within the map unit polygon.
+                {isSsurgoSurvey
+                  ? "Named soil components in the map unit. Percentages reflect the share of each component within the map unit polygon."
+                  : "Polygon map-unit component records are only available for USDA SSURGO surveyed fields in the United States."}
               </CardDescription>
             </CardHeader>
             <CardContent>
               {data.components.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No component data available.
+                  {isSsurgoSurvey
+                    ? "No component data available."
+                    : `Using macro-regional reference profile: ${data.mapUnit?.name ?? "Regional Reference Soil Group"}.`}
                 </p>
               ) : (
                 <div className="overflow-x-auto">
