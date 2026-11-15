@@ -61,6 +61,8 @@ export interface GenerationInfo {
   agGroup?: string;
   supportStatus?: "supported" | "limited-evidence" | "unavailable";
   validationErrors?: string[];
+  validationWarnings?: string[];
+  rationale?: string;
   aiProvider?: string;
 }
 
@@ -970,6 +972,29 @@ export function scoreStrategy(
   };
 }
 
+export function rankStrategyResults(results: StrategyResult[]): StrategyResult[] {
+  const sorted = [...results].sort((a, b) => {
+    if (a.overallScore === null && b.overallScore === null) {
+      return a.strategy.id.localeCompare(b.strategy.id);
+    }
+    if (a.overallScore === null) return 1;
+    if (b.overallScore === null) return -1;
+    if (b.overallScore !== a.overallScore) {
+      return b.overallScore - a.overallScore;
+    }
+    // Deterministic tie-breaker: static archetypes before AI-assisted on exact tie, then by ID
+    const aIsAi = a.strategy.generationInfo?.source === "ai-assisted" ? 1 : 0;
+    const bIsAi = b.strategy.generationInfo?.source === "ai-assisted" ? 1 : 0;
+    if (aIsAi !== bIsAi) return aIsAi - bIsAi;
+    return a.strategy.id.localeCompare(b.strategy.id);
+  });
+
+  return sorted.map((r, i) => ({
+    ...r,
+    rank: i + 1,
+  }));
+}
+
 export function scoreAllStrategies(
   climate: ClimateData,
   soil: SoilData | null,
@@ -977,21 +1002,71 @@ export function scoreAllStrategies(
   regionTag?: string | null
 ): StrategyResult[] {
   const results = strategies.map((s) => scoreStrategy(s, climate, soil, priorities, regionTag));
+  return rankStrategyResults(results);
+}
 
-  // Sort by overall score descending
-  const sorted = [...results].sort((a, b) => {
-    if (a.overallScore === null && b.overallScore === null) return 0;
-    if (a.overallScore === null) return 1;
-    if (b.overallScore === null) return -1;
-    return b.overallScore - a.overallScore;
-  });
+/**
+ * Score and merge persisted generated strategies with the static archetype catalog,
+ * sorting by overallScore descending (nulls last) and assigning unified ranks.
+ */
+export function mergeAndRankStrategies(
+  generatedStrategies: RotationStrategy[] | null | undefined,
+  climate: ClimateData,
+  soil: SoilData | null,
+  priorities: FarmerPriorities,
+  regionTag?: string | null
+): StrategyResult[] {
+  const staticResults = strategies.map((s) =>
+    scoreStrategy(s, climate, soil, priorities, regionTag)
+  );
+  const seenIds = new Set(staticResults.map((r) => r.strategy.id));
+  const generatedResults: StrategyResult[] = [];
+  for (const gen of generatedStrategies ?? []) {
+    if (seenIds.has(gen.id)) continue;
+    seenIds.add(gen.id);
+    generatedResults.push(scoreStrategy(gen, climate, soil, priorities, regionTag));
+  }
+  return rankStrategyResults([...generatedResults, ...staticResults]);
+}
 
-  // Assign ranks
-  sorted.forEach((r, i) => {
-    r.rank = i + 1;
-  });
+/**
+ * Resolve a single strategy by ID (checking persisted generated strategies first,
+ * then falling back to the static catalog) and return its scored and ranked result.
+ */
+export function resolveScoredStrategyById(
+  strategyId: string,
+  generatedStrategies: RotationStrategy[] | null | undefined,
+  climate: ClimateData,
+  soil: SoilData | null,
+  priorities: FarmerPriorities,
+  regionTag?: string | null
+): StrategyResult | null {
+  const genList = generatedStrategies ?? [];
+  const fromGenerated = genList.find((s) => s.id === strategyId);
+  const fromStatic = strategies.find((s) => s.id === strategyId);
+  const target = fromGenerated ?? fromStatic;
+  if (!target) return null;
 
-  return sorted;
+  // Build candidate set giving generated strategy priority if IDs ever collided
+  const candidates: RotationStrategy[] = [];
+  const seen = new Set<string>();
+  for (const g of genList) {
+    if (!seen.has(g.id)) {
+      seen.add(g.id);
+      candidates.push(g);
+    }
+  }
+  for (const s of strategies) {
+    if (!seen.has(s.id)) {
+      seen.add(s.id);
+      candidates.push(s);
+    }
+  }
+
+  const ranked = rankStrategyResults(
+    candidates.map((s) => scoreStrategy(s, climate, soil, priorities, regionTag))
+  );
+  return ranked.find((r) => r.strategy.id === strategyId) ?? null;
 }
 
 export function normalizePriorities(p: FarmerPriorities): FarmerPriorities {

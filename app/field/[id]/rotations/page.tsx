@@ -19,12 +19,9 @@ import { PrioritySliders } from "@/components/rotation/priority-sliders";
 import { FactorComparison } from "@/components/rotation/factor-comparison";
 import {
   StrategyResult,
-  FarmerPriorities,
-  DEFAULT_PRIORITIES,
-  scoreAllStrategies,
-  scoreStrategy,
+  mergeAndRankStrategies,
 } from "@/lib/rotation-scoring";
-import { type GenerationResult } from "@/lib/rotation-generator";
+import { type GenerationResult, type RejectedProposalInfo } from "@/lib/rotation-generator";
 
 import {
   RefreshCw,
@@ -174,28 +171,30 @@ function adaptSoil(data: SoilData | null): import("@/lib/rotation-scoring").Soil
 export default function RotationsPage() {
   const params = useParams();
   const router = useRouter();
-  const { fields, activeField, setActiveField, setFieldRotations, isLoaded } = useField();
+  const { fields, activeField, priorities, setPriorities, setActiveField, setFieldRotations, isLoaded } = useField();
 
   const [climate, setClimate] = useState<ClimateData | null>(null);
   const [soil, setSoil] = useState<SoilData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [priorities, setPriorities] = useState<FarmerPriorities>({ ...DEFAULT_PRIORITIES });
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
+  const [lastClassification, setLastClassification] = useState<GenerationResult["classification"] | null>(null);
+  const [lastAvailableCrops, setLastAvailableCrops] = useState<string[] | null>(null);
+  const [rejectedProposals, setRejectedProposals] = useState<RejectedProposalInfo[]>([]);
 
   const fieldId = typeof params.id === "string" ? params.id : undefined;
 
   useEffect(() => {
     if (!isLoaded || !fieldId) return;
-    if (!activeField || activeField.id !== fieldId) {
-      const found = fields.find((f) => f.id === fieldId);
-      if (found) setActiveField(found);
+    const found = fields.find((f) => f.id === fieldId);
+    if (found && (!activeField || activeField.id !== fieldId || activeField.generatedRotations !== found.generatedRotations)) {
+      setActiveField(found);
     }
   }, [isLoaded, fieldId, activeField, fields, setActiveField]);
 
-  const field = activeField ?? (fieldId ? fields.find((f) => f.id === fieldId) : undefined);
+  const field = (fieldId ? fields.find((f) => f.id === fieldId) : undefined) ?? activeField ?? undefined;
 
   const fetchData = useCallback(async () => {
     if (!field) return;
@@ -256,20 +255,16 @@ export default function RotationsPage() {
       return;
     }
     const adaptedSoil = adaptSoil(soil);
-    const staticResults = scoreAllStrategies(adaptedClimate, adaptedSoil, priorities, regionTag);
 
-    // Re-score any persisted generated strategies with current priorities locally
-    const generatedStrategies = field?.generatedRotations?.strategies ?? [];
-    const generatedResults = generatedStrategies.map((s) =>
-      scoreStrategy(s, adaptedClimate, adaptedSoil, priorities, regionTag)
+    // Score, merge, and rank persisted generated strategies + static strategies
+    const ranked = mergeAndRankStrategies(
+      field?.generatedRotations?.strategies,
+      adaptedClimate,
+      adaptedSoil,
+      priorities,
+      regionTag
     );
-
-    const all = [...generatedResults, ...staticResults];
-    // Re-rank after merge
-    all.forEach((r, i) => {
-      r.rank = i + 1;
-    });
-    setResults(all);
+    setResults(ranked);
   }, [climate, soil, priorities, regionTag, field?.generatedRotations]);
 
   const handleGenerate = useCallback(async () => {
@@ -277,6 +272,7 @@ export default function RotationsPage() {
     setGenerating(true);
     setGenerateError(null);
     setGenerationStatus(null);
+    setRejectedProposals([]);
     try {
       const adaptedClimate = adaptClimate(climate);
       const adaptedSoil = adaptSoil(soil);
@@ -295,17 +291,28 @@ export default function RotationsPage() {
         }),
       });
       const data = (await res.json()) as GenerationResult & { error?: string; message?: string };
+
+      if (data.classification) {
+        setLastClassification(data.classification);
+      }
+      if (Array.isArray(data.availableCrops)) {
+        setLastAvailableCrops(data.availableCrops);
+      }
+      if (Array.isArray(data.rejectedProposals) && data.rejectedProposals.length > 0) {
+        setRejectedProposals(data.rejectedProposals);
+      }
+
       if (!res.ok) {
-        setGenerateError(data.message ?? `Generation failed (${res.status})`);
-        setGenerationStatus(data.supportStatus ?? "unavailable");
+        setGenerateError(data.message ?? data.aiUnavailableReason ?? `Generation failed (${res.status})`);
+        setGenerationStatus("unavailable");
         return;
       }
       if (data.proposals.length === 0) {
-        setGenerationStatus(data.supportStatus ?? "limited-evidence");
-        setGenerateError(data.aiUnavailableReason ?? "No proposals were generated.");
+        setGenerationStatus(data.supportStatus ?? "unavailable");
+        setGenerateError(data.aiUnavailableReason ?? "No valid proposals were generated.");
         return;
       }
-      // Persist raw strategies so priority changes re-score locally
+      // Persist only validated raw strategies so priority changes re-score locally
       const rawStrategies = data.proposals.map((p) => p.strategy);
       setFieldRotations(field.id, {
         strategies: rawStrategies,
@@ -402,9 +409,36 @@ export default function RotationsPage() {
                   </span>
                 </div>
               )}
+              {lastClassification && (
+                <div className="rounded-md bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground border border-border space-y-1">
+                  <p>
+                    <strong className="text-foreground">Deterministic agro-group:</strong>{" "}
+                    <span className="font-mono">{lastClassification.group}</span> (confidence:{" "}
+                    {lastClassification.confidence})
+                    {lastAvailableCrops ? ` · ${lastAvailableCrops.length} verified crops available` : ""}
+                  </p>
+                  {lastClassification.reasons.length > 0 && (
+                    <p>{lastClassification.reasons.join(" ")}</p>
+                  )}
+                </div>
+              )}
               {generateError && (
                 <div className="rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 border border-red-100">
                   {generateError}
+                </div>
+              )}
+              {rejectedProposals.length > 0 && (
+                <div className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800 border border-amber-200 space-y-1">
+                  <p className="font-semibold">
+                    Rejected invalid AI proposal{rejectedProposals.length > 1 ? "s" : ""}:
+                  </p>
+                  <ul className="list-disc list-inside space-y-0.5">
+                    {rejectedProposals.map((r) => (
+                      <li key={r.id}>
+                        <strong>{r.name}</strong> ({r.id}): {r.errors.join("; ")}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
               {generationStatus && !generateError && (
@@ -444,6 +478,7 @@ export default function RotationsPage() {
                       setFieldRotations(field.id, null);
                       setGenerateError(null);
                       setGenerationStatus(null);
+                      setRejectedProposals([]);
                     }}
                   >
                     Clear

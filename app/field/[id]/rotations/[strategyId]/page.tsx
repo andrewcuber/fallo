@@ -10,9 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StrategyDetail } from "@/components/rotation/strategy-detail";
 import {
   StrategyResult,
-  FarmerPriorities,
-  DEFAULT_PRIORITIES,
-  scoreAllStrategies,
+  resolveScoredStrategyById,
 } from "@/lib/rotation-scoring";
 import { detectRegion } from "@/lib/region";
 import { ArrowLeft, RotateCcw, AlertTriangle } from "lucide-react";
@@ -150,7 +148,7 @@ function adaptSoil(data: SoilData | null): import("@/lib/rotation-scoring").Soil
 export default function StrategyDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const { fields, activeField, setActiveField, isLoaded } = useField();
+  const { fields, activeField, priorities, setActiveField, isLoaded } = useField();
 
   const [climate, setClimate] = useState<ClimateData | null>(null);
   const [soil, setSoil] = useState<SoilData | null>(null);
@@ -162,13 +160,13 @@ export default function StrategyDetailPage() {
 
   useEffect(() => {
     if (!isLoaded || !fieldId) return;
-    if (!activeField || activeField.id !== fieldId) {
-      const found = fields.find((f) => f.id === fieldId);
-      if (found) setActiveField(found);
+    const found = fields.find((f) => f.id === fieldId);
+    if (found && (!activeField || activeField.id !== fieldId || activeField.generatedRotations !== found.generatedRotations)) {
+      setActiveField(found);
     }
   }, [isLoaded, fieldId, activeField, fields, setActiveField]);
 
-  const field = activeField ?? (fieldId ? fields.find((f) => f.id === fieldId) : undefined);
+  const field = (fieldId ? fields.find((f) => f.id === fieldId) : undefined) ?? activeField ?? undefined;
 
   const fetchData = useCallback(async () => {
     if (!field) return;
@@ -217,7 +215,7 @@ export default function StrategyDetailPage() {
   const regionTag = field ? detectRegion(field.lat, field.lon)?.tag ?? null : null;
 
   useEffect(() => {
-    if (!climate && !soil) {
+    if (!strategyId || (!climate && !soil)) {
       setResult(null);
       return;
     }
@@ -227,10 +225,16 @@ export default function StrategyDetailPage() {
       return;
     }
     const adaptedSoil = adaptSoil(soil);
-    const scored = scoreAllStrategies(adaptedClimate, adaptedSoil, DEFAULT_PRIORITIES, regionTag);
-    const found = scored.find((r) => r.strategy.id === strategyId);
-    setResult(found ?? null);
-  }, [climate, soil, strategyId, regionTag]);
+    const resolved = resolveScoredStrategyById(
+      strategyId,
+      field?.generatedRotations?.strategies,
+      adaptedClimate,
+      adaptedSoil,
+      priorities,
+      regionTag
+    );
+    setResult(resolved);
+  }, [climate, soil, strategyId, regionTag, priorities, field?.generatedRotations]);
 
   if (!isLoaded) {
     return <DetailSkeleton />;

@@ -202,6 +202,19 @@ export function StrategyDetail({ result }: Props) {
           {strategy.generationInfo.aiProvider && (
             <p>Provider: {strategy.generationInfo.aiProvider}</p>
           )}
+          {strategy.generationInfo.rationale && (
+            <p className="italic">Rationale: {strategy.generationInfo.rationale}</p>
+          )}
+          {strategy.generationInfo.validationWarnings && strategy.generationInfo.validationWarnings.length > 0 && (
+            <div className="text-amber-800">
+              <p className="font-semibold">Validation warnings:</p>
+              <ul className="list-disc list-inside">
+                {strategy.generationInfo.validationWarnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {strategy.generationInfo.validationErrors && strategy.generationInfo.validationErrors.length > 0 && (
             <div className="text-red-700">
               <p className="font-semibold">Validation issues:</p>

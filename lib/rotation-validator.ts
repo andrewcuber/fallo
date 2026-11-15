@@ -39,11 +39,58 @@ export interface ValidationContext {
   availableCropIds: string[];
 }
 
+/**
+ * Single source of truth for rotation compatibility rules.
+ * Both the AI prompt builder and `validateProposal()` consume this specification
+ * so AI instructions and deterministic validation never diverge.
+ */
+export const ROTATION_COMPATIBILITY_RULES = {
+  hardConstraints: {
+    rotationYears: 3,
+    minCashCropsPerYear: 1,
+    maxCashCropSharedMonths: 1,
+    maxYearsPerFamily: 2,
+    maxSclerotiniaYears: 1,
+    rules: [
+      "Use ONLY crop IDs from the verified available crop catalog for the field's agricultural group and region. Do not invent crops, varieties, planting windows, or agronomic traits.",
+      "Each strategy must cover exactly 3 years (Year 1, Year 2, Year 3), with 1–4 seasonal entries per year.",
+      "Every year must include at least 1 cash crop.",
+      "Two cash crops within the same year must not overlap by more than 1 transition month.",
+      "No botanical family (e.g., Poaceae, Fabaceae, Asteraceae, Brassicaceae) may appear in more than 2 years across the 3-year rotation.",
+      "Sclerotinia-susceptible crops (sunflower, soybean) must not appear in more than 1 year across the 3-year rotation, because a 3-year plan cannot provide a multi-year non-host break between two Sclerotinia host years.",
+    ],
+  },
+  softAdvisories: {
+    minRecommendedFamilies: 3,
+    maxSoybeanYearsBeforeWarning: 1,
+    fusariumPredecessors: ["field_corn", "grain_sorghum"] as const,
+    fusariumSusceptibleCrop: "soft_red_winter_wheat",
+    rules: [
+      "Avoid planting soft_red_winter_wheat in the year immediately following field_corn or grain_sorghum due to shared Fusarium head blight inoculum in residue (flagged as a Fusarium warning).",
+      "Avoid planting soybean in more than 1 year of the 3-year rotation to limit soybean cyst nematode (SCN) pressure (flagged as an SCN warning).",
+      "Include at least 3 distinct botanical families across the 3-year rotation when the available crop catalog permits (fewer than 3 families is flagged as a low-diversity warning).",
+    ],
+  },
+} as const;
+
+/**
+ * Render the authoritative compatibility rules for inclusion in an AI system prompt.
+ */
+export function formatCompatibilityRulesForPrompt(): string {
+  const hardLines = ROTATION_COMPATIBILITY_RULES.hardConstraints.rules
+    .map((r) => `- [HARD CONSTRAINT — violation rejects proposal] ${r}`)
+    .join("\n");
+  const softLines = ROTATION_COMPATIBILITY_RULES.softAdvisories.rules
+    .map((r) => `- [AGRONOMIC ADVISORY — violation attaches warning] ${r}`)
+    .join("\n");
+  return `### Hard Agronomic Constraints (Enforced Deterministically)\n${hardLines}\n\n### Soft Agronomic Advisories (Flagged as Warnings)\n${softLines}`;
+}
+
 function getKnownFamilies(crop: Crop | undefined): string {
   return crop?.family ?? "unknown";
 }
 
-function getSclerotiniaHosts(crops: (Crop | undefined)[]): string[] {
+export function getSclerotiniaHosts(crops: (Crop | undefined)[]): string[] {
   return crops
     .filter((c): c is Crop => !!c)
     .filter((c) =>
@@ -131,8 +178,9 @@ export function validateProposal(
   }
 
   // ── 4. Planting window plausibility ──
-  // Ensure no two cash crops in the same year have overlapping growingWindow months.
-  // This is a coarse check: we compare the month arrays from growingWindow strings.
+  // Ensure no two cash crops in the same year have overlapping growingWindow months
+  // beyond the allowed single transition month.
+  const maxSharedMonths = ROTATION_COMPATIBILITY_RULES.hardConstraints.maxCashCropSharedMonths;
   for (const year of proposal.years) {
     const cashSeasons = year.seasons.filter((s) => {
       const c = cropLibrary[s.crop];
@@ -141,7 +189,7 @@ export function validateProposal(
     for (let i = 0; i < cashSeasons.length; i++) {
       for (let j = i + 1; j < cashSeasons.length; j++) {
         const overlap = cashSeasons[i].months.filter((m) => cashSeasons[j].months.includes(m));
-        if (overlap.length > 1) {
+        if (overlap.length > maxSharedMonths) {
           errors.push(
             `Year ${year.year}: cash crops "${cashSeasons[i].crop}" and "${cashSeasons[j].crop}" have overlapping activity months.`
           );
@@ -168,7 +216,8 @@ export function validateProposal(
   }
 
   // ── 5. Family sequence constraints ──
-  // Penalize/flag if the same family appears in >2 years across the 3-year rotation.
+  // Penalize/flag if the same family appears in > maxYearsPerFamily years across the 3-year rotation.
+  const maxYearsPerFamily = ROTATION_COMPATIBILITY_RULES.hardConstraints.maxYearsPerFamily;
   const familyByYear = proposal.years.map((y) => {
     const families = new Set<string>();
     y.seasons.forEach((s) => {
@@ -185,7 +234,7 @@ export function validateProposal(
     });
   });
 
-  const repeatedFamilies = Object.entries(familyCounts).filter(([, count]) => count > 2);
+  const repeatedFamilies = Object.entries(familyCounts).filter(([, count]) => count > maxYearsPerFamily);
   const passFamilySeq = repeatedFamilies.length === 0;
   checks.push({
     name: "Family diversity over 3 years",
@@ -193,16 +242,17 @@ export function validateProposal(
     severity: passFamilySeq ? "info" : "error",
     message: passFamilySeq
       ? "Botanical families are reasonably distributed across the rotation."
-      : `Family(ies) appearing in >2 years: ${repeatedFamilies.map(([f]) => f).join(", ")}`,
+      : `Family(ies) appearing in >${maxYearsPerFamily} years: ${repeatedFamilies.map(([f]) => f).join(", ")}`,
   });
   if (!passFamilySeq) {
     errors.push(
-      `Botanical family sequence constraint violated: ${repeatedFamilies.map(([f]) => f).join(", ")} appear in more than 2 years.`
+      `Botanical family sequence constraint violated: ${repeatedFamilies.map(([f]) => f).join(", ")} appear in more than ${maxYearsPerFamily} years.`
     );
   }
 
   // ── 6. Disease compatibility ──
   // Sclerotinia host stacking
+  const maxSclerotiniaYears = ROTATION_COMPATIBILITY_RULES.hardConstraints.maxSclerotiniaYears;
   const sclerotiniaHosts = getSclerotiniaHosts(allCrops);
   const sclerotiniaYears = new Map<number, string[]>();
   proposal.years.forEach((y) => {
@@ -212,7 +262,7 @@ export function validateProposal(
     if (hosts.length > 0) sclerotiniaYears.set(y.year, hosts);
   });
   const sclerotiniaYearCount = sclerotiniaYears.size;
-  const passSclerotinia = sclerotiniaYearCount <= 1;
+  const passSclerotinia = sclerotiniaYearCount <= maxSclerotiniaYears;
   checks.push({
     name: "Sclerotinia host accumulation",
     passed: passSclerotinia,
@@ -230,15 +280,17 @@ export function validateProposal(
 
   // Wheat following sorghum / corn Fusarium check
   // Find any wheat (Poaceae cash) that immediately follows sorghum or corn in Year order
+  const fusariumPredecessors: readonly string[] = ROTATION_COMPATIBILITY_RULES.softAdvisories.fusariumPredecessors;
+  const fusariumCrop = ROTATION_COMPATIBILITY_RULES.softAdvisories.fusariumSusceptibleCrop;
   for (let i = 1; i < proposal.years.length; i++) {
     const prevCash = proposal.years[i - 1].seasons.find((s) => cropLibrary[s.crop]?.type === "cash");
     const currentWheat = proposal.years[i].seasons.find(
-      (s) => s.crop === "soft_red_winter_wheat"
+      (s) => s.crop === fusariumCrop
     );
     if (
       currentWheat &&
       prevCash &&
-      (prevCash.crop === "grain_sorghum" || prevCash.crop === "field_corn")
+      fusariumPredecessors.includes(prevCash.crop)
     ) {
       warnings.push(
         `Fusarium risk: soft red winter wheat follows ${prevCash.crop} (Year ${proposal.years[i - 1].year} → ${proposal.years[i].year}). Shared Fusarium inoculum may elevate head blight risk.`
@@ -271,8 +323,9 @@ export function validateProposal(
   }
 
   // ── 8. High-level rotation quality heuristic ──
+  const minFamilies = ROTATION_COMPATIBILITY_RULES.softAdvisories.minRecommendedFamilies;
   const uniqueFamilies = new Set(allCrops.map((c) => c?.family).filter(Boolean));
-  if (uniqueFamilies.size < 3) {
+  if (uniqueFamilies.size < minFamilies) {
     warnings.push(
       `Low botanical diversity: only ${uniqueFamilies.size} unique family(ies) across rotation. Consider adding a Fabaceae or Asteraceae crop for pest-break benefit.`
     );
@@ -292,11 +345,12 @@ export function validateProposal(
   }
 
   // ── 9. SCN frequency ──
-  // If soybean appears more than once in 3 years, flag as warning
+  // If soybean appears more than maxSoybeanYearsBeforeWarning in 3 years, flag as warning
+  const maxSoybeanYears = ROTATION_COMPATIBILITY_RULES.softAdvisories.maxSoybeanYearsBeforeWarning;
   const soybeanYears = proposal.years.filter((y) =>
     y.seasons.some((s) => s.crop === "soybean")
   ).length;
-  if (soybeanYears > 1) {
+  if (soybeanYears > maxSoybeanYears) {
     warnings.push(
       `Soybean appears in ${soybeanYears} years. Frequent soybean can increase soybean cyst nematode (SCN) pressure over time.`
     );

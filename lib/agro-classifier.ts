@@ -41,12 +41,6 @@ function winterMonthsPrecip(monthlyPrecip: (number | null)[]): number | null {
   return sum([monthlyPrecip[11], monthlyPrecip[0], monthlyPrecip[1]]);
 }
 
-function avgTemp(monthlyTemp: (number | null)[]): number | null {
-  const valid = monthlyTemp.filter((n): n is number => n !== null);
-  if (valid.length === 0) return null;
-  return valid.reduce((a, b) => a + b, 0) / valid.length;
-}
-
 /**
  * Classify a field into an agricultural group based on climate and optional soil data.
  *
@@ -54,8 +48,12 @@ function avgTemp(monthlyTemp: (number | null)[]): number | null {
  *   - Annual average temperature must be available.
  *   - Annual precipitation must be available.
  *
- * Confidence degrades when stress-metric or soil data are missing,
- * but classification may still proceed if the core climate signal is clear.
+ * Note on soil integration:
+ *   The current crop catalog and agronomic reference sources do not define
+ *   validated quantitative soil thresholds for macro-group assignment. Therefore,
+ *   classification is provisionally driven by climate regimes, while soil
+ *   availability is explicitly recorded in inputs/limitations and factored into
+ *   classification confidence.
  */
 export function classifyAgGroup(
   climate: ClimateData,
@@ -73,7 +71,6 @@ export function classifyAgGroup(
 
   const summerPrecip = summerMonthsPrecip(climate.fullRecord.monthlyPrecip);
   const winterPrecip = winterMonthsPrecip(climate.fullRecord.monthlyPrecip);
-  const meanMonthlyTemp = avgTemp(climate.fullRecord.monthlyTemp);
 
   if (avgAnnualTemp !== null) {
     inputsUsed.push(`Average annual temperature: ${avgAnnualTemp.toFixed(1)} °C`);
@@ -105,13 +102,24 @@ export function classifyAgGroup(
     limitations.push("Growing-season precipitation unavailable.");
   }
 
+  const hasSoilAwc = soil !== null && soil.aggregated.depth0_30cm.awc !== null;
   if (soil) {
     const awc = soil.aggregated.depth0_30cm.awc;
     if (awc !== null) inputsUsed.push(`Soil AWC (0–30 cm): ${awc.toFixed(3)} cm/cm`);
     else limitations.push("Soil AWC unavailable.");
+    if (soil.aggregated.drainage) {
+      inputsUsed.push(`Soil drainage class: ${soil.aggregated.drainage}`);
+    }
+    if (soil.aggregated.slope !== null) {
+      inputsUsed.push(`Soil slope: ${soil.aggregated.slope.toFixed(1)}%`);
+    }
   } else {
     limitations.push("No soil data available.");
   }
+
+  limitations.push(
+    "Provisional climate-based classification: soil properties are recorded for field context and scoring, but source-backed soil-group thresholds are not yet integrated into group classification."
+  );
 
   // Core data gating: without temperature and precipitation, we cannot classify.
   if (avgAnnualTemp === null || avgAnnualPrecip === null) {
@@ -187,9 +195,7 @@ export function classifyAgGroup(
   // Moderate temperatures, moderate-to-high precipitation, not arid
   if (group === "unknown") {
     const humidSignal =
-      avgAnnualPrecip >= 700 ||
-      (gsPrecip !== null && gsPrecip >= 350) ||
-      avgAnnualPrecip >= 500;
+      avgAnnualPrecip >= 500 || (gsPrecip !== null && gsPrecip >= 350);
 
     if (avgAnnualTemp >= 4 && avgAnnualTemp <= 20 && humidSignal) {
       group = "temperate_humid";
@@ -201,7 +207,7 @@ export function classifyAgGroup(
     }
   }
 
-  // If nothing matched, but we have core data, mark as unknown with moderate confidence
+  // If nothing matched, but we have core data, mark as unknown with low confidence
   // that we genuinely cannot assign a known group.
   if (group === "unknown") {
     reasons.push(
@@ -210,9 +216,9 @@ export function classifyAgGroup(
     confidence = "low";
   }
 
-  // Degrade confidence if too many key stress metrics are missing
+  // Degrade confidence if too many key stress metrics are missing or if soil context is absent
   const missingStressMetrics = [dryDays, heatDays, gsPrecip].filter((v) => v === null).length;
-  if (missingStressMetrics >= 2 && confidence === "high") {
+  if ((missingStressMetrics >= 2 || !hasSoilAwc) && confidence === "high") {
     confidence = "moderate";
   }
 
