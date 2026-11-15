@@ -19,8 +19,7 @@ import { FactorComparison } from "@/components/rotation/factor-comparison";
 import {
   StrategyResult,
   scoreVerifiedAiStrategies,
-  STRATEGY_OBJECTIVES,
-  buildObjectiveFieldContextBullets,
+  buildFieldSpecificObjectives,
   getAvailableCropsForContext,
   evaluateFieldCropEvidenceLevel,
   cropLibrary,
@@ -259,6 +258,17 @@ export default function RotationsPage() {
     [availableCropIds]
   );
 
+  const fieldObjectives = useMemo(
+    () =>
+      buildFieldSpecificObjectives({
+        climate: adaptedClimate,
+        soil: adaptedSoil,
+        priorities,
+        availableCropIds,
+      }),
+    [adaptedClimate, adaptedSoil, priorities, availableCropIds]
+  );
+
   // Score ONLY verified AI-generated strategies for this field (never static predefined templates)
   const generatedResults: StrategyResult[] = useMemo(() => {
     if (!adaptedClimate || !field) return [];
@@ -306,7 +316,10 @@ export default function RotationsPage() {
       const data = (await res.json()) as GenerationResult & { error?: string; message?: string };
 
       if (!res.ok || !Array.isArray(data.proposals) || data.proposals.length === 0) {
-        setGenerateError("We couldn't finish generating your plans. Please try again later.");
+        const serverReason = (data.message || data.aiUnavailableReason || "").trim();
+        setGenerateError(
+          serverReason || "We couldn't finish generating your plans. Please try again later."
+        );
         return;
       }
 
@@ -322,8 +335,18 @@ export default function RotationsPage() {
         validationStatus: "passed",
         usageMetadata: data.usageMetadata,
       });
-    } catch {
-      setGenerateError("We couldn't finish generating your plans. Please try again later.");
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        setGenerateError(
+          "Rotation generation timed out after 2 minutes. Please try again."
+        );
+      } else {
+        setGenerateError(
+          err instanceof Error && err.message
+            ? err.message
+            : "We couldn't finish generating your plans. Please try again later."
+        );
+      }
     } finally {
       clearTimeout(timeoutId);
       inFlightFieldRef.current = null;
@@ -548,7 +571,7 @@ export default function RotationsPage() {
                 <p className="text-xs text-muted-foreground">
                   {hasGeneratedPlans
                     ? `SI-generated crop rotation plans are active for ${field.name}. You can regenerate plans at any time.`
-                    : "Ready to design three 3-year crop rotation plans (Soil Health Building, Water Resilience, Crop Diversity & Pest Break) guided by your weights above."}
+                    : `Ready to design three 3-year crop rotation plans (${fieldObjectives.map((o) => o.name).join(", ")}) guided by your weights above.`}
                 </p>
 
                 <div className="flex items-center gap-2 shrink-0">
@@ -673,17 +696,12 @@ export default function RotationsPage() {
                   Planning Objectives for {field.name}
                 </h3>
                 <p className="text-xs text-muted-foreground">
-                  Three agronomic focus areas tailored to your field&apos;s climate and soil profile.
+                  Three agronomic focus areas tailored to your field&apos;s climate, topsoil properties, and priority weights.
                 </p>
               </div>
 
               <div className="grid gap-4 lg:grid-cols-3">
-                {STRATEGY_OBJECTIVES.map((obj) => {
-                  const bullets = buildObjectiveFieldContextBullets(
-                    obj.archetype,
-                    adaptedClimate,
-                    adaptedSoil
-                  );
+                {fieldObjectives.map((obj) => {
                   const Icon =
                     obj.archetype === "soil_health"
                       ? Sprout
@@ -706,17 +724,22 @@ export default function RotationsPage() {
                   return (
                     <Card key={obj.archetype} className={`h-full flex flex-col ${accentClass}`}>
                       <CardHeader className="pb-2.5 space-y-2">
-                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-start justify-between gap-2 flex-wrap">
                           <div className="flex items-center gap-2">
                             <span
-                              className={`inline-flex h-7 w-7 items-center justify-center rounded-md ${badgeClass}`}
+                              className={`inline-flex h-7 w-7 items-center justify-center rounded-md shrink-0 ${badgeClass}`}
                             >
                               <Icon className="h-4 w-4" />
                             </span>
-                            <CardTitle className="text-base font-semibold text-foreground">
+                            <CardTitle className="text-base font-semibold text-foreground leading-snug">
                               {obj.name}
                             </CardTitle>
                           </div>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}
+                          >
+                            {obj.emphasisTag}
+                          </span>
                         </div>
                         <CardDescription className="text-xs leading-relaxed text-muted-foreground">
                           {obj.objective}
@@ -724,13 +747,21 @@ export default function RotationsPage() {
                       </CardHeader>
                       <CardContent className="flex-1 flex flex-col justify-between gap-3 pt-0">
                         <ul className="space-y-1.5 text-xs text-foreground/90">
-                          {bullets.map((b, i) => (
+                          {obj.bullets.map((b, i) => (
                             <li key={i} className="flex items-start gap-2 leading-snug">
                               <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-electric shrink-0" />
                               <span>{b}</span>
                             </li>
                           ))}
                         </ul>
+                        {obj.recommendedCropNames.length > 0 && (
+                          <div className="pt-2 border-t border-border/60 text-[11px] text-muted-foreground">
+                            <span className="font-medium text-foreground">
+                              Candidate field crops:
+                            </span>{" "}
+                            {obj.recommendedCropNames.join(", ")}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   );

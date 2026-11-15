@@ -33,6 +33,8 @@ import {
   isFieldGenerationInFlight,
   isVercelDeploymentEnvironment,
   getMissingVercelWifEnvVars,
+  describeMissingAIProviderReason,
+  sanitizeGenerationErrorMessage,
   resolveVercelWifConfig,
   buildVercelWifAudience,
   buildServiceAccountImpersonationUrl,
@@ -78,6 +80,7 @@ import {
   strategies as staticStrategies,
   STRATEGY_OBJECTIVES,
   buildObjectiveFieldContextBullets,
+  buildFieldSpecificObjectives,
   buildStrategyOverviewBullets,
   isReferenceStrategyApplicable,
   isVerifiedAiStrategyForField,
@@ -2785,6 +2788,149 @@ test("What-If Simulator humanizes enums/crop IDs and produces distinct crop-spec
   // Strategy comparison includes a concrete sequence-backed explanation
   assert.equal(evalDrought.strategyComparisons.length, 1);
   assert.ok(evalDrought.strategyComparisons[0].explanation.length > 20);
+});
+
+test("Environment-aware AI provider diagnostics & token sanitization (Preview vs Production vs Local)", () => {
+  // 1. Vercel Preview environment explains Preview restriction clearly
+  const previewReason = describeMissingAIProviderReason({
+    VERCEL: "1",
+    VERCEL_ENV: "preview",
+  });
+  assert.ok(previewReason.includes("Vercel Preview deployments"));
+  assert.ok(previewReason.includes("Production environment"));
+  assert.ok(previewReason.includes("GCP_PROJECT_NUMBER"));
+
+  // 2. Vercel Production environment with missing WIF vars lists missing vars without local gcloud prompt
+  const prodReason = describeMissingAIProviderReason({
+    VERCEL: "1",
+    VERCEL_ENV: "production",
+    GOOGLE_CLOUD_PROJECT: "triangle-hackathon-claude-code",
+  });
+  assert.ok(prodReason.includes("Missing Vercel OIDC Workload Identity Federation"));
+  assert.ok(prodReason.includes("GCP_PROJECT_NUMBER"));
+  assert.ok(!prodReason.includes("gcloud auth application-default login"));
+
+  // 3. Local development environment explains local ADC setup
+  const localReason = describeMissingAIProviderReason({
+    VERCEL_ENV: "development",
+  });
+  assert.ok(localReason.includes("gcloud auth application-default login"));
+  assert.ok(localReason.includes("FALLO_AI_PROVIDER"));
+
+  // 4. Token sanitization strips OAuth tokens, JWTs, and Bearer tokens
+  const dirtyError =
+    "Auth failed with Bearer secret-token-999 and access token ya29.a0AfH6SMB_secret_token and JWT eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJl";
+  const cleanError = sanitizeGenerationErrorMessage(dirtyError);
+  assert.ok(!cleanError.includes("secret-token-999"));
+  assert.ok(!cleanError.includes("ya29.a0AfH6SMB_secret_token"));
+  assert.ok(!cleanError.includes("eyJhbGciOiJSUzI1NiJ9"));
+  assert.ok(cleanError.includes("[REDACTED_TOKEN]"));
+  assert.ok(cleanError.includes("[REDACTED_OIDC_TOKEN]"));
+});
+
+test("Field-specific planning objectives adapt across 3 contrasting field contexts and priority weights", () => {
+  const availableCrops = getAvailableCropsForContext("temperate_humid", "us_southeast");
+
+  // Context 1: Hot, dry field with limited rainfall
+  const hotDryClimate = makeClimate({
+    avgAnnualTemp: 21.5,
+    avgAnnualPrecip: 420,
+    summerDrySpells: { avgMaxConsecutiveDryDays: 19, thresholdMm: 1, monthsDesc: "Jun–Aug" },
+    summerHeatDays: { avgDaysAboveThreshold: 28, thresholdC: 35, monthsDesc: "Jul–Aug" },
+    growingSeasonPrecip: { avgTotalMm: 150, monthsDesc: "May–Aug" },
+  });
+  const moderateSoil = makeSoil();
+  moderateSoil.aggregated.depth0_30cm.om = 2.1;
+  moderateSoil.aggregated.depth0_30cm.awc = 0.16;
+
+  const hotDryObjectives = buildFieldSpecificObjectives({
+    climate: hotDryClimate,
+    soil: moderateSoil,
+    priorities: DEFAULT_PRIORITIES,
+    availableCropIds: availableCrops,
+  });
+
+  const hotDryWater = hotDryObjectives.find((o) => o.archetype === "water_resilience")!;
+  const hotDrySoil = hotDryObjectives.find((o) => o.archetype === "soil_health")!;
+  const hotDryDiv = hotDryObjectives.find((o) => o.archetype === "crop_diversity")!;
+  assert.equal(hotDryWater.name, "Drought & Heat-Stress Buffering");
+  assert.equal(hotDrySoil.name, "Moisture-Conserving Residue & Biological N");
+  assert.equal(hotDryDiv.name, "Dryland Pest Break & Multi-Family Risk Spread");
+  assert.ok(hotDryWater.objective.includes("150 mm"));
+  assert.ok(hotDryWater.recommendedCropNames.length > 0);
+
+  // Context 2: Humid field with high rainfall and poor drainage
+  const humidClimate = makeClimate({
+    avgAnnualTemp: 17.5,
+    avgAnnualPrecip: 1380,
+    springPrecip: { avgTotalMm: 360, monthsDesc: "Mar–May" },
+    growingSeasonPrecip: { avgTotalMm: 540, monthsDesc: "May–Aug" },
+  });
+  const poorlyDrainedSoil = makeSoil();
+  poorlyDrainedSoil.aggregated.depth0_30cm.om = 2.6;
+  poorlyDrainedSoil.aggregated.depth0_30cm.awc = 0.19;
+  poorlyDrainedSoil.aggregated.drainage = "Somewhat poorly drained";
+
+  const humidObjectives = buildFieldSpecificObjectives({
+    climate: humidClimate,
+    soil: poorlyDrainedSoil,
+    priorities: DEFAULT_PRIORITIES,
+    availableCropIds: availableCrops,
+  });
+
+  const humidWater = humidObjectives.find((o) => o.archetype === "water_resilience")!;
+  const humidSoil = humidObjectives.find((o) => o.archetype === "soil_health")!;
+  const humidDiv = humidObjectives.find((o) => o.archetype === "crop_diversity")!;
+  assert.equal(humidWater.name, "Drainage Resilience & Seasonal Water Balance");
+  assert.equal(humidSoil.name, "Erosion Control, N Scavenging & Living Cover");
+  assert.equal(humidDiv.name, "Humid Disease-Cycle Break & Family Rotation");
+  assert.ok(humidWater.objective.includes("somewhat poorly drained"));
+
+  // Context 3: Field with low soil organic matter and limited water-holding capacity
+  const moderateClimate = makeClimate({
+    avgAnnualTemp: 15.0,
+    avgAnnualPrecip: 820,
+    springPrecip: { avgTotalMm: 220, monthsDesc: "Mar–May" },
+    growingSeasonPrecip: { avgTotalMm: 310, monthsDesc: "May–Aug" },
+    summerDrySpells: { avgMaxConsecutiveDryDays: 9, thresholdMm: 1, monthsDesc: "Jun–Aug" },
+    summerHeatDays: { avgDaysAboveThreshold: 4, thresholdC: 35, monthsDesc: "Jul–Aug" },
+  });
+  const lowOmLowAwcSoil = makeSoil();
+  lowOmLowAwcSoil.aggregated.depth0_30cm.om = 0.9;
+  lowOmLowAwcSoil.aggregated.depth0_30cm.awc = 0.08;
+  lowOmLowAwcSoil.aggregated.depth0_30cm.sand = 76;
+
+  const lowOmObjectives = buildFieldSpecificObjectives({
+    climate: moderateClimate,
+    soil: lowOmLowAwcSoil,
+    priorities: DEFAULT_PRIORITIES,
+    availableCropIds: availableCrops,
+  });
+
+  const lowOmSoilObj = lowOmObjectives.find((o) => o.archetype === "soil_health")!;
+  const lowOmWaterObj = lowOmObjectives.find((o) => o.archetype === "water_resilience")!;
+  const lowOmDivObj = lowOmObjectives.find((o) => o.archetype === "crop_diversity")!;
+  assert.equal(lowOmSoilObj.name, "Organic Matter & Water-Holding Rebuilding");
+  assert.equal(lowOmWaterObj.name, "Low-AWC Root-Zone Moisture Efficiency");
+  assert.equal(lowOmDivObj.name, "Multi-Family Rotation & Root-Depth Diversity");
+  assert.ok(lowOmSoilObj.objective.includes("0.9%"));
+  assert.ok(lowOmWaterObj.objective.includes("0.08 cm/cm"));
+
+  // Verify farmer priority sliders reorder and re-weight the objectives
+  const waterHeavyObjectives = buildFieldSpecificObjectives({
+    climate: moderateClimate,
+    soil: lowOmLowAwcSoil,
+    priorities: {
+      waterSuitability: 100,
+      climateRiskResilience: 95,
+      soilCoverage: 20,
+      nitrogenContribution: 10,
+      diversityPestBreak: 10,
+    },
+    availableCropIds: availableCrops,
+  });
+  assert.equal(waterHeavyObjectives[0].archetype, "water_resilience");
+  assert.ok(waterHeavyObjectives[0].emphasisTag.includes("Top Farmer Priority"));
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────

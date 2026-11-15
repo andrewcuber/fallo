@@ -289,8 +289,9 @@ export default function WhatIfSimulatorPage() {
         !Array.isArray(data.proposals) ||
         data.proposals.length === 0
       ) {
+        const serverReason = (data.message || data.aiUnavailableReason || "").trim();
         setScenarioGenerateError(
-          data.message ||
+          serverReason ||
             "We couldn't finish generating scenario plans. Please try again later."
         );
         return;
@@ -307,10 +308,18 @@ export default function WhatIfSimulatorPage() {
         validationStatus: "passed",
         usageMetadata: data.usageMetadata,
       });
-    } catch {
-      setScenarioGenerateError(
-        "We couldn't finish generating scenario plans. Please try again later."
-      );
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        setScenarioGenerateError(
+          "Scenario rotation generation timed out after 2 minutes. Please try again."
+        );
+      } else {
+        setScenarioGenerateError(
+          err instanceof Error && err.message
+            ? err.message
+            : "We couldn't finish generating scenario plans. Please try again later."
+        );
+      }
     } finally {
       clearTimeout(timeoutId);
       inFlightScenarioGenRef.current = false;

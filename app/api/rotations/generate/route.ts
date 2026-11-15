@@ -3,8 +3,8 @@ import {
   generateRotations,
   GenerationRequestSchema,
   resolveRuntimeAIProvider,
-  isVercelDeploymentEnvironment,
-  getMissingVercelWifEnvVars,
+  describeMissingAIProviderReason,
+  sanitizeGenerationErrorMessage,
   checkGenerationRateLimit,
   getInFlightGenerationCount,
   MAX_CONCURRENT_GENERATIONS,
@@ -127,17 +127,9 @@ export async function POST(req: NextRequest) {
     });
 
     if (!provider) {
-      const onVercel = isVercelDeploymentEnvironment(process.env);
-      const missingWifVars = onVercel ? getMissingVercelWifEnvVars(process.env) : [];
-      const vercelWifHint =
-        onVercel && missingWifVars.length > 0
-          ? ` Missing Vercel OIDC Workload Identity Federation environment variables: ${missingWifVars.join(", ")}.`
-          : "";
-      const unavailableMessage =
-        (result.aiUnavailableReason ??
-          "No runtime AI provider is configured for this deployment. " +
-            "Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Vercel OIDC Workload Identity Federation on Vercel or Application Default Credentials locally) to enable Gemini Enterprise rotation generation.") +
-        vercelWifHint;
+      const unavailableMessage = sanitizeGenerationErrorMessage(
+        result.aiUnavailableReason || describeMissingAIProviderReason(process.env)
+      );
 
       return NextResponse.json(
         {
@@ -151,9 +143,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (!Array.isArray(result.proposals) || result.proposals.length === 0) {
+      const failureMessage = sanitizeGenerationErrorMessage(
+        result.aiUnavailableReason,
+        "SI rotation generation could not complete. Please verify your provider configuration and try again."
+      );
+      return NextResponse.json(
+        {
+          ...result,
+          aiUnavailableReason: failureMessage,
+          message: failureMessage,
+        },
+        { status: 200 }
+      );
+    }
+
     return NextResponse.json(result, { status: 200 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = sanitizeGenerationErrorMessage(
+      err instanceof Error ? err.message : String(err)
+    );
     return NextResponse.json(
       {
         error: "Generation failed",
