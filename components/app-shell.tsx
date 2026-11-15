@@ -11,6 +11,9 @@ import {
   CloudSun,
   Layers,
   RefreshCw,
+  SlidersHorizontal,
+  CalendarDays,
+  GitCompare,
   Database,
   Menu,
   X,
@@ -36,9 +39,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         },
         { label: "Soil", href: `/field/${activeField.id}/soil`, icon: Layers },
         {
-          label: "Rotation Lab",
+          label: "Crop Rotation Lab",
           href: `/field/${activeField.id}/rotations`,
           icon: RefreshCw,
+        },
+        {
+          label: "What-If Simulator",
+          href: `/field/${activeField.id}/simulator`,
+          icon: SlidersHorizontal,
+        },
+        {
+          label: "Field Calendar",
+          href: `/field/${activeField.id}/calendar`,
+          icon: CalendarDays,
+        },
+        {
+          label: "Climate Analogues",
+          href: `/field/${activeField.id}/analogues`,
+          icon: GitCompare,
         },
       ]
     : [];
@@ -209,7 +227,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Main Content */}
       <main className="flex-1 lg:ml-64 pt-14 lg:pt-0 min-h-screen bg-background">
-        <div className="mx-auto max-w-5xl px-4 py-6 lg:py-10">{children}</div>
+        <div className="mx-auto max-w-6xl px-4 py-6 lg:py-10">{children}</div>
       </main>
     </div>
   );

@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useField } from "@/components/providers";
 import {
   AlertTriangle,
   ShieldAlert,
@@ -60,8 +61,9 @@ function OverallScoreBadge({ score, fitLabel }: { score: number | null; fitLabel
 
 export function StrategyCard({ result, climate, soil, loading }: Props) {
   const params = useParams();
+  const { setSelectedStrategyId } = useField();
   const fieldId = typeof params.id === "string" ? params.id : undefined;
-  const { strategy, overallScore, overallCoverage, overallFitLabel, rank, availableWeightPercent } = result;
+  const { strategy, overallScore, overallFitLabel, rank, availableWeightPercent } = result;
 
   if (loading) {
     return <StrategyCardSkeleton />;
@@ -94,27 +96,14 @@ export function StrategyCard({ result, climate, soil, loading }: Props) {
               </CardTitle>
             </div>
 
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span
-                className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                  overallCoverage === "Good"
-                    ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
-                    : overallCoverage === "Partial"
-                    ? "bg-amber-50 text-amber-700 border border-amber-100"
-                    : "bg-red-50 text-red-700 border border-red-100"
-                }`}
-                title="Reflects data completeness, not agronomic certainty"
-              >
-                Data coverage: {overallCoverage}
-              </span>
-
-              {strategy.generationInfo?.source === "ai-assisted" && (
+            {strategy.generationInfo?.source === "ai-assisted" && (
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="inline-flex items-center gap-1 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 border border-purple-100">
                   <Sparkles className="h-3 w-3" />
                   Field-specific
                 </span>
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           <OverallScoreBadge score={overallScore} fitLabel={overallFitLabel} />
@@ -164,14 +153,24 @@ export function StrategyCard({ result, climate, soil, loading }: Props) {
         </div>
 
         {fieldId && (
-          <Link
-            href={`/field/${fieldId}/rotations/${strategy.id}`}
-            className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-background px-3 py-2 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground h-8 w-full mt-auto"
-          >
-            <CalendarDays className="h-3.5 w-3.5" />
-            View 3-year plan
-            <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
+          <div className="flex flex-col gap-1.5 mt-auto pt-1">
+            <Link
+              href={`/field/${fieldId}/rotations/${strategy.id}`}
+              onClick={() => setSelectedStrategyId(fieldId, strategy.id)}
+              className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-background px-3 py-2 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground h-8 w-full"
+            >
+              <span>View 3-year plan details</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+            <Link
+              href={`/field/${fieldId}/calendar`}
+              onClick={() => setSelectedStrategyId(fieldId, strategy.id)}
+              className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-emerald-50/80 border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-100/80 h-8 w-full"
+            >
+              <CalendarDays className="h-3.5 w-3.5 text-emerald-700" />
+              <span>Open in Field Calendar</span>
+            </Link>
+          </div>
         )}
       </CardContent>
     </Card>

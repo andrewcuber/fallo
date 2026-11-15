@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useField } from "@/components/providers";
+import { useField, useFieldEnvironmentalData } from "@/components/providers";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,7 +13,13 @@ import {
   resolveScoredStrategyById,
 } from "@/lib/rotation-scoring";
 import { detectRegion } from "@/lib/region";
-import { ArrowLeft, RotateCcw, AlertTriangle } from "lucide-react";
+import {
+  ArrowLeft,
+  RotateCcw,
+  AlertTriangle,
+  CalendarDays,
+  SlidersHorizontal,
+} from "lucide-react";
 
 // re-use types from climate API (must match route.ts exactly)
 interface StressMetrics {
@@ -148,12 +154,7 @@ function adaptSoil(data: SoilData | null): import("@/lib/rotation-scoring").Soil
 export default function StrategyDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const { fields, activeField, priorities, setActiveField, isLoaded } = useField();
-
-  const [climate, setClimate] = useState<ClimateData | null>(null);
-  const [soil, setSoil] = useState<SoilData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { fields, activeField, priorities, setActiveField, setSelectedStrategyId, isLoaded } = useField();
 
   const fieldId = typeof params.id === "string" ? params.id : undefined;
   const strategyId = typeof params.strategyId === "string" ? params.strategyId : undefined;
@@ -167,48 +168,15 @@ export default function StrategyDetailPage() {
   }, [isLoaded, fieldId, activeField, fields, setActiveField]);
 
   const field = (fieldId ? fields.find((f) => f.id === fieldId) : undefined) ?? activeField ?? undefined;
-
-  const fetchData = useCallback(async () => {
-    if (!field) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [climateRes, soilRes] = await Promise.all([
-        fetch(`/api/climate?lat=${field.lat.toFixed(4)}&lon=${field.lon.toFixed(4)}`),
-        fetch(`/api/soil?lat=${field.lat.toFixed(4)}&lon=${field.lon.toFixed(4)}`),
-      ]);
-
-      const climateJson = await climateRes.json();
-      if (!climateRes.ok) {
-        setError(climateJson.error || `Climate API failed (${climateRes.status})`);
-        setClimate(null);
-        setSoil(null);
-        setLoading(false);
-        return;
-      }
-      setClimate(climateJson);
-
-      const soilJson = await soilRes.json();
-      if (!soilRes.ok) {
-        setSoil(null);
-      } else {
-        setSoil(soilJson);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      setClimate(null);
-      setSoil(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [field]);
-
-  useEffect(() => {
-    if (field) {
-      fetchData();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field?.id]);
+  const {
+    climateRaw,
+    soilRaw,
+    loading,
+    error,
+    refresh: fetchData,
+  } = useFieldEnvironmentalData(field);
+  const climate = climateRaw as ClimateData | null;
+  const soil = soilRaw as SoilData | null;
 
   // Compute scores
   const [result, setResult] = useState<StrategyResult | null>(null);
@@ -256,22 +224,44 @@ export default function StrategyDetailPage() {
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div className="space-y-2">
-        <Link href={`/field/${field.id}/rotations`}>
-          <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="mr-1 h-4 w-4" />
-            Back to Rotation Lab
-          </Button>
-        </Link>
-        <h2 className="text-2xl font-serif font-bold text-foreground">
-          {result?.strategy.name ?? "Strategy Detail"}
-        </h2>
-        <p className="text-muted-foreground max-w-2xl text-sm">
-          {result?.strategy.description ?? "Loading strategy details..."}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Coordinates: {field.lat.toFixed(4)}, {field.lon.toFixed(4)}
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-2">
+          <Link href={`/field/${field.id}/rotations`}>
+            <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="mr-1 h-4 w-4" />
+              Back to Crop Rotation Lab
+            </Button>
+          </Link>
+          <h2 className="text-2xl font-serif font-bold text-foreground">
+            {result?.strategy.name ?? "Strategy Detail"}
+          </h2>
+          <p className="text-muted-foreground max-w-2xl text-sm">
+            {result?.strategy.description ?? "Loading strategy details..."}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Coordinates: {field.lat.toFixed(4)}, {field.lon.toFixed(4)}
+          </p>
+        </div>
+
+        {result && (
+          <div className="flex flex-wrap gap-2 shrink-0">
+            <Link
+              href={`/field/${field.id}/calendar`}
+              onClick={() => setSelectedStrategyId(field.id, result.strategy.id)}
+            >
+              <Button variant="outline" size="sm" className="text-xs">
+                <CalendarDays className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
+                Open in Field Calendar
+              </Button>
+            </Link>
+            <Link href={`/field/${field.id}/simulator`}>
+              <Button variant="outline" size="sm" className="text-xs">
+                <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5 text-amber-600" />
+                Test in What-If Simulator
+              </Button>
+            </Link>
+          </div>
+        )}
       </div>
 
       {/* Loading */}
@@ -308,12 +298,12 @@ export default function StrategyDetailPage() {
               No SI-generated plan found
             </h3>
             <p className="mt-2 max-w-md text-muted-foreground text-sm">
-              No SI-generated 3-year crop rotation plan was found for this field. Return to the Rotation Lab to generate field-specific plans.
+              No SI-generated 3-year crop rotation plan was found for this field. Return to the Crop Rotation Lab to generate field-specific plans.
             </p>
             <Link href={`/field/${field.id}/rotations`}>
               <Button variant="outline" size="sm" className="mt-4">
                 <ArrowLeft className="mr-1 h-4 w-4" />
-                Back to Rotation Lab
+                Back to Crop Rotation Lab
               </Button>
             </Link>
           </CardContent>

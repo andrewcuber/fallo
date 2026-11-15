@@ -8,6 +8,7 @@ import {
   FactorKey,
   FACTOR_LABELS,
 } from "@/lib/rotation-scoring";
+import { formatEnumLabel, formatCropName } from "@/lib/what-if-simulator";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ExplainPanel } from "./explain-panel";
 import {
@@ -58,8 +59,8 @@ function CropPurposeLine({ crop }: { crop: Crop }) {
     crop.type === "cover"
       ? "Role: Living soil cover, erosion protection, and weed suppression"
       : "Role: Primary cash crop";
-  const water = crop.waterDemand ? `Water demand: ${crop.waterDemand.replace(/_/g, " ")}` : null;
-  const drought = crop.droughtTolerance ? `Drought tolerance: ${crop.droughtTolerance}` : null;
+  const water = crop.waterDemand ? `Water demand: ${formatEnumLabel(crop.waterDemand)}` : null;
+  const drought = crop.droughtTolerance ? `Drought tolerance: ${formatEnumLabel(crop.droughtTolerance)}` : null;
 
   const credit = crop.nitrogenBehavior?.residualNcredit;
   const creditSource = credit
@@ -129,7 +130,7 @@ function SeasonBlock({
               {isCover ? "Cover" : "Cash"}
             </span>
             <h5 className="text-sm font-semibold text-foreground">
-              {crop?.commonName ?? season.crop}
+              {crop?.commonName ?? formatCropName(season.crop)}
             </h5>
             {crop?.family && (
               <span className="text-[10px] text-muted-foreground">({crop.family})</span>

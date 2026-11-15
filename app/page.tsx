@@ -110,85 +110,134 @@ export default function OverviewPage() {
 
       {/* Feature Previews */}
       <section className="space-y-4">
-        <h2 className="text-2xl font-serif font-bold text-foreground">What you can do</h2>
+        <div className="flex items-baseline justify-between gap-2 flex-wrap">
+          <h2 className="text-2xl font-serif font-bold text-foreground">What you can do</h2>
+          {activeField && (
+            <p className="text-xs text-muted-foreground">
+              Click any module to open <strong className="text-foreground">{activeField.name}</strong>
+            </p>
+          )}
+        </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Card className="h-full border-l-4 border-l-electric">
-            <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-electric/10">
-                <CloudSun className="h-5 w-5 text-electric" />
-              </div>
-              <CardTitle>Climate Fingerprint</CardTitle>
-              <CardDescription>
-                See 20 years of temperature, rainfall, and growing-season trends
-                from NASA POWER.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <Link
+            href={activeField ? `/field/${activeField.id}/climate` : "/fields/new"}
+            className="block h-full group"
+          >
+            <Card className="h-full border-l-4 border-l-electric hover:border-electric/50 transition-colors cursor-pointer">
+              <CardHeader>
+                <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-electric/10">
+                  <CloudSun className="h-5 w-5 text-electric" />
+                </div>
+                <CardTitle className="group-hover:text-electric transition-colors">
+                  Climate Fingerprint
+                </CardTitle>
+                <CardDescription>
+                  See 20 years of temperature, rainfall, and growing-season trends
+                  for your field.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          </Link>
 
-          <Card className="h-full border-l-4 border-l-cyan">
-            <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-cyan/10">
-                <Layers className="h-5 w-5 text-cyan" />
-              </div>
-              <CardTitle>Soil Profile</CardTitle>
-              <CardDescription>
-                Review soil texture, drainage, and organic matter from USDA
-                SSURGO surveys or regional topsoil reference profiles.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <Link
+            href={activeField ? `/field/${activeField.id}/soil` : "/fields/new"}
+            className="block h-full group"
+          >
+            <Card className="h-full border-l-4 border-l-cyan hover:border-cyan/50 transition-colors cursor-pointer">
+              <CardHeader>
+                <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-cyan/10">
+                  <Layers className="h-5 w-5 text-cyan" />
+                </div>
+                <CardTitle className="group-hover:text-cyan transition-colors">
+                  Soil Profile
+                </CardTitle>
+                <CardDescription>
+                  Review topsoil texture, water-holding capacity, drainage, and
+                  organic matter for your field location.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          </Link>
 
-          <Card className="h-full border-l-4 border-l-accent-red">
-            <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-accent-red/10">
-                <RefreshCw className="h-5 w-5 text-accent-red" />
-              </div>
-              <CardTitle>Rotation Lab</CardTitle>
-              <CardDescription>
-                Generate and compare Super Intelligence (SI)-assisted 3-year
-                crop rotation plans tailored to your farm&apos;s priorities.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <Link
+            href={activeField ? `/field/${activeField.id}/rotations` : "/fields/new"}
+            className="block h-full group"
+          >
+            <Card className="h-full border-l-4 border-l-accent-red hover:border-accent-red/50 transition-colors cursor-pointer">
+              <CardHeader>
+                <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-accent-red/10">
+                  <RefreshCw className="h-5 w-5 text-accent-red" />
+                </div>
+                <CardTitle className="group-hover:text-accent-red transition-colors">
+                  Crop Rotation Lab
+                </CardTitle>
+                <CardDescription>
+                  Generate and compare Super Intelligence (SI)-assisted 3-year
+                  crop rotation plans tailored to your farm&apos;s priorities.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          </Link>
 
-          <Card className="h-full border-l-4 border-l-amber-500 bg-gradient-to-br from-white via-white to-amber-50/40">
-            <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 border border-amber-500/20">
-                <SlidersHorizontal className="h-5 w-5 text-amber-600" />
-              </div>
-              <CardTitle>What-If Simulator</CardTitle>
-              <CardDescription>
-                Explore how hypothetical changes in rainfall and temperature
-                affect rotation comparisons.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <Link
+            href={activeField ? `/field/${activeField.id}/simulator` : "/fields/new"}
+            className="block h-full group"
+          >
+            <Card className="h-full border-l-4 border-l-amber-500 bg-gradient-to-br from-white via-white to-amber-50/40 hover:border-amber-500/50 transition-colors cursor-pointer">
+              <CardHeader>
+                <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 border border-amber-500/20">
+                  <SlidersHorizontal className="h-5 w-5 text-amber-600" />
+                </div>
+                <CardTitle className="group-hover:text-amber-700 transition-colors">
+                  What-If Simulator
+                </CardTitle>
+                <CardDescription>
+                  Explore how hypothetical changes in rainfall and temperature
+                  affect crop suitability and rotation comparisons.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          </Link>
 
-          <Card className="h-full border-l-4 border-l-emerald-500 bg-gradient-to-br from-white via-white to-emerald-50/40">
-            <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                <CalendarDays className="h-5 w-5 text-emerald-600" />
-              </div>
-              <CardTitle>Field Calendar</CardTitle>
-              <CardDescription>
-                View crop sequences, planting and harvesting periods, and
-                relevant growing-season conditions.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <Link
+            href={activeField ? `/field/${activeField.id}/calendar` : "/fields/new"}
+            className="block h-full group"
+          >
+            <Card className="h-full border-l-4 border-l-emerald-500 bg-gradient-to-br from-white via-white to-emerald-50/40 hover:border-emerald-500/50 transition-colors cursor-pointer">
+              <CardHeader>
+                <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                  <CalendarDays className="h-5 w-5 text-emerald-600" />
+                </div>
+                <CardTitle className="group-hover:text-emerald-700 transition-colors">
+                  Field Calendar
+                </CardTitle>
+                <CardDescription>
+                  View crop sequences, planting and harvesting periods, and
+                  relevant growing-season conditions across all 3 years.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          </Link>
 
-          <Card className="h-full border-l-4 border-l-indigo-500 bg-gradient-to-br from-white via-white to-indigo-50/40">
-            <CardHeader>
-              <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-500/10 border border-indigo-500/20">
-                <GitCompare className="h-5 w-5 text-indigo-600" />
-              </div>
-              <CardTitle>Climate Analogues</CardTitle>
-              <CardDescription>
-                Compare current or hypothetical conditions with historically
-                similar growing seasons.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <Link
+            href={activeField ? `/field/${activeField.id}/analogues` : "/fields/new"}
+            className="block h-full group"
+          >
+            <Card className="h-full border-l-4 border-l-indigo-500 bg-gradient-to-br from-white via-white to-indigo-50/40 hover:border-indigo-500/50 transition-colors cursor-pointer">
+              <CardHeader>
+                <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+                  <GitCompare className="h-5 w-5 text-indigo-600" />
+                </div>
+                <CardTitle className="group-hover:text-indigo-700 transition-colors">
+                  Climate Analogues
+                </CardTitle>
+                <CardDescription>
+                  Compare current or hypothetical conditions with historically
+                  similar growing seasons in the 20-year record.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          </Link>
         </div>
       </section>
     </div>

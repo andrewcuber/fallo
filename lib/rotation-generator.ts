@@ -1134,15 +1134,84 @@ function mergeValidationWarnings(
 
 export { getAvailableCropsForContext };
 
+export const MAX_CONCURRENT_GENERATIONS = 5;
+export const GENERATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+export const GENERATION_RATE_LIMIT_MAX_REQUESTS = 8; // max 8 requests per IP per 10-minute window
+export const MAX_GENERATION_REQUEST_BYTES = 256 * 1024; // 256 KB max payload
+
+/**
+ * NOTE ON SERVERLESS SCOPE:
+ * `inFlightFieldGenerations` and `clientRateWindowMap` are stored in process memory.
+ * On serverless platforms (such as Vercel Functions), these structures provide
+ * best-effort per-instance burst and concurrency protection within a warm Node.js
+ * instance, plus single-process protection in local development. They are NOT
+ * globally shared across multiple concurrent serverless instances; global distributed
+ * rate limiting across all instances requires an external state store (e.g. Redis/KV)
+ * or edge WAF rate-limiting rules.
+ */
 const inFlightFieldGenerations = new Set<string>();
+const clientRateWindowMap = new Map<string, number[]>();
 
 export function isFieldGenerationInFlight(fieldId: string): boolean {
   return inFlightFieldGenerations.has(fieldId);
 }
 
+export function getInFlightGenerationCount(): number {
+  return inFlightFieldGenerations.size;
+}
+
+export function checkGenerationRateLimit(
+  clientKey: string,
+  nowMs: number = Date.now(),
+  maxRequests: number = GENERATION_RATE_LIMIT_MAX_REQUESTS,
+  windowMs: number = GENERATION_RATE_LIMIT_WINDOW_MS
+): { allowed: boolean; remaining: number; retryAfterSeconds: number } {
+  const key = (clientKey || "anonymous").trim() || "anonymous";
+  const cutoff = nowMs - windowMs;
+  const existing = (clientRateWindowMap.get(key) ?? []).filter((ts) => ts > cutoff);
+
+  if (existing.length >= maxRequests) {
+    const oldestInWindow = existing[0] ?? nowMs;
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((oldestInWindow + windowMs - nowMs) / 1000)
+    );
+    clientRateWindowMap.set(key, existing);
+    return { allowed: false, remaining: 0, retryAfterSeconds };
+  }
+
+  existing.push(nowMs);
+  clientRateWindowMap.set(key, existing);
+
+  // Opportunistic cleanup to bound memory
+  if (clientRateWindowMap.size > 500) {
+    for (const [k, timestamps] of Array.from(clientRateWindowMap.entries())) {
+      const active = timestamps.filter((ts) => ts > cutoff);
+      if (active.length === 0) {
+        clientRateWindowMap.delete(k);
+      } else {
+        clientRateWindowMap.set(k, active);
+      }
+    }
+  }
+
+  return {
+    allowed: true,
+    remaining: Math.max(0, maxRequests - existing.length),
+    retryAfterSeconds: 0,
+  };
+}
+
+export function resetGenerationRateLimiterForTests(): void {
+  clientRateWindowMap.clear();
+}
+
 export function tryAcquireFieldGenerationLock(fieldId: string): boolean {
   if (!fieldId) return false;
   if (inFlightFieldGenerations.has(fieldId)) {
+    return false;
+  }
+  if (inFlightFieldGenerations.size >= MAX_CONCURRENT_GENERATIONS) {
     return false;
   }
   inFlightFieldGenerations.add(fieldId);

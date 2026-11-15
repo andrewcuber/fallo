@@ -44,8 +44,30 @@ import {
   DEFAULT_GEMINI_THINKING_LEVEL,
   DEFAULT_GEMINI_ENTERPRISE_MODEL,
   DEFAULT_GOOGLE_CLOUD_LOCATION,
+  checkGenerationRateLimit,
+  resetGenerationRateLimiterForTests,
+  GENERATION_RATE_LIMIT_MAX_REQUESTS,
   type AIProviderClient,
 } from "@/lib/rotation-generator";
+import {
+  DEFAULT_WHAT_IF_SCENARIO,
+  WHAT_IF_PRESETS,
+  isBaselineScenario,
+  formatScenarioSummary,
+  formatEnumLabel,
+  formatCropName,
+  formatSeasonSequenceNames,
+  applyWhatIfScenarioToClimate,
+  evaluateWhatIfScenario,
+} from "@/lib/what-if-simulator";
+import {
+  buildFieldCalendar,
+  selectHemisphereWindowText,
+} from "@/lib/field-calendar";
+import {
+  computeClimateAnalogues,
+  resolveGrowingSeasonWindow,
+} from "@/lib/climate-analogues";
 import { IdentityPoolClient } from "google-auth-library";
 import {
   type RotationStrategy,
@@ -2448,6 +2470,321 @@ test("Vercel production GeminiEnterpriseProvider passes googleAuthOptions ({ aut
   );
   assert.ok(!failedWifResult.aiUnavailableReason?.includes(fakeOidcJwt));
   assert.ok(failedWifResult.aiUnavailableReason?.includes("[REDACTED_OIDC_TOKEN]"));
+});
+
+// ─── 10. What-If Simulator, Field Calendar, Climate Analogues & Rate Limiting Tests ───
+
+section("What-If Simulator, Field Calendar, Climate Analogues & Abuse Protection");
+
+test("What-If Simulator applies temperature (°C) and precipitation (% or mm) adjustments without mutating baseline and recalculates crop & strategy scores", () => {
+  const baseline = makeClimate({
+    avgAnnualTemp: 15.8,
+    avgAnnualPrecip: 1120,
+    monthlyTemp: [4, 6, 10, 15, 20, 24, 26, 25, 21, 15, 9, 5],
+    monthlyPrecip: [90, 85, 100, 95, 100, 105, 110, 100, 90, 80, 80, 85],
+    summerDrySpells: { avgMaxConsecutiveDryDays: 9.5, thresholdMm: 1, monthsDesc: "Jun–Aug" },
+    summerHeatDays: { avgDaysAboveThreshold: 3.0, thresholdC: 35, monthsDesc: "Jul–Aug" },
+    springPrecip: { avgTotalMm: 295, monthsDesc: "Mar–May" },
+    growingSeasonPrecip: { avgTotalMm: 410, monthsDesc: "May–Aug" },
+  });
+  const originalTemp = baseline.fullRecord.avgAnnualTemp;
+  const originalPrecip = baseline.fullRecord.avgAnnualPrecip;
+  const originalMonthlyTemp0 = baseline.fullRecord.monthlyTemp[0];
+
+  assert.equal(isBaselineScenario(DEFAULT_WHAT_IF_SCENARIO), true);
+  assert.ok(WHAT_IF_PRESETS.length >= 4);
+
+  // 1. Percentage rainfall mode (+2.5 °C, -30% rain)
+  const hotDryScenario = {
+    tempDeltaC: 2.5,
+    precipMode: "percent" as const,
+    precipDeltaPct: -30,
+    precipDeltaMm: 0,
+  };
+  assert.equal(isBaselineScenario(hotDryScenario), false);
+  assert.ok(formatScenarioSummary(hotDryScenario).includes("+2.5 °C"));
+  assert.ok(formatScenarioSummary(hotDryScenario).includes("-30% rainfall"));
+
+  const appliedPct = applyWhatIfScenarioToClimate(baseline, hotDryScenario);
+  assert.ok(Math.abs((appliedPct.scenarioClimate.fullRecord.avgAnnualTemp ?? 0) - 18.3) < 1e-6);
+  assert.ok(Math.abs((appliedPct.scenarioClimate.fullRecord.avgAnnualPrecip ?? 0) - 784) < 1e-6);
+  assert.ok(
+    (appliedPct.scenarioClimate.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays ?? 0) >
+      (baseline.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays ?? 0)
+  );
+  assert.ok(
+    (appliedPct.scenarioClimate.stressMetrics.summerHeatDays.avgDaysAboveThreshold ?? 0) >
+      (baseline.stressMetrics.summerHeatDays.avgDaysAboveThreshold ?? 0)
+  );
+
+  // Baseline immutability verified
+  assert.equal(baseline.fullRecord.avgAnnualTemp, originalTemp);
+  assert.equal(baseline.fullRecord.avgAnnualPrecip, originalPrecip);
+  assert.equal(baseline.fullRecord.monthlyTemp[0], originalMonthlyTemp0);
+
+  // 2. Absolute mm rainfall mode (-1.0 °C, +200 mm/yr rain)
+  const coolWetMmScenario = {
+    tempDeltaC: -1.0,
+    precipMode: "absolute_mm" as const,
+    precipDeltaPct: 0,
+    precipDeltaMm: 200,
+  };
+  const appliedMm = applyWhatIfScenarioToClimate(baseline, coolWetMmScenario);
+  assert.ok(Math.abs((appliedMm.scenarioClimate.fullRecord.avgAnnualTemp ?? 0) - 14.8) < 1e-6);
+  assert.ok(Math.abs((appliedMm.scenarioClimate.fullRecord.avgAnnualPrecip ?? 0) - 1320) < 1e-6);
+  assert.equal(appliedMm.effectiveAnnualPrecipDeltaMm, 200);
+
+  // 3. Full scenario evaluation with strategies & crop suitability comparison
+  const stratWater = makeValidStrategy("water_plan", "Drought-Hardy Sorghum Plan");
+  stratWater.years[0].seasons[0].crop = "grain_sorghum";
+  const stratCorn = makeValidStrategy("corn_plan", "High-Water Corn Plan");
+  stratCorn.years[0].seasons[0].crop = "field_corn";
+
+  const evalRes = evaluateWhatIfScenario({
+    baselineClimate: baseline,
+    soil: makeSoil(),
+    priorities: DEFAULT_PRIORITIES,
+    strategies: [stratWater, stratCorn],
+    scenario: hotDryScenario,
+    regionTag: "us_southeast",
+  });
+
+  assert.equal(evalRes.isBaseline, false);
+  assert.equal(evalRes.strategyComparisons.length, 2);
+  assert.ok(evalRes.cropComparisons.length > 0);
+  assert.ok(evalRes.assumptions.length >= 4);
+  for (const comp of evalRes.strategyComparisons) {
+    assert.ok(typeof comp.baselineResult.overallScore === "number");
+    assert.ok(typeof comp.scenarioResult.overallScore === "number");
+  }
+});
+
+test("Field Calendar builds 3-year x 12-month schedule, respects Northern/Southern/Tropical hemispheres, and never fabricates exact calendar dates", () => {
+  const strat = makeValidStrategy("cal_test_strat", "Three-Year Calendar Test Rotation");
+  const climate = makeClimate();
+
+  // Northern Hemisphere field (Rowan County, NC: lat 35.67)
+  const nhCalendar = buildFieldCalendar({
+    strategy: strat,
+    climate,
+    lat: 35.67,
+    lon: -80.47,
+  });
+
+  assert.equal(nhCalendar.hemisphere, "northern");
+  assert.equal(nhCalendar.years.length, 3);
+  assert.ok(nhCalendar.totalUniqueFamilies.length >= 2);
+  assert.ok(nhCalendar.averageCoveredMonthsPerYear > 0);
+
+  for (const yr of nhCalendar.years) {
+    assert.equal(yr.months.length, 12);
+    assert.ok(yr.seasons.length >= 1);
+    for (const sea of yr.seasons) {
+      assert.ok(sea.months.length >= 1);
+      assert.ok(sea.monthRangeLabel.length > 0);
+      assert.ok(sea.documentedPlantingWindow.length > 0);
+      assert.ok(sea.documentedHarvestOrTerminationWindow.length > 0);
+      // Verify no fabricated specific day-of-month (e.g., "April 14" or "Oct 22")
+      assert.ok(!/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\b/i.test(sea.monthRangeLabel));
+      assert.ok(sea.seasonClimate.avgTempC !== null);
+      assert.ok(sea.seasonClimate.totalPrecipMm !== null);
+    }
+  }
+
+  // Southern Hemisphere window selection (e.g., lat -33.8)
+  const shWindow = selectHemisphereWindowText(
+    "April–May (NH) / October–November (SH)",
+    "southern",
+    "Apr",
+    "planting"
+  );
+  assert.ok(shWindow.includes("October–November (SH)"));
+
+  const nhWindow = selectHemisphereWindowText(
+    "April–May (NH) / October–November (SH)",
+    "northern",
+    "Apr",
+    "planting"
+  );
+  assert.ok(nhWindow.includes("April–May (NH)"));
+});
+
+test("Climate Analogues ranks historical years by standardized similarity, strictly excludes target year from self-matches, and handles insufficient data", () => {
+  // Build a realistic 20-year historical archive (2006..2025)
+  const historicalYears = Array.from({ length: 20 }, (_, idx) => {
+    const year = 2006 + idx;
+    // Make 2012 a distinct hot/dry year (+2.2 °C, -28% rain) and 2018 a wet year
+    const tempOffset = year === 2012 ? 2.2 : year === 2018 ? -0.5 : (idx % 5 - 2) * 0.35;
+    const precipFactor = year === 2012 ? 0.72 : year === 2018 ? 1.28 : 1 + (idx % 4 - 1.5) * 0.06;
+    const baseMonthlyTemp = [4, 6, 10, 15, 20, 24, 26, 25, 21, 15, 9, 5];
+    const baseMonthlyPrecip = [90, 85, 100, 95, 100, 105, 110, 100, 90, 80, 80, 85];
+    const monthlyTemp = baseMonthlyTemp.map((t) => Number((t + tempOffset).toFixed(2)));
+    const monthlyPrecip = baseMonthlyPrecip.map((p) => Number((p * precipFactor).toFixed(1)));
+    const avgTemp = Number((15.8 + tempOffset).toFixed(2));
+    const totalPrecip = Number(monthlyPrecip.reduce((a, b) => a + b, 0).toFixed(1));
+    return {
+      year,
+      avgTemp,
+      totalPrecip,
+      avgSolar: 16.5,
+      monthlyTemp,
+      monthlyPrecip,
+      monthlySolar: Array(12).fill(16.5),
+      springPrecipMm: Number((monthlyPrecip[2] + monthlyPrecip[3] + monthlyPrecip[4]).toFixed(1)),
+      growingSeasonPrecipMm: Number(
+        (monthlyPrecip[4] + monthlyPrecip[5] + monthlyPrecip[6] + monthlyPrecip[7]).toFixed(1)
+      ),
+      summerDrySpellDays: year === 2012 ? 17 : 9,
+      summerHeatDays: year === 2012 ? 14 : 3,
+      daysWithData: 365,
+    };
+  });
+
+  const climateWithArchive: ClimateData = {
+    ...makeClimate({
+      avgAnnualTemp: 15.8,
+      avgAnnualPrecip: 1120,
+      monthlyTemp: [4, 6, 10, 15, 20, 24, 26, 25, 21, 15, 9, 5],
+      monthlyPrecip: [90, 85, 100, 95, 100, 105, 110, 100, 90, 80, 80, 85],
+    }),
+    periods: {
+      startYear: 2006,
+      endYear: 2025,
+      baselineStart: 2006,
+      baselineEnd: 2020,
+      recentStart: 2021,
+      recentEnd: 2025,
+    },
+    historicalYears,
+  };
+
+  // 1. Growing season window resolution across hemispheres
+  assert.deepEqual(resolveGrowingSeasonWindow(35.67).months, [4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(resolveGrowingSeasonWindow(-33.8).months, [10, 11, 12, 1, 2, 3]);
+
+  // 2. Specific Year mode: targetYear = 2012 must NEVER include 2012 in its own matches
+  const specificYearRes = computeClimateAnalogues({
+    climate: climateWithArchive,
+    mode: "specific_year",
+    targetYear: 2012,
+    topN: 5,
+  });
+  assert.equal(specificYearRes.status, "ready");
+  assert.equal(specificYearRes.matches.length, 5);
+  assert.ok(!specificYearRes.matches.some((m) => m.year === 2012));
+  assert.deepEqual(specificYearRes.target?.excludedYears, [2012]);
+  // Ranked in descending order of similarityScore (ascending compositeDistance)
+  for (let i = 1; i < specificYearRes.matches.length; i++) {
+    assert.ok(
+      specificYearRes.matches[i - 1].compositeDistance <=
+        specificYearRes.matches[i].compositeDistance
+    );
+  }
+
+  // 3. Recent Window mode: excludes recent years (2021..2025) from candidate baseline matches
+  const recentRes = computeClimateAnalogues({
+    climate: climateWithArchive,
+    mode: "recent_window",
+    topN: 5,
+  });
+  assert.equal(recentRes.status, "ready");
+  assert.ok(recentRes.matches.every((m) => m.year < 2021));
+
+  // 4. What-If Scenario mode (+2.2 °C, -28% rain) should rank 2012 (#1 closest hot/dry analogue)
+  const scenarioRes = computeClimateAnalogues({
+    climate: climateWithArchive,
+    mode: "what_if_scenario",
+    whatIfScenario: {
+      tempDeltaC: 2.2,
+      precipMode: "percent",
+      precipDeltaPct: -28,
+      precipDeltaMm: 0,
+    },
+    topN: 5,
+  });
+  assert.equal(scenarioRes.status, "ready");
+  assert.equal(scenarioRes.matches[0].year, 2012);
+  assert.ok(scenarioRes.matches[0].similarityScore >= 85);
+
+  // 5. Insufficient data handling when historicalYears is missing
+  const insufficientRes = computeClimateAnalogues({
+    climate: makeClimate(),
+    mode: "recent_window",
+  });
+  assert.equal(insufficientRes.status, "insufficient_data");
+  assert.equal(insufficientRes.matches.length, 0);
+  assert.ok(insufficientRes.insufficientReason && insufficientRes.insufficientReason.length > 0);
+});
+
+test("Generation sliding-window rate limiter enforces per-key quota and resets cleanly", () => {
+  resetGenerationRateLimiterForTests();
+  const key = "test-client-ip-1";
+  const t0 = 1_700_000_000_000;
+
+  for (let i = 0; i < GENERATION_RATE_LIMIT_MAX_REQUESTS; i++) {
+    const check = checkGenerationRateLimit(key, t0 + i * 100);
+    assert.equal(check.allowed, true);
+    assert.equal(check.remaining, GENERATION_RATE_LIMIT_MAX_REQUESTS - 1 - i);
+  }
+
+  // 9th request within the 10-minute window is blocked with retryAfterSeconds > 0
+  const blocked = checkGenerationRateLimit(key, t0 + 1000);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.remaining, 0);
+  assert.ok(blocked.retryAfterSeconds > 0);
+
+  // Different client IP is unaffected
+  const otherClient = checkGenerationRateLimit("test-client-ip-2", t0 + 1000);
+  assert.equal(otherClient.allowed, true);
+
+  resetGenerationRateLimiterForTests();
+});
+
+test("What-If Simulator humanizes enums/crop IDs and produces distinct crop-specific explanations", () => {
+  assert.equal(formatEnumLabel("moderate_to_high"), "Moderate to high");
+  assert.equal(formatEnumLabel("low_to_moderate"), "Low to moderate");
+  assert.equal(formatEnumLabel("very_high"), "Very high");
+  assert.equal(formatEnumLabel("cash"), "Cash crop");
+  assert.equal(formatEnumLabel("cover"), "Cover crop");
+
+  assert.equal(formatCropName("grain_sorghum"), "Grain Sorghum");
+  assert.equal(formatCropName("hairy_vetch"), "Hairy Vetch");
+  assert.equal(
+    formatSeasonSequenceNames(["grain_sorghum", "hairy_vetch", "soybean"]),
+    "Grain Sorghum → Hairy Vetch → Soybean"
+  );
+
+  const baseClimate = makeClimate();
+  const soil = makeSoil();
+  const evalDrought = evaluateWhatIfScenario({
+    baselineClimate: baseClimate,
+    soil,
+    priorities: DEFAULT_PRIORITIES,
+    strategies: [makeValidStrategy()],
+    scenario: {
+      tempDeltaC: 2.0,
+      precipMode: "percent",
+      precipDeltaPct: -25,
+      precipDeltaMm: 0,
+    },
+    regionTag: "us_southeast",
+  });
+
+  assert.ok(evalDrought.cropComparisons.length >= 5);
+  // Every crop explanation must be specific to that crop (includes its commonName) and never use the old generic string
+  const explanations = new Set<string>();
+  for (const c of evalDrought.cropComparisons) {
+    assert.ok(c.explanation.includes(c.commonName));
+    assert.ok(
+      !c.explanation.includes("Low water demand provides resilience under drier conditions")
+    );
+    explanations.add(c.explanation);
+  }
+  assert.equal(explanations.size, evalDrought.cropComparisons.length);
+
+  // Strategy comparison includes a concrete sequence-backed explanation
+  assert.equal(evalDrought.strategyComparisons.length, 1);
+  assert.ok(evalDrought.strategyComparisons[0].explanation.length > 20);
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────
