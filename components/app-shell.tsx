@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useField } from "@/components/providers";
@@ -100,10 +101,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex w-64 flex-col bg-space text-offwhite fixed inset-y-0 left-0 z-40 starfield">
         <div className="flex items-center gap-2 px-5 py-5">
-          <span className="text-xl font-serif font-bold tracking-tight text-offwhite">
-            fallo
-          </span>
-          <span className="ml-1 inline-flex h-1.5 w-1.5 rounded-full bg-cyan animate-pulse" />
+          <Link
+            href="/"
+            aria-label="fallo home"
+            className="inline-flex items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-electric rounded-sm"
+          >
+            <Image
+              src="/fallo-logo.svg"
+              alt="fallo"
+              width={114}
+              height={45}
+              priority
+              className="h-8 w-auto object-contain"
+            />
+          </Link>
         </div>
 
         <div className="px-3 pb-2">
@@ -157,9 +168,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Mobile Header */}
       <div className="lg:hidden fixed top-0 inset-x-0 z-40 bg-space text-offwhite border-b border-offwhite/10">
         <div className="flex items-center justify-between px-4 py-3">
-          <span className="text-lg font-serif font-bold tracking-tight text-offwhite">
-            fallo
-          </span>
+          <Link
+            href="/"
+            aria-label="fallo home"
+            className="inline-flex items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-electric rounded-sm"
+          >
+            <Image
+              src="/fallo-logo.svg"
+              alt="fallo"
+              width={114}
+              height={45}
+              priority
+              className="h-7 w-auto object-contain"
+            />
+          </Link>
           <button
             onClick={() => setMobileOpen(true)}
             className="inline-flex items-center justify-center rounded-md p-2 text-offwhite hover:bg-slate-blue transition-colors"
@@ -178,9 +200,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           />
           <div className="relative z-10 w-72 max-w-[85vw] bg-space text-offwhite h-full shadow-xl flex flex-col starfield">
             <div className="flex items-center justify-between px-5 py-4 border-b border-offwhite/10">
-              <span className="text-xl font-serif font-bold tracking-tight text-offwhite">
-                fallo
-              </span>
+              <Link
+                href="/"
+                onClick={() => setMobileOpen(false)}
+                aria-label="fallo home"
+                className="inline-flex items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-electric rounded-sm"
+              >
+                <Image
+                  src="/fallo-logo.svg"
+                  alt="fallo"
+                  width={114}
+                  height={45}
+                  className="h-7 w-auto object-contain"
+                />
+              </Link>
               <button
                 onClick={() => setMobileOpen(false)}
                 className="rounded-md p-2 text-offwhite hover:bg-slate-blue transition-colors"
