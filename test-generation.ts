@@ -31,6 +31,14 @@ import {
   resolveRuntimeAIProvider,
   parseGeminiThinkingLevel,
   isFieldGenerationInFlight,
+  isVercelDeploymentEnvironment,
+  getMissingVercelWifEnvVars,
+  resolveVercelWifConfig,
+  buildVercelWifAudience,
+  buildServiceAccountImpersonationUrl,
+  createVercelWifExternalAccountClient,
+  GCP_STS_TOKEN_URL,
+  GCP_SUBJECT_TOKEN_TYPE_JWT,
   DEFAULT_AI_TIMEOUT_MS,
   DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
   DEFAULT_GEMINI_THINKING_LEVEL,
@@ -38,6 +46,7 @@ import {
   DEFAULT_GOOGLE_CLOUD_LOCATION,
   type AIProviderClient,
 } from "@/lib/rotation-generator";
+import { IdentityPoolClient } from "google-auth-library";
 import {
   type RotationStrategy,
   type ClimateData,
@@ -2147,6 +2156,298 @@ test("Global agroecological coverage across South America, Europe, South Asia, S
   assert.equal(borealRes.evidenceLevel, "level_3_insufficient");
   assert.equal(borealRes.proposals.length, 0);
   assert.equal(borealRes.supportStatus, "unavailable");
+});
+
+// ─── 9. Vercel OIDC + Google Cloud Workload Identity Federation Tests ───
+
+section("Vercel OIDC & Google Cloud Workload Identity Federation (Mocked)");
+
+test("buildVercelWifAudience, buildServiceAccountImpersonationUrl, and createVercelWifExternalAccountClient configure ExternalAccountClient.fromJSON lazily with mocked OIDC supplier", async () => {
+  const wifConfig = {
+    projectNumber: "123456789012",
+    serviceAccountEmail: "fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com",
+    workloadIdentityPoolId: "vercel-oidc-pool",
+    workloadIdentityPoolProviderId: "vercel-oidc-provider",
+  };
+
+  const expectedAudience =
+    "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/vercel-oidc-pool/providers/vercel-oidc-provider";
+  const expectedImpersonationUrl =
+    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com:generateAccessToken";
+
+  assert.equal(buildVercelWifAudience(wifConfig), expectedAudience);
+  assert.equal(
+    buildServiceAccountImpersonationUrl(wifConfig.serviceAccountEmail),
+    expectedImpersonationUrl
+  );
+
+  let oidcCalls = 0;
+  const mockOidcJwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ2ZXJjZWxfdGVzdCJ9.mock_signature";
+  const mockOidcSupplier = async () => {
+    oidcCalls++;
+    return mockOidcJwt;
+  };
+
+  const authClient = createVercelWifExternalAccountClient(wifConfig, mockOidcSupplier);
+  assert.ok(authClient instanceof IdentityPoolClient);
+  // Creating the client must NOT invoke the OIDC supplier eagerly
+  assert.equal(oidcCalls, 0);
+
+  assert.equal(authClient.getServiceAccountEmail(), wifConfig.serviceAccountEmail);
+  assert.equal(
+    (authClient as unknown as { subjectTokenType: string }).subjectTokenType,
+    GCP_SUBJECT_TOKEN_TYPE_JWT
+  );
+  assert.equal(
+    (authClient as unknown as { audience: string }).audience,
+    expectedAudience
+  );
+  assert.equal(
+    (authClient as unknown as { tokenUrl: string }).tokenUrl,
+    GCP_STS_TOKEN_URL
+  );
+  assert.equal(
+    (authClient as unknown as { serviceAccountImpersonationUrl: string })
+      .serviceAccountImpersonationUrl,
+    expectedImpersonationUrl
+  );
+
+  // Subject token supplier is invoked lazily when retrieveSubjectToken() is called
+  const retrievedToken = await (authClient as IdentityPoolClient).retrieveSubjectToken();
+  assert.equal(oidcCalls, 1);
+  assert.equal(retrievedToken, mockOidcJwt);
+});
+
+test("Environment detection preserves local ADC in development and requires complete WIF configuration on deployed Vercel environments", () => {
+  // 1. Local development (no VERCEL env vars) -> not a Vercel deployment, uses ADC
+  const localEnv = {
+    GOOGLE_CLOUD_PROJECT: "triangle-hackathon-claude-code",
+    GOOGLE_CLOUD_LOCATION: "global",
+    GOOGLE_GENAI_USE_ENTERPRISE: "true",
+    FALLO_AI_MODEL: "gemini-4-argon",
+  };
+  assert.equal(isVercelDeploymentEnvironment(localEnv), false);
+  const localProvider = resolveRuntimeAIProvider(localEnv) as GeminiEnterpriseProvider;
+  assert.ok(localProvider instanceof GeminiEnterpriseProvider);
+  assert.equal(localProvider.authMode, "adc");
+  assert.equal(localProvider.wifConfig, undefined);
+
+  // 2. Local `vercel dev` / `vercel env pull` (VERCEL="1", VERCEL_ENV="development") -> still local ADC, even if GCP_* vars exist
+  const vercelDevEnv = {
+    ...localEnv,
+    VERCEL: "1",
+    VERCEL_ENV: "development",
+    GCP_PROJECT_NUMBER: "123456789012",
+    GCP_SERVICE_ACCOUNT_EMAIL: "fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com",
+    GCP_WORKLOAD_IDENTITY_POOL_ID: "vercel-pool",
+    GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID: "vercel-provider",
+  };
+  assert.equal(isVercelDeploymentEnvironment(vercelDevEnv), false);
+  const vercelDevProvider = resolveRuntimeAIProvider(vercelDevEnv) as GeminiEnterpriseProvider;
+  assert.ok(vercelDevProvider instanceof GeminiEnterpriseProvider);
+  assert.equal(vercelDevProvider.authMode, "adc");
+  assert.equal(vercelDevProvider.wifConfig, undefined);
+
+  // 3. Deployed Vercel production environment WITHOUT WIF variables -> returns null (does not enable SI generation before WIF is configured)
+  const unconfiguredVercelProdEnv = {
+    ...localEnv,
+    VERCEL: "1",
+    VERCEL_ENV: "production",
+  };
+  assert.equal(isVercelDeploymentEnvironment(unconfiguredVercelProdEnv), true);
+  assert.equal(resolveVercelWifConfig(unconfiguredVercelProdEnv), null);
+  assert.deepEqual(getMissingVercelWifEnvVars(unconfiguredVercelProdEnv), [
+    "GCP_PROJECT_NUMBER",
+    "GCP_SERVICE_ACCOUNT_EMAIL",
+    "GCP_WORKLOAD_IDENTITY_POOL_ID",
+    "GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID",
+  ]);
+  assert.equal(resolveRuntimeAIProvider(unconfiguredVercelProdEnv), null);
+
+  // 4. Deployed Vercel production environment WITH partial WIF variables -> returns null
+  const partialVercelProdEnv = {
+    ...unconfiguredVercelProdEnv,
+    GCP_PROJECT_NUMBER: "123456789012",
+    GCP_WORKLOAD_IDENTITY_POOL_ID: "vercel-pool",
+  };
+  assert.deepEqual(getMissingVercelWifEnvVars(partialVercelProdEnv), [
+    "GCP_SERVICE_ACCOUNT_EMAIL",
+    "GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID",
+  ]);
+  assert.equal(resolveRuntimeAIProvider(partialVercelProdEnv), null);
+
+  // 5. Deployed Vercel production environment WITH all 4 WIF variables -> returns GeminiEnterpriseProvider in vercel-oidc-wif mode
+  const configuredVercelProdEnv = {
+    ...unconfiguredVercelProdEnv,
+    GCP_PROJECT_NUMBER: "123456789012",
+    GCP_SERVICE_ACCOUNT_EMAIL: "fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com",
+    GCP_WORKLOAD_IDENTITY_POOL_ID: "vercel-pool",
+    GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID: "vercel-provider",
+  };
+  const prodProvider = resolveRuntimeAIProvider(
+    configuredVercelProdEnv
+  ) as GeminiEnterpriseProvider;
+  assert.ok(prodProvider instanceof GeminiEnterpriseProvider);
+  assert.equal(prodProvider.authMode, "vercel-oidc-wif");
+  assert.deepEqual(prodProvider.wifConfig, {
+    projectNumber: "123456789012",
+    serviceAccountEmail: "fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com",
+    workloadIdentityPoolId: "vercel-pool",
+    workloadIdentityPoolProviderId: "vercel-provider",
+  });
+});
+
+test("Vercel production GeminiEnterpriseProvider passes googleAuthOptions ({ authClient, projectId }) to GoogleGenAI lazily at runtime and redacts OIDC JWTs on auth failure", async () => {
+  let oidcTokenCalls = 0;
+  const fakeOidcJwt =
+    "eyJhbGciOiJSUzI1NiIsImtpZCI6IjEyMyJ9.eyJpc3MiOiJodHRwczovL29pZGMudmVyY2VsLmNvbSIsInN1YiI6InByb2plY3QifQ.secret_oidc_sig_value";
+
+  const captured: {
+    sdkOptions: Record<string, unknown> | null;
+    subjectTokenFromAuthClient: string | null;
+  } = {
+    sdkOptions: null,
+    subjectTokenFromAuthClient: null,
+  };
+
+  const s1 = makeValidStrategy("soil_health_wif", "Soil Health WIF Plan");
+  s1.archetype = "soil_health";
+
+  const prodProvider = resolveRuntimeAIProvider(
+    {
+      VERCEL: "1",
+      VERCEL_ENV: "production",
+      GOOGLE_CLOUD_PROJECT: "triangle-hackathon-claude-code",
+      GOOGLE_CLOUD_LOCATION: "global",
+      GOOGLE_GENAI_USE_ENTERPRISE: "true",
+      FALLO_AI_MODEL: "gemini-4-argon",
+      FALLO_AI_THINKING_LEVEL: "LOW",
+      GCP_PROJECT_NUMBER: "123456789012",
+      GCP_SERVICE_ACCOUNT_EMAIL:
+        "fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com",
+      GCP_WORKLOAD_IDENTITY_POOL_ID: "vercel-pool",
+      GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID: "vercel-provider",
+    },
+    {
+      oidcTokenSupplier: async () => {
+        oidcTokenCalls++;
+        return fakeOidcJwt;
+      },
+      geminiClientFactory: async (sdkOptions) => {
+        captured.sdkOptions = sdkOptions as unknown as Record<string, unknown>;
+        const authClient = sdkOptions.googleAuthOptions?.authClient as
+          | IdentityPoolClient
+          | undefined;
+        if (authClient) {
+          captured.subjectTokenFromAuthClient = await authClient.retrieveSubjectToken();
+        }
+        return {
+          models: {
+            generateContent: async () => ({
+              text: JSON.stringify({
+                strategies: [s1],
+                rationale: "Generated with mocked Vercel OIDC WIF credentials.",
+              }),
+              usageMetadata: {
+                promptTokenCount: 800,
+                candidatesTokenCount: 600,
+                thoughtsTokenCount: 100,
+                totalTokenCount: 1500,
+              },
+            }),
+          },
+        };
+      },
+    }
+  );
+
+  assert.ok(prodProvider instanceof GeminiEnterpriseProvider);
+  // Resolving the provider must NOT call oidcTokenSupplier at build/init time
+  assert.equal(oidcTokenCalls, 0);
+
+  const result = await generateRotations(
+    {
+      fieldId: "wif_field_1",
+      fieldName: "Rowan WIF Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    prodProvider
+  );
+
+  assert.equal(oidcTokenCalls, 1);
+  assert.equal(captured.subjectTokenFromAuthClient, fakeOidcJwt);
+  assert.ok(captured.sdkOptions);
+  assert.equal(captured.sdkOptions.enterprise, true);
+  assert.equal(captured.sdkOptions.project, "triangle-hackathon-claude-code");
+  assert.equal(captured.sdkOptions.location, "global");
+
+  const googleAuthOptions = captured.sdkOptions.googleAuthOptions as {
+    authClient?: IdentityPoolClient;
+    projectId?: string;
+  };
+  assert.ok(googleAuthOptions);
+  assert.equal(googleAuthOptions.projectId, "triangle-hackathon-claude-code");
+  assert.ok(googleAuthOptions.authClient instanceof IdentityPoolClient);
+  assert.equal(
+    googleAuthOptions.authClient.getServiceAccountEmail(),
+    "fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com"
+  );
+  assert.equal(result.supportStatus, "supported");
+  assert.equal(result.proposals.length, 1);
+  assert.equal(result.proposals[0].strategy.id, "soil_health_wif");
+
+  // Verify OIDC JWT redaction and clear WIF error message if STS / IAM exchange fails
+  const failingWifProvider = new GeminiEnterpriseProvider({
+    project: "triangle-hackathon-claude-code",
+    location: "global",
+    model: "gemini-4-argon",
+    wifConfig: {
+      projectNumber: "123456789012",
+      serviceAccountEmail:
+        "fallo-si@triangle-hackathon-claude-code.iam.gserviceaccount.com",
+      workloadIdentityPoolId: "vercel-pool",
+      workloadIdentityPoolProviderId: "vercel-provider",
+    },
+    oidcTokenSupplier: async () => fakeOidcJwt,
+    clientFactory: () => ({
+      models: {
+        generateContent: async () => {
+          throw new Error(
+            `STS token exchange failed for subject token ${fakeOidcJwt} with error invalid_grant (status: 401)`
+          );
+        },
+      },
+    }),
+  });
+
+  const failedWifResult = await generateRotations(
+    {
+      fieldId: "wif_field_fail",
+      fieldName: "Rowan WIF Fail Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    failingWifProvider
+  );
+
+  assert.equal(failedWifResult.proposals.length, 0);
+  assert.equal(failedWifResult.supportStatus, "unavailable");
+  assert.ok(
+    failedWifResult.aiUnavailableReason?.includes(
+      "Google Cloud Workload Identity Federation (Vercel OIDC) authentication failed"
+    )
+  );
+  assert.ok(!failedWifResult.aiUnavailableReason?.includes(fakeOidcJwt));
+  assert.ok(failedWifResult.aiUnavailableReason?.includes("[REDACTED_OIDC_TOKEN]"));
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────

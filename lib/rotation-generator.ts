@@ -15,6 +15,11 @@
 
 import { z } from "zod";
 import { ThinkingLevel, type GoogleGenAIOptions } from "@google/genai";
+import { getVercelOidcToken } from "@vercel/oidc";
+import {
+  ExternalAccountClient,
+  type BaseExternalAccountClient,
+} from "google-auth-library";
 import { normalizeLongitude } from "@/lib/coordinates";
 import {
   GLOBAL_REGION_TAGS,
@@ -29,6 +34,7 @@ import {
   type StrategyResult,
   type AIUsageMetadata,
   type CropEvidenceLevel,
+  DEFAULT_AI_TIMEOUT_MS,
   cropLibrary,
   scoreStrategy,
   rankStrategyResults,
@@ -247,10 +253,164 @@ export interface AIProviderClient {
   lastUsageMetadata?: AIUsageMetadata;
 }
 
-export const DEFAULT_AI_TIMEOUT_MS = 120_000;
+export { DEFAULT_AI_TIMEOUT_MS };
 export const DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 3500;
 export const DEFAULT_GEMINI_ENTERPRISE_MODEL = "gemini-4-argon";
 export const DEFAULT_GOOGLE_CLOUD_LOCATION = "global";
+
+export const GCP_STS_TOKEN_URL = "https://sts.googleapis.com/v1/token";
+export const GCP_SUBJECT_TOKEN_TYPE_JWT = "urn:ietf:params:oauth:token-type:jwt";
+
+export const REQUIRED_VERCEL_WIF_ENV_VARS = [
+  "GCP_PROJECT_NUMBER",
+  "GCP_SERVICE_ACCOUNT_EMAIL",
+  "GCP_WORKLOAD_IDENTITY_POOL_ID",
+  "GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID",
+] as const;
+
+export interface VercelWifConfig {
+  projectNumber: string;
+  serviceAccountEmail: string;
+  workloadIdentityPoolId: string;
+  workloadIdentityPoolProviderId: string;
+}
+
+export type OidcTokenSupplier = () => Promise<string>;
+export type GeminiAuthMode = "adc" | "vercel-oidc-wif";
+
+/**
+ * Build the Google Cloud Workload Identity Federation provider audience string:
+ * `//iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID`
+ */
+export function buildVercelWifAudience(
+  config: Pick<
+    VercelWifConfig,
+    "projectNumber" | "workloadIdentityPoolId" | "workloadIdentityPoolProviderId"
+  >
+): string {
+  return `//iam.googleapis.com/projects/${config.projectNumber.trim()}/locations/global/workloadIdentityPools/${config.workloadIdentityPoolId.trim()}/providers/${config.workloadIdentityPoolProviderId.trim()}`;
+}
+
+/**
+ * Build the standard Google Cloud IAM Credentials service-account impersonation URL.
+ */
+export function buildServiceAccountImpersonationUrl(serviceAccountEmail: string): string {
+  return `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${serviceAccountEmail.trim()}:generateAccessToken`;
+}
+
+/**
+ * Detect whether the application is running in a deployed Vercel environment
+ * (production or preview). Returns `false` in local development (including when
+ * `VERCEL_ENV="development"` from `vercel env pull` or `vercel dev`), preserving
+ * local Google Cloud Application Default Credentials (ADC).
+ */
+export function isVercelDeploymentEnvironment(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  const vercelEnv = env.VERCEL_ENV?.trim().toLowerCase();
+  if (vercelEnv === "development") {
+    return false;
+  }
+  if (vercelEnv === "production" || vercelEnv === "preview") {
+    return true;
+  }
+  const vercelFlag = env.VERCEL?.trim().toLowerCase();
+  return vercelFlag === "1" || vercelFlag === "true";
+}
+
+/**
+ * Return any missing Workload Identity Federation environment variable names.
+ */
+export function getMissingVercelWifEnvVars(
+  env: Record<string, string | undefined> = process.env
+): string[] {
+  return REQUIRED_VERCEL_WIF_ENV_VARS.filter((key) => !env[key]?.trim());
+}
+
+/**
+ * Resolve Google Cloud Workload Identity Federation configuration from environment variables.
+ * Returns `null` if any required variable is missing.
+ */
+export function resolveVercelWifConfig(
+  env: Record<string, string | undefined> = process.env
+): VercelWifConfig | null {
+  const projectNumber = env.GCP_PROJECT_NUMBER?.trim();
+  const serviceAccountEmail = env.GCP_SERVICE_ACCOUNT_EMAIL?.trim();
+  const workloadIdentityPoolId = env.GCP_WORKLOAD_IDENTITY_POOL_ID?.trim();
+  const workloadIdentityPoolProviderId =
+    env.GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID?.trim();
+
+  if (
+    !projectNumber ||
+    !serviceAccountEmail ||
+    !workloadIdentityPoolId ||
+    !workloadIdentityPoolProviderId
+  ) {
+    return null;
+  }
+
+  return {
+    projectNumber,
+    serviceAccountEmail,
+    workloadIdentityPoolId,
+    workloadIdentityPoolProviderId,
+  };
+}
+
+/**
+ * Create a Google Cloud `ExternalAccountClient` via `ExternalAccountClient.fromJSON`
+ * configured for Vercel OIDC + Workload Identity Federation and service-account impersonation.
+ *
+ * Uses `subject_token_supplier` with `getSubjectToken` calling `getVercelOidcToken()`
+ * lazily when the client exchanges tokens at runtime.
+ */
+export function createVercelWifExternalAccountClient(
+  config: VercelWifConfig,
+  oidcTokenSupplier: OidcTokenSupplier = getVercelOidcToken
+): BaseExternalAccountClient {
+  const projectNumber = config.projectNumber?.trim();
+  const serviceAccountEmail = config.serviceAccountEmail?.trim();
+  const workloadIdentityPoolId = config.workloadIdentityPoolId?.trim();
+  const workloadIdentityPoolProviderId = config.workloadIdentityPoolProviderId?.trim();
+
+  if (
+    !projectNumber ||
+    !serviceAccountEmail ||
+    !workloadIdentityPoolId ||
+    !workloadIdentityPoolProviderId
+  ) {
+    throw new Error(
+      "Incomplete Google Cloud Workload Identity Federation configuration. Required: GCP_PROJECT_NUMBER, GCP_SERVICE_ACCOUNT_EMAIL, GCP_WORKLOAD_IDENTITY_POOL_ID, and GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID."
+    );
+  }
+
+  const audience = buildVercelWifAudience({
+    projectNumber,
+    workloadIdentityPoolId,
+    workloadIdentityPoolProviderId,
+  });
+  const serviceAccountImpersonationUrl =
+    buildServiceAccountImpersonationUrl(serviceAccountEmail);
+
+  const authClient = ExternalAccountClient.fromJSON({
+    type: "external_account",
+    audience,
+    subject_token_type: GCP_SUBJECT_TOKEN_TYPE_JWT,
+    token_url: GCP_STS_TOKEN_URL,
+    service_account_impersonation_url: serviceAccountImpersonationUrl,
+    subject_token_supplier: {
+      getSubjectToken: () => oidcTokenSupplier(),
+    },
+  });
+
+  if (!authClient) {
+    throw new Error(
+      "Failed to initialize Google Cloud ExternalAccountClient from Workload Identity Federation configuration."
+    );
+  }
+
+  return authClient;
+}
 
 export type GeminiThinkingLevel = "LOW" | "MEDIUM" | "HIGH";
 export const DEFAULT_GEMINI_THINKING_LEVEL: GeminiThinkingLevel = "LOW";
@@ -309,11 +469,14 @@ export type GeminiClientFactory = (
 ) => GeminiClientLike | Promise<GeminiClientLike>;
 
 /**
- * Official `@google/genai` provider for Google Cloud's Gemini Enterprise Agent Platform
- * using Application Default Credentials (ADC).
+ * Official `@google/genai` provider for Google Cloud's Gemini Enterprise Agent Platform.
  *
- * Initializes `new GoogleGenAI({ enterprise: true, project, location, httpOptions })`
- * and does NOT require an API key (`FALLO_AI_API_KEY`).
+ * Supports two server-side authentication modes (resolved lazily at runtime):
+ * 1. Local development (`authMode: "adc"`): Uses Application Default Credentials (ADC)
+ *    via `new GoogleGenAI({ enterprise: true, project, location, httpOptions })`.
+ * 2. Deployed Vercel environment (`authMode: "vercel-oidc-wif"`): Uses Vercel OIDC
+ *    (`getVercelOidcToken`) and Google Cloud Workload Identity Federation
+ *    (`ExternalAccountClient.fromJSON`) passed via `googleAuthOptions: { authClient, projectId }`.
  *
  * Configured specifically for `gemini-4-argon`:
  * - Uses `thinkingConfig: { thinkingLevel: "LOW" }` by default for responsive structured output.
@@ -330,8 +493,11 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
   readonly model: string;
   readonly enterprise: boolean;
   readonly thinkingLevel: GeminiThinkingLevel;
+  readonly authMode: GeminiAuthMode;
+  readonly wifConfig?: VercelWifConfig;
   private defaultTimeoutMs: number;
   private clientFactory: GeminiClientFactory;
+  private oidcTokenSupplier: OidcTokenSupplier;
 
   constructor(opts: {
     providerName?: string;
@@ -341,6 +507,8 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
     enterprise?: boolean;
     thinkingLevel?: GeminiThinkingLevel | string;
     timeoutMs?: number;
+    wifConfig?: VercelWifConfig;
+    oidcTokenSupplier?: OidcTokenSupplier;
     clientFactory?: GeminiClientFactory;
   }) {
     const trimmedProject = opts.project?.trim();
@@ -357,6 +525,34 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
     this.enterprise = opts.enterprise ?? true;
     this.thinkingLevel = parseGeminiThinkingLevel(opts.thinkingLevel);
     this.defaultTimeoutMs = opts.timeoutMs ?? DEFAULT_AI_TIMEOUT_MS;
+    if (opts.wifConfig) {
+      const projectNumber = opts.wifConfig.projectNumber?.trim();
+      const serviceAccountEmail = opts.wifConfig.serviceAccountEmail?.trim();
+      const workloadIdentityPoolId = opts.wifConfig.workloadIdentityPoolId?.trim();
+      const workloadIdentityPoolProviderId =
+        opts.wifConfig.workloadIdentityPoolProviderId?.trim();
+      if (
+        !projectNumber ||
+        !serviceAccountEmail ||
+        !workloadIdentityPoolId ||
+        !workloadIdentityPoolProviderId
+      ) {
+        throw new Error(
+          "GeminiEnterpriseProvider wifConfig requires non-empty projectNumber, serviceAccountEmail, workloadIdentityPoolId, and workloadIdentityPoolProviderId."
+        );
+      }
+      this.authMode = "vercel-oidc-wif";
+      this.wifConfig = {
+        projectNumber,
+        serviceAccountEmail,
+        workloadIdentityPoolId,
+        workloadIdentityPoolProviderId,
+      };
+    } else {
+      this.authMode = "adc";
+      this.wifConfig = undefined;
+    }
+    this.oidcTokenSupplier = opts.oidcTokenSupplier ?? getVercelOidcToken;
     this.clientFactory =
       opts.clientFactory ??
       (async (sdkOptions: GoogleGenAIOptions) => {
@@ -366,9 +562,10 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
   }
 
   private sanitizeErrorMessage(raw: string): string {
-    // Redact any accidental OAuth2 access tokens or bearer tokens
+    // Redact any accidental OAuth2 access tokens, OIDC JWTs, or bearer tokens
     return raw
       .replace(/ya29\.[A-Za-z0-9._-]+/g, "[REDACTED_TOKEN]")
+      .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_OIDC_TOKEN]")
       .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
   }
 
@@ -381,6 +578,14 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
       lower.includes("permission_denied") ||
       lower.includes("permission denied") ||
       lower.includes("invalid_grant") ||
+      lower.includes("invalid_target") ||
+      lower.includes("invalid_client") ||
+      lower.includes("unauthorized_client") ||
+      lower.includes("subject token") ||
+      lower.includes("vercel oidc") ||
+      lower.includes("sts.googleapis.com") ||
+      lower.includes("iamcredentials.googleapis.com") ||
+      lower.includes("workloadidentitypools") ||
       lower.includes("reauth") ||
       lower.includes("status: 401") ||
       lower.includes("status: 403") ||
@@ -452,11 +657,25 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
     };
 
     try {
+      // Lazily instantiate ExternalAccountClient at runtime when in Vercel OIDC WIF mode
+      const authClient =
+        this.authMode === "vercel-oidc-wif" && this.wifConfig
+          ? createVercelWifExternalAccountClient(this.wifConfig, this.oidcTokenSupplier)
+          : undefined;
+
       const sdkOptions: GoogleGenAIOptions = {
         enterprise: this.enterprise,
         project: this.project,
         location: this.location,
         httpOptions,
+        ...(authClient
+          ? {
+              googleAuthOptions: {
+                authClient,
+                projectId: this.project,
+              },
+            }
+          : {}),
       };
       const client = await this.clientFactory(sdkOptions);
 
@@ -505,6 +724,11 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
       const rawMessage = err instanceof Error ? err.message : String(err);
       const safeMessage = this.sanitizeErrorMessage(rawMessage);
       if (this.isAuthError(safeMessage)) {
+        if (this.authMode === "vercel-oidc-wif") {
+          throw new Error(
+            `Google Cloud Workload Identity Federation (Vercel OIDC) authentication failed for project "${this.project}" (${this.location}, model "${this.model}"): ${safeMessage}. Verify Vercel OIDC token issuance and GCP_PROJECT_NUMBER, GCP_SERVICE_ACCOUNT_EMAIL, GCP_WORKLOAD_IDENTITY_POOL_ID, and GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID.`
+          );
+        }
         throw new Error(
           `Google Cloud ADC authentication failed for project "${this.project}" (${this.location}, model "${this.model}"): ${safeMessage}. Verify Application Default Credentials with "gcloud auth application-default login".`
         );
@@ -519,28 +743,48 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
   }
 }
 
+export interface ResolveRuntimeAIProviderOptions {
+  geminiClientFactory?: GeminiClientFactory;
+  oidcTokenSupplier?: OidcTokenSupplier;
+}
+
 /**
  * Resolve the configured runtime AI provider from environment variables.
  *
  * Primary provider: Google Cloud Gemini Enterprise Agent Platform (`@google/genai`)
- * authenticated via Application Default Credentials (ADC). Does NOT require `FALLO_AI_API_KEY`.
+ * - In local development: Authenticated via Application Default Credentials (ADC).
+ * - In deployed Vercel environments (`VERCEL=1` or `VERCEL_ENV=production|preview`):
+ *   Authenticated via Vercel OIDC (`getVercelOidcToken`) and Google Cloud Workload Identity
+ *   Federation (`GCP_PROJECT_NUMBER`, `GCP_SERVICE_ACCOUNT_EMAIL`,
+ *   `GCP_WORKLOAD_IDENTITY_POOL_ID`, `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID`).
+ *   If running on Vercel and any WIF variable is missing, returns `null` so production SI
+ *   generation is not enabled before authentication is configured.
  *
  * Activated when:
  * - `FALLO_AI_ENABLED` is not `"false"`
  * - `GOOGLE_GENAI_USE_ENTERPRISE=true` (or `FALLO_AI_PROVIDER` is `"gemini-enterprise"` / `"google-genai"` / `"vertex"` / unset)
- * - AND `GOOGLE_CLOUD_PROJECT` is set.
+ * - AND `GOOGLE_CLOUD_PROJECT` is set (plus the 4 `GCP_*` WIF variables when deployed on Vercel).
  *
  * Optional fallback: `OpenAICompatibleProvider` when `FALLO_AI_PROVIDER` is set to
  * an OpenAI-compatible provider name and `FALLO_AI_API_KEY` is provided.
  */
 export function resolveRuntimeAIProvider(
   env: Record<string, string | undefined> = process.env,
-  geminiClientFactory?: GeminiClientFactory
+  geminiClientFactoryOrOptions?: GeminiClientFactory | ResolveRuntimeAIProviderOptions
 ): AIProviderClient | null {
   const aiEnabledRaw = env.FALLO_AI_ENABLED?.trim().toLowerCase();
   if (aiEnabledRaw === "false" || aiEnabledRaw === "0") {
     return null;
   }
+
+  const geminiClientFactory =
+    typeof geminiClientFactoryOrOptions === "function"
+      ? geminiClientFactoryOrOptions
+      : geminiClientFactoryOrOptions?.geminiClientFactory;
+  const oidcTokenSupplier =
+    typeof geminiClientFactoryOrOptions === "object" && geminiClientFactoryOrOptions !== null
+      ? geminiClientFactoryOrOptions.oidcTokenSupplier
+      : undefined;
 
   const providerPref = env.FALLO_AI_PROVIDER?.trim().toLowerCase();
   const useEnterpriseRaw = env.GOOGLE_GENAI_USE_ENTERPRISE?.trim().toLowerCase();
@@ -574,9 +818,21 @@ export function resolveRuntimeAIProvider(
     });
   }
 
-  // 2. Google Cloud Gemini Enterprise Agent Platform via ADC (no API key required)
+  // 2. Google Cloud Gemini Enterprise Agent Platform via ADC (local) or Vercel OIDC WIF (deployed Vercel)
   const enterpriseEnabled = useEnterpriseRaw !== "false";
   if (isGeminiProviderPref && enterpriseEnabled && gcpProject) {
+    const onVercelDeployment = isVercelDeploymentEnvironment(env);
+    let wifConfig: VercelWifConfig | undefined;
+
+    if (onVercelDeployment) {
+      const resolvedWif = resolveVercelWifConfig(env);
+      if (!resolvedWif) {
+        // Do not enable production SI generation on Vercel until WIF authentication is configured
+        return null;
+      }
+      wifConfig = resolvedWif;
+    }
+
     const rawLevel = env.FALLO_AI_THINKING_LEVEL?.trim();
     let thinkingLevel: GeminiThinkingLevel = DEFAULT_GEMINI_THINKING_LEVEL;
     if (rawLevel) {
@@ -594,6 +850,8 @@ export function resolveRuntimeAIProvider(
       enterprise: true,
       thinkingLevel,
       timeoutMs,
+      wifConfig,
+      oidcTokenSupplier,
       clientFactory: geminiClientFactory,
     });
   }

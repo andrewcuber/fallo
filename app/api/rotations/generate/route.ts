@@ -3,12 +3,14 @@ import {
   generateRotations,
   GenerationRequestSchema,
   resolveRuntimeAIProvider,
+  isVercelDeploymentEnvironment,
+  getMissingVercelWifEnvVars,
   type GenerationContext,
 } from "@/lib/rotation-generator";
 
 /**
- * Node.js runtime is required so `@google/genai` and `google-auth-library`
- * can read Application Default Credentials (ADC) from the server environment.
+ * Node.js runtime is required so `@google/genai`, `@vercel/oidc`, and `google-auth-library`
+ * can resolve Vercel OIDC Workload Identity Federation credentials or local ADC on the server.
  */
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -16,10 +18,13 @@ export const maxDuration = 120;
 /**
  * Secure server-side route for AI-assisted rotation generation.
  *
- * - NEVER exposes AI credentials or ADC tokens to the client.
+ * - NEVER exposes AI credentials, OIDC tokens, or ADC tokens to the client.
  * - Uses Google Cloud's Gemini Enterprise Agent Platform (`@google/genai` with
- *   `enterprise: true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and ADC)
- *   when configured, without requiring `FALLO_AI_API_KEY`.
+ *   `enterprise: true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`) authenticated via:
+ *   - Vercel OIDC + Google Cloud Workload Identity Federation (`ExternalAccountClient.fromJSON`)
+ *     on deployed Vercel environments (`GCP_PROJECT_NUMBER`, `GCP_SERVICE_ACCOUNT_EMAIL`,
+ *     `GCP_WORKLOAD_IDENTITY_POOL_ID`, `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID`).
+ *   - Application Default Credentials (ADC) in local development.
  * - Validates input strictly with GenerationRequestSchema (Zod).
  * - Always runs deterministic classification and available-crop filtering,
  *   even when no runtime AI provider is configured (returning 503 with classification).
@@ -64,14 +69,24 @@ export async function POST(req: NextRequest) {
     });
 
     if (!provider) {
+      const onVercel = isVercelDeploymentEnvironment(process.env);
+      const missingWifVars = onVercel ? getMissingVercelWifEnvVars(process.env) : [];
+      const vercelWifHint =
+        onVercel && missingWifVars.length > 0
+          ? ` Missing Vercel OIDC Workload Identity Federation environment variables: ${missingWifVars.join(", ")}.`
+          : "";
+      const unavailableMessage =
+        (result.aiUnavailableReason ??
+          "No runtime AI provider is configured for this deployment. " +
+            "Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Vercel OIDC Workload Identity Federation on Vercel or Application Default Credentials locally) to enable Gemini Enterprise rotation generation.") +
+        vercelWifHint;
+
       return NextResponse.json(
         {
           ...result,
+          aiUnavailableReason: unavailableMessage,
           error: "AI generation unavailable",
-          message:
-            result.aiUnavailableReason ??
-            "No runtime AI provider is configured for this deployment. " +
-              "Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials) to enable Gemini Enterprise rotation generation.",
+          message: unavailableMessage,
           aiStatus: "unavailable",
         },
         { status: 503 }

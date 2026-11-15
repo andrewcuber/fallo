@@ -23,6 +23,7 @@ import {
   getAvailableCropsForContext,
   evaluateFieldCropEvidenceLevel,
   cropLibrary,
+  DEFAULT_AI_TIMEOUT_MS,
 } from "@/lib/rotation-scoring";
 import {
   classifyAgGroup,
@@ -34,10 +35,7 @@ import {
   formatWaterRegimeLabel,
   formatWaterRegimeDescription,
 } from "@/lib/agro-classifier";
-import {
-  DEFAULT_AI_TIMEOUT_MS,
-  type GenerationResult,
-} from "@/lib/rotation-generator";
+import type { GenerationResult } from "@/lib/rotation-generator";
 import {
   RefreshCw,
   AlertTriangle,

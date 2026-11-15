@@ -18,6 +18,8 @@ export type CropEvidenceLevel =
   | "level_2_global_modeled"
   | "level_3_insufficient";
 
+export const DEFAULT_AI_TIMEOUT_MS = 120_000;
+
 export interface Crop {
   id: string;
   commonName: string;
