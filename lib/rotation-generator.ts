@@ -40,6 +40,7 @@ import {
   rankStrategyResults,
   getAvailableCropsForContext,
   evaluateFieldCropEvidenceLevel,
+  buildFieldSpecificObjectives,
 } from "@/lib/rotation-scoring";
 import {
   classifyAgGroup,
@@ -325,6 +326,67 @@ export function getMissingVercelWifEnvVars(
   env: Record<string, string | undefined> = process.env
 ): string[] {
   return REQUIRED_VERCEL_WIF_ENV_VARS.filter((key) => !env[key]?.trim());
+}
+
+/**
+ * Redact any accidental OAuth2 access tokens, OIDC JWTs, or Bearer tokens from error strings.
+ */
+export function sanitizeGenerationErrorMessage(
+  rawMessage: string | null | undefined,
+  fallback = "We couldn't finish generating your plans. Please try again later."
+): string {
+  const trimmed = (rawMessage ?? "").trim();
+  if (!trimmed) return fallback;
+  return trimmed
+    .replace(/ya29\.[A-Za-z0-9._-]+/g, "[REDACTED_TOKEN]")
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_OIDC_TOKEN]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+}
+
+/**
+ * Build a clear, environment-aware explanation when `resolveRuntimeAIProvider(env)` returns `null`.
+ * Distinguishes:
+ * 1. Explicit `FALLO_AI_ENABLED=false`
+ * 2. Vercel Preview deployments (`VERCEL_ENV="preview"`), where Production Google Cloud WIF
+ *    credentials are intentionally not exposed
+ * 3. Vercel Production deployments (`VERCEL_ENV="production"` or `VERCEL="1"`), listing any
+ *    missing Production WIF or project variables
+ * 4. Local development (`localhost`), explaining `.env.local` and Google Cloud ADC setup
+ */
+export function describeMissingAIProviderReason(
+  env: Record<string, string | undefined> = process.env
+): string {
+  const aiEnabledRaw = env.FALLO_AI_ENABLED?.trim().toLowerCase();
+  if (aiEnabledRaw === "false" || aiEnabledRaw === "0") {
+    return "SI rotation generation is disabled because FALLO_AI_ENABLED is set to false. Set FALLO_AI_ENABLED=true and configure FALLO_AI_PROVIDER / GOOGLE_CLOUD_PROJECT to enable AI-assisted rotation generation.";
+  }
+
+  const vercelEnv = env.VERCEL_ENV?.trim().toLowerCase();
+  if (vercelEnv === "preview") {
+    const missingWif = getMissingVercelWifEnvVars(env);
+    const missingNote =
+      missingWif.length > 0
+        ? ` (missing in Preview: ${missingWif.join(", ")})`
+        : "";
+    return `SI rotation generation is not enabled on Vercel Preview deployments because Google Cloud Workload Identity Federation and Gemini Enterprise credentials (FALLO_AI_PROVIDER, GOOGLE_CLOUD_PROJECT, GCP_*) are scoped to the Production environment${missingNote} and local development (via Google Cloud ADC). Use Preview deployments to verify UI, Climate, Soil, What-If Simulator, Field Calendar, and Climate Analogues, and run live SI rotation generation on localhost or Vercel Production.`;
+  }
+
+  if (isVercelDeploymentEnvironment(env)) {
+    const missingVars: string[] = [];
+    if (!env.GOOGLE_CLOUD_PROJECT?.trim()) {
+      missingVars.push("GOOGLE_CLOUD_PROJECT");
+    }
+    for (const wifKey of getMissingVercelWifEnvVars(env)) {
+      missingVars.push(wifKey);
+    }
+    const missingSuffix =
+      missingVars.length > 0
+        ? ` Missing Vercel OIDC Workload Identity Federation environment variables: ${missingVars.join(", ")}.`
+        : "";
+    return `No runtime AI provider is configured for this Vercel deployment. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and FALLO_AI_PROVIDER=gemini-enterprise along with Vercel OIDC Workload Identity Federation variables.${missingSuffix}`;
+  }
+
+  return "No runtime AI provider is configured. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials via `gcloud auth application-default login`), or set FALLO_AI_PROVIDER, to enable AI-assisted rotation generation.";
 }
 
 /**
@@ -1047,11 +1109,27 @@ export function buildSystemPrompt(
     `Classification limitations: ${classification.limitations.join(" ") || "None"}`,
   ].join("\n");
 
+  const fieldObjectives = buildFieldSpecificObjectives({
+    climate: context.climate,
+    soil: context.soil,
+    priorities: context.priorities,
+    availableCropIds: availableCrops,
+  });
+
+  const objectivesSummary = fieldObjectives
+    .map(
+      (obj, idx) =>
+        `${idx + 1}. "${obj.archetype}" (${obj.name} — ${obj.emphasisTag}): ${obj.objective}${
+          obj.recommendedCropIds.length > 0
+            ? ` Candidate crops: ${obj.recommendedCropIds.join(", ")}.`
+            : ""
+        }`
+    )
+    .join("\n");
+
   return `You are an agricultural planning assistant for the fallo app.
-Generate 3 distinct, field-specific 3-year crop rotation strategies in a single JSON response:
-1. "soil_health" (Soil Health Building)
-2. "water_resilience" (Water Resilience)
-3. "crop_diversity" (Crop Diversity & Pest Break)
+Generate 3 distinct, field-specific 3-year crop rotation strategies in a single JSON response tailored to this field's planning objectives:
+${objectivesSummary}
 
 ## COMPATIBILITY RULES (AUTHORITATIVE)
 ${formatCompatibilityRulesForPrompt()}
@@ -1347,8 +1425,7 @@ export async function generateRotations(
         availableCrops,
         proposals: [],
         supportStatus,
-        aiUnavailableReason:
-          "No runtime AI provider is configured. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials via `gcloud auth application-default login`), or set FALLO_AI_PROVIDER, to enable AI-assisted rotation generation.",
+        aiUnavailableReason: describeMissingAIProviderReason(process.env),
       };
     }
 
@@ -1363,6 +1440,9 @@ export async function generateRotations(
         timeoutMs: options?.timeoutMs,
       });
     } catch (err) {
+      const safeErr = sanitizeGenerationErrorMessage(
+        err instanceof Error ? err.message : String(err)
+      );
       return {
         classification: classificationSummary,
         geography: geo,
@@ -1371,9 +1451,7 @@ export async function generateRotations(
         availableCrops,
         proposals: [],
         supportStatus: "unavailable",
-        aiUnavailableReason: `AI provider (${aiProvider.providerName}) call failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        aiUnavailableReason: `AI provider (${aiProvider.providerName}) call failed: ${safeErr}`,
         aiProvider: aiProvider.providerName,
         aiModel: aiProvider.modelName,
       };

@@ -926,6 +926,14 @@ export interface StrategyObjectiveDefinition {
   objective: string;
 }
 
+export interface FieldAdaptiveObjective extends StrategyObjectiveDefinition {
+  emphasisTag: string;
+  priorityEmphasisScore: number;
+  bullets: string[];
+  recommendedCropIds: string[];
+  recommendedCropNames: string[];
+}
+
 export const STRATEGY_OBJECTIVES: StrategyObjectiveDefinition[] = [
   {
     archetype: "soil_health",
@@ -947,14 +955,86 @@ export const STRATEGY_OBJECTIVES: StrategyObjectiveDefinition[] = [
   },
 ];
 
+function selectObjectiveCandidateCrops(
+  archetype: "soil_health" | "water_resilience" | "crop_diversity",
+  availableCropIds: string[]
+): { ids: string[]; names: string[] } {
+  const validCrops = availableCropIds
+    .map((id) => getCrop(id))
+    .filter((c): c is Crop => Boolean(c));
+
+  if (validCrops.length === 0) {
+    return { ids: [], names: [] };
+  }
+
+  if (archetype === "soil_health") {
+    const scored = validCrops
+      .map((c) => {
+        let score = 0;
+        if (c.family === "Fabaceae" || c.nitrogenBehavior.residualNcredit) score += 4;
+        if (c.type === "cover") score += 3;
+        if (c.residue.quantity.toLowerCase().includes("high")) score += 2;
+        if (c.rootSystem.toLowerCase().includes("deep") || c.rootSystem.toLowerCase().includes("fibrous")) {
+          score += 1;
+        }
+        return { crop: c, score };
+      })
+      .sort((a, b) => b.score - a.score || a.crop.commonName.localeCompare(b.crop.commonName));
+    const chosen = scored.slice(0, 4).map((s) => s.crop);
+    return { ids: chosen.map((c) => c.id), names: chosen.map((c) => c.commonName) };
+  }
+
+  if (archetype === "water_resilience") {
+    const scored = validCrops
+      .map((c) => {
+        let score = 0;
+        const dt = c.droughtTolerance.toLowerCase();
+        const wd = c.waterDemand.toLowerCase();
+        if (dt === "very_high" || dt === "high") score += 4;
+        else if (dt.includes("moderate")) score += 2;
+        if (wd === "low" || wd === "very_low" || wd === "low_to_moderate") score += 3;
+        else if (wd === "moderate") score += 1;
+        if (c.type === "cover" && c.residue.persistence.toLowerCase().includes("high")) score += 2;
+        return { crop: c, score };
+      })
+      .sort((a, b) => b.score - a.score || a.crop.commonName.localeCompare(b.crop.commonName));
+    const chosen = scored.slice(0, 4).map((s) => s.crop);
+    return { ids: chosen.map((c) => c.id), names: chosen.map((c) => c.commonName) };
+  }
+
+  // crop_diversity: pick crops from distinct botanical families first
+  const seenFamilies = new Set<string>();
+  const diverseChosen: Crop[] = [];
+  for (const crop of validCrops) {
+    if (!seenFamilies.has(crop.family)) {
+      seenFamilies.add(crop.family);
+      diverseChosen.push(crop);
+      if (diverseChosen.length === 4) break;
+    }
+  }
+  if (diverseChosen.length < 4) {
+    for (const crop of validCrops) {
+      if (!diverseChosen.some((c) => c.id === crop.id)) {
+        diverseChosen.push(crop);
+        if (diverseChosen.length === 4) break;
+      }
+    }
+  }
+  return {
+    ids: diverseChosen.map((c) => c.id),
+    names: diverseChosen.map((c) => c.commonName),
+  };
+}
+
 /**
  * Deterministically build 2–3 short field-specific context bullets for a strategy
- * archetype using the field's actual climate and soil metrics (no AI call required).
+ * archetype using the field's actual climate, soil, and available crop catalog (no AI call required).
  */
 export function buildObjectiveFieldContextBullets(
   archetype: string,
   climate: ClimateData | null | undefined,
-  soil: SoilData | null | undefined
+  soil: SoilData | null | undefined,
+  availableCropIds: string[] = []
 ): string[] {
   const gsPrecip = climate?.stressMetrics.growingSeasonPrecip.avgTotalMm ?? null;
   const springPrecip = climate?.stressMetrics.springPrecip.avgTotalMm ?? null;
@@ -966,50 +1046,317 @@ export function buildObjectiveFieldContextBullets(
   const om = soil?.aggregated.depth0_30cm.om ?? null;
   const awc = soil?.aggregated.depth0_30cm.awc ?? null;
   const ph = soil?.aggregated.depth0_30cm.ph ?? null;
+  const sand = soil?.aggregated.depth0_30cm.sand ?? null;
   const slope = soil?.aggregated.slope ?? null;
   const drainage = soil?.aggregated.drainage ?? null;
 
-  if (archetype === "soil_health" || archetype === "soil_health_building") {
+  const drainageLower = drainage?.toLowerCase() ?? "";
+  const isPoorDrainage =
+    drainageLower.includes("poorly") || drainageLower.includes("restricted");
+  const isHumidOrWet =
+    (annualPrecip !== null && annualPrecip >= 1200) ||
+    (springPrecip !== null && springPrecip >= 320) ||
+    isPoorDrainage;
+  const isHotDry =
+    (annualPrecip !== null && annualPrecip < 600) ||
+    (gsPrecip !== null && gsPrecip < 260) ||
+    (dryDays !== null && dryDays >= 14 && (heatDays ?? 0) >= 10);
+  const isLowOmOrAwc =
+    (om !== null && om < 1.3) ||
+    (awc !== null && awc < 0.12) ||
+    (sand !== null && sand >= 68);
+
+  const normalizedArchetype: "soil_health" | "water_resilience" | "crop_diversity" =
+    archetype === "soil_health" || archetype === "soil_health_building"
+      ? "soil_health"
+      : archetype === "water_resilience"
+        ? "water_resilience"
+        : "crop_diversity";
+
+  const candidateCrops = selectObjectiveCandidateCrops(normalizedArchetype, availableCropIds);
+
+  if (normalizedArchetype === "soil_health") {
     const b1 =
-      om !== null
-        ? `Targets topsoil organic matter (${om.toFixed(1)}% in 0–30 cm) with winter legume and grass residue.`
-        : "Builds topsoil organic matter and biological N supply with legume and high-residue covers.";
+      isLowOmOrAwc && om !== null && awc !== null
+        ? `Rebuilds low organic matter (${om.toFixed(1)}%) and limited water capacity (${awc.toFixed(2)} cm/cm AWC) with cover residue.`
+        : om !== null
+          ? `Targets topsoil organic matter (${om.toFixed(1)}% in 0–30 cm) with winter legume and grass residue.`
+          : "Builds topsoil organic matter and biological N supply with legume and high-residue covers.";
     const b2 =
-      slope !== null && springPrecip !== null
-        ? `Protects ${slope.toFixed(1)}% slope during ${springPrecip.toFixed(0)} mm average spring rainfall.`
-        : slope !== null
-          ? `Protects ${slope.toFixed(1)}% field slope with living winter and spring cover.`
-          : "Maintains living roots through winter and spring transitions to limit erosion.";
-    const b3 = "Pairs biological nitrogen fixation ahead of high-demand summer cash crops.";
+      isHumidOrWet && springPrecip !== null
+        ? `Maintains living roots across ${springPrecip.toFixed(0)} mm spring rain${slope !== null ? ` and ${slope.toFixed(1)}% slope` : ""} to scavenge soluble N and curb runoff.`
+        : isHotDry
+          ? `Uses low-transpiration surface mulch to shield topsoil carbon across ${dryDays !== null ? `${dryDays.toFixed(1)}-day summer dry spells` : "dry windows"}.`
+          : slope !== null && springPrecip !== null
+            ? `Protects ${slope.toFixed(1)}% slope during ${springPrecip.toFixed(0)} mm average spring rainfall.`
+            : slope !== null
+              ? `Protects ${slope.toFixed(1)}% field slope with living winter and spring cover.`
+              : "Maintains living roots through winter and spring transitions to limit erosion.";
+    const b3 =
+      candidateCrops.names.length > 0
+        ? `Prioritizes N-fixing and high-residue options such as ${candidateCrops.names.slice(0, 3).join(", ")}.`
+        : "Pairs biological nitrogen fixation ahead of high-demand summer cash crops.";
     return [b1, b2, b3];
   }
 
-  if (archetype === "water_resilience") {
+  if (normalizedArchetype === "water_resilience") {
     const b1 =
-      gsPrecip !== null && dryDays !== null
-        ? `Adapts to ${gsPrecip.toFixed(0)} mm May–Aug rainfall and ${dryDays.toFixed(1)}-day average summer dry spells.`
-        : "Selects lower-water-demand summer crops to buffer against mid-season dry spells.";
+      isHotDry && gsPrecip !== null && dryDays !== null
+        ? `Buffers low growing-season rain (${gsPrecip.toFixed(0)} mm May–Aug) and ${dryDays.toFixed(1)}-day dry spells with drought-tolerant crops.`
+        : isHumidOrWet && gsPrecip !== null && dryDays !== null
+          ? `Balances ${gsPrecip.toFixed(0)} mm May–Aug rainfall${drainage ? ` on ${drainage.toLowerCase()} soils` : ""} with ${dryDays.toFixed(1)}-day dry spells.`
+          : gsPrecip !== null && dryDays !== null
+            ? `Adapts to ${gsPrecip.toFixed(0)} mm May–Aug rainfall and ${dryDays.toFixed(1)}-day average summer dry spells.`
+            : "Selects lower-water-demand summer crops to buffer against mid-season dry spells.";
     const b2 =
-      heatDays !== null && awc !== null
-        ? `Accounts for ${heatDays.toFixed(1)} summer heat days (>35 °C) and ${awc.toFixed(2)} cm/cm topsoil AWC.`
-        : heatDays !== null
-          ? `Reduces reproductive heat exposure across ${heatDays.toFixed(1)} average summer heat days (>35 °C).`
-          : "Matches rooting depth and drought tolerance to field water-holding capacity.";
-    const b3 = "Uses persistent surface residue to reduce summer soil moisture evaporation.";
+      isLowOmOrAwc && awc !== null
+        ? `Compensates for low topsoil water storage (${awc.toFixed(2)} cm/cm AWC${sand !== null ? `, ${sand.toFixed(0)}% sand` : ""}) using deep roots and surface mulch.`
+        : isPoorDrainage && drainage
+          ? `Accounts for ${drainage.toLowerCase()} conditions${springPrecip !== null ? ` (${springPrecip.toFixed(0)} mm spring rain)` : ""} to avoid spring root stress.`
+          : heatDays !== null && awc !== null
+            ? `Accounts for ${heatDays.toFixed(1)} summer heat days (>35 °C) and ${awc.toFixed(2)} cm/cm topsoil AWC.`
+            : heatDays !== null
+              ? `Reduces reproductive heat exposure across ${heatDays.toFixed(1)} average summer heat days (>35 °C).`
+              : "Matches rooting depth and drought tolerance to field water-holding capacity.";
+    const b3 =
+      candidateCrops.names.length > 0
+        ? `Draws on water-resilient catalog crops including ${candidateCrops.names.slice(0, 3).join(", ")}.`
+        : "Uses persistent surface residue to reduce summer soil moisture evaporation.";
     return [b1, b2, b3];
   }
 
   // Default / crop_diversity
-  const b1 = "Rotates across distinct botanical families over 3 years to disrupt pest and disease cycles.";
+  const b1 =
+    isHumidOrWet
+      ? `Rotates non-host families over 3 years to break foliar and root-rot pressure in a ${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "humid"} climate.`
+      : isHotDry
+        ? `Spreads heat and moisture risk across distinct botanical families adapted to ${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "semi-arid"} rainfall.`
+        : "Rotates across distinct botanical families over 3 years to disrupt pest and disease cycles.";
   const b2 =
     annualTemp !== null && annualPrecip !== null
-      ? `Balances cool- and warm-season windows for a ${annualTemp.toFixed(1)} °C, ${annualPrecip.toFixed(0)} mm/yr climate.`
+      ? `Staggers cool- and warm-season planting windows for a ${annualTemp.toFixed(1)} °C, ${annualPrecip.toFixed(0)} mm/yr climate.`
       : "Alternates summer and winter planting windows to suppress weed and pathogen buildup.";
   const b3 =
-    drainage !== null && ph !== null
-      ? `Selects non-host break crops suited to ${drainage.toLowerCase()} soils (topsoil pH ${ph.toFixed(1)}).`
-      : "Avoids back-to-back host crops to limit soilborne disease and nematode pressure.";
+    candidateCrops.names.length > 0
+      ? `Combines multi-family options (${candidateCrops.names.slice(0, 3).join(", ")}) suited to ${drainage ? `${drainage.toLowerCase()} soils` : "local topsoil"}${ph !== null ? ` at pH ${ph.toFixed(1)}` : ""}.`
+      : drainage !== null && ph !== null
+        ? `Selects non-host break crops suited to ${drainage.toLowerCase()} soils (topsoil pH ${ph.toFixed(1)}).`
+        : "Avoids back-to-back host crops to limit soilborne disease and nematode pressure.";
   return [b1, b2, b3];
+}
+
+/**
+ * Deterministically build three tailored, field-specific planning objectives
+ * ("soil_health", "water_resilience", "crop_diversity") whose titles, descriptions,
+ * emphasis tags, context bullets, and recommended catalog crops adapt to the field's
+ * actual climate, soil properties, and farmer priority weights.
+ */
+export function buildFieldSpecificObjectives(params: {
+  climate: ClimateData | null | undefined;
+  soil: SoilData | null | undefined;
+  priorities?: FarmerPriorities | null;
+  availableCropIds?: string[];
+}): FieldAdaptiveObjective[] {
+  const { climate, soil, priorities, availableCropIds = [] } = params;
+
+  const gsPrecip = climate?.stressMetrics.growingSeasonPrecip.avgTotalMm ?? null;
+  const springPrecip = climate?.stressMetrics.springPrecip.avgTotalMm ?? null;
+  const dryDays = climate?.stressMetrics.summerDrySpells.avgMaxConsecutiveDryDays ?? null;
+  const heatDays = climate?.stressMetrics.summerHeatDays.avgDaysAboveThreshold ?? null;
+  const annualTemp = climate?.fullRecord.avgAnnualTemp ?? null;
+  const annualPrecip = climate?.fullRecord.avgAnnualPrecip ?? null;
+
+  const om = soil?.aggregated.depth0_30cm.om ?? null;
+  const awc = soil?.aggregated.depth0_30cm.awc ?? null;
+  const ph = soil?.aggregated.depth0_30cm.ph ?? null;
+  const sand = soil?.aggregated.depth0_30cm.sand ?? null;
+  const slope = soil?.aggregated.slope ?? null;
+  const drainage = soil?.aggregated.drainage ?? null;
+
+  const drainageLower = drainage?.toLowerCase() ?? "";
+  const isPoorDrainage =
+    drainageLower.includes("poorly") || drainageLower.includes("restricted");
+  const isHumidOrWet =
+    (annualPrecip !== null && annualPrecip >= 1200) ||
+    (springPrecip !== null && springPrecip >= 320) ||
+    isPoorDrainage;
+  const isHotDry =
+    (annualPrecip !== null && annualPrecip < 600) ||
+    (gsPrecip !== null && gsPrecip < 260) ||
+    (dryDays !== null && dryDays >= 14 && (heatDays ?? 0) >= 10);
+  const isLowOmOrAwc =
+    (om !== null && om < 1.3) ||
+    (awc !== null && awc < 0.12) ||
+    (sand !== null && sand >= 68);
+
+  const p: FarmerPriorities = priorities ?? DEFAULT_PRIORITIES;
+  const soilPriorityScore = Math.round(
+    p.nitrogenContribution * 0.45 + p.soilCoverage * 0.45 + p.waterSuitability * 0.1
+  );
+  const waterPriorityScore = Math.round(
+    p.waterSuitability * 0.55 + p.climateRiskResilience * 0.35 + p.soilCoverage * 0.1
+  );
+  const diversityPriorityScore = Math.round(
+    p.diversityPestBreak * 0.6 + p.climateRiskResilience * 0.25 + p.nitrogenContribution * 0.15
+  );
+
+  const maxPriorityScore = Math.max(
+    soilPriorityScore,
+    waterPriorityScore,
+    diversityPriorityScore
+  );
+
+  // 1. Soil Health objective adaptation
+  let soilName = "Soil Organic Matter & Biological Nitrogen";
+  let soilDesc =
+    "Prioritizes building topsoil organic matter, biological nitrogen credits, and continuous living cover between cash crops.";
+  let soilRegimeTag = "Soil Carbon & N Focus";
+
+  if (isLowOmOrAwc) {
+    soilName = "Organic Matter & Water-Holding Rebuilding";
+    soilRegimeTag =
+      om !== null && om < 1.8
+        ? `Low-OM Topsoil Rebuilding (${om.toFixed(1)}% OM)`
+        : awc !== null
+          ? `Low-AWC Pore Rebuilding (${awc.toFixed(2)} cm/cm)`
+          : "Coarse-Topsoil Carbon Rebuilding";
+    soilDesc = `Rebuilds low 0–30 cm organic matter (${om !== null ? `${om.toFixed(1)}%` : "low OM"}) and water-holding capacity (${awc !== null ? `${awc.toFixed(2)} cm/cm AWC` : "limited AWC"}) using high-residue cover crops and nitrogen-fixing legumes.`;
+  } else if (isHumidOrWet) {
+    soilName = "Erosion Control, N Scavenging & Living Cover";
+    soilRegimeTag =
+      springPrecip !== null
+        ? `High-Rainfall Soil Protection (${springPrecip.toFixed(0)} mm spring)`
+        : "Humid-Season Soil Protection";
+    soilDesc = `Protects topsoil structure${slope !== null ? ` across ${slope.toFixed(1)}% slope` : ""} and scavenges soluble nitrogen during ${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "high"} rainfall while building ${om !== null ? `${om.toFixed(1)}%` : "topsoil"} organic matter.`;
+  } else if (isHotDry) {
+    soilName = "Moisture-Conserving Residue & Biological N";
+    soilRegimeTag = "Dryland Residue & N Focus";
+    soilDesc = `Builds biological nitrogen and protective surface mulch for a ${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "moisture-limited"} regime without exhausting stored soil water prior to cash planting.`;
+  } else if (om !== null) {
+    soilDesc = `Maintains and builds ${om.toFixed(1)}% topsoil organic matter (${slope !== null ? `${slope.toFixed(1)}% slope` : "0–30 cm profile"}) through winter legume nitrogen fixation and continuous living roots.`;
+  }
+
+  // 2. Water Resilience objective adaptation
+  let waterName = "Seasonal Moisture & Dry-Spell Resilience";
+  let waterDesc =
+    "Emphasizes drought-tolerant crops, reduces peak summer water demand, and protects soil moisture with seasonal cover.";
+  let waterRegimeTag = "Moisture Balance Focus";
+
+  if (isHotDry) {
+    waterName = "Drought & Heat-Stress Buffering";
+    waterRegimeTag =
+      gsPrecip !== null
+        ? `Low-Rainfall & Heat Buffer (${gsPrecip.toFixed(0)} mm May–Aug)`
+        : "Dryland & Heat-Stress Buffer";
+    waterDesc = `Centers on low-water-demand, heat-tolerant crops to withstand ${gsPrecip !== null ? `${gsPrecip.toFixed(0)} mm growing-season rain` : "limited rainfall"}, ${dryDays !== null ? `${dryDays.toFixed(1)}-day dry spells` : "prolonged dry spells"}, and ${heatDays !== null ? `${heatDays.toFixed(1)} summer heat days (>35 °C)` : "high summer heat"}.`;
+  } else if (isHumidOrWet) {
+    waterName = isPoorDrainage
+      ? "Drainage Resilience & Seasonal Water Balance"
+      : "High-Rainfall Balance & Summer Dry-Spell Buffer";
+    waterRegimeTag = isPoorDrainage
+      ? `Drainage-Adapted (${drainage})`
+      : `Humid Regime (${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "High Rain"})`;
+    waterDesc = isPoorDrainage
+      ? `Adapts crop rooting and planting windows to ${drainage?.toLowerCase() ?? "restricted-drainage"} topsoil (${springPrecip !== null ? `${springPrecip.toFixed(0)} mm spring rain` : "wet springs"}) while buffering ${dryDays !== null ? `${dryDays.toFixed(1)}-day` : "mid-summer"} dry spells.`
+      : `Manages ${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "abundant"} rainfall and ${springPrecip !== null ? `${springPrecip.toFixed(0)} mm spring moisture` : "wet planting windows"} while protecting yield during ${dryDays !== null ? `${dryDays.toFixed(1)}-day summer dry spells` : "summer dry intervals"}.`;
+  } else if (isLowOmOrAwc) {
+    waterName = "Low-AWC Root-Zone Moisture Efficiency";
+    waterRegimeTag =
+      awc !== null
+        ? `Low Water Storage (${awc.toFixed(2)} cm/cm AWC)`
+        : "Coarse-Soil Moisture Efficiency";
+    waterDesc = `Compensates for limited 0–30 cm available water capacity (${awc !== null ? `${awc.toFixed(2)} cm/cm` : "low AWC"}${sand !== null ? `, ${sand.toFixed(0)}% sand` : ""}) by pairing deep-rooted drought-tolerant crops with moisture-retaining surface residue.`;
+  } else if (gsPrecip !== null && dryDays !== null) {
+    waterDesc = `Aligns crop water demand with ${gsPrecip.toFixed(0)} mm May–Aug rainfall, ${dryDays.toFixed(1)}-day summer dry spells, and ${awc !== null ? `${awc.toFixed(2)} cm/cm topsoil AWC` : "local moisture storage"}.`;
+  }
+
+  // 3. Crop Diversity objective adaptation
+  let diversityName = "Multi-Family Disease & Pest Cycle Break";
+  let diversityDesc =
+    "Maximizes botanical family diversity across three cash-crop families to break pest, weed, and disease cycles.";
+  let diversityRegimeTag = "3-Year Botanical Diversity";
+
+  if (isHumidOrWet) {
+    diversityName = "Humid Disease-Cycle Break & Family Rotation";
+    diversityRegimeTag = "Humid Pathogen & Pest Break";
+    diversityDesc = `Alternates distinct non-host botanical families to interrupt foliar, stem, and root-rot disease cycles favored by ${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "humid"} rainfall${drainage ? ` and ${drainage.toLowerCase()} soils` : ""}.`;
+  } else if (isHotDry) {
+    diversityName = "Dryland Pest Break & Multi-Family Risk Spread";
+    diversityRegimeTag = "Dryland Multi-Family Spread";
+    diversityDesc = `Rotates drought-adapted botanical families across cool and warm windows to break pest and weed cycles while spreading rainfall-timing risk in a ${annualPrecip !== null ? `${annualPrecip.toFixed(0)} mm/yr` : "dry"} climate.`;
+  } else if (isLowOmOrAwc) {
+    diversityName = "Multi-Family Rotation & Root-Depth Diversity";
+    diversityRegimeTag = "Root-Architecture & Pest Break";
+    diversityDesc = `Alternates taproot and fibrous-rooted botanical families suited to ${om !== null ? `${om.toFixed(1)}% OM` : "low-OM"} topsoil${ph !== null ? ` (pH ${ph.toFixed(1)})` : ""} to suppress nematodes, weeds, and soilborne pathogens.`;
+  } else if (annualTemp !== null && annualPrecip !== null) {
+    diversityDesc = `Sequences three distinct cash-crop families across a ${annualTemp.toFixed(1)} °C, ${annualPrecip.toFixed(0)} mm/yr climate to break weed, nematode, and soilborne disease carryover.`;
+  }
+
+  const formatEmphasisTag = (regimeTag: string, score: number) => {
+    const isTop = score === maxPriorityScore && maxPriorityScore > 0;
+    return isTop
+      ? `${regimeTag} · Top Farmer Priority (${score}%)`
+      : `${regimeTag} · ${score}% Priority Weight`;
+  };
+
+  const soilCrops = selectObjectiveCandidateCrops("soil_health", availableCropIds);
+  const waterCrops = selectObjectiveCandidateCrops("water_resilience", availableCropIds);
+  const diversityCrops = selectObjectiveCandidateCrops("crop_diversity", availableCropIds);
+
+  const objectives: FieldAdaptiveObjective[] = [
+    {
+      archetype: "soil_health",
+      name: soilName,
+      emphasisTag: formatEmphasisTag(soilRegimeTag, soilPriorityScore),
+      priorityEmphasisScore: soilPriorityScore,
+      objective: soilDesc,
+      bullets: buildObjectiveFieldContextBullets("soil_health", climate, soil, availableCropIds),
+      recommendedCropIds: soilCrops.ids,
+      recommendedCropNames: soilCrops.names,
+    },
+    {
+      archetype: "water_resilience",
+      name: waterName,
+      emphasisTag: formatEmphasisTag(waterRegimeTag, waterPriorityScore),
+      priorityEmphasisScore: waterPriorityScore,
+      objective: waterDesc,
+      bullets: buildObjectiveFieldContextBullets(
+        "water_resilience",
+        climate,
+        soil,
+        availableCropIds
+      ),
+      recommendedCropIds: waterCrops.ids,
+      recommendedCropNames: waterCrops.names,
+    },
+    {
+      archetype: "crop_diversity",
+      name: diversityName,
+      emphasisTag: formatEmphasisTag(diversityRegimeTag, diversityPriorityScore),
+      priorityEmphasisScore: diversityPriorityScore,
+      objective: diversityDesc,
+      bullets: buildObjectiveFieldContextBullets(
+        "crop_diversity",
+        climate,
+        soil,
+        availableCropIds
+      ),
+      recommendedCropIds: diversityCrops.ids,
+      recommendedCropNames: diversityCrops.names,
+    },
+  ];
+
+  const canonicalOrder: Record<FieldAdaptiveObjective["archetype"], number> = {
+    soil_health: 0,
+    water_resilience: 1,
+    crop_diversity: 2,
+  };
+
+  return objectives.sort(
+    (a, b) =>
+      b.priorityEmphasisScore - a.priorityEmphasisScore ||
+      canonicalOrder[a.archetype] - canonicalOrder[b.archetype]
+  );
 }
 
 /**
