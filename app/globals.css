@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Cool light-gray content area palette */
+    --background: 213 18% 93%;       /* #E9EDF1 — main page background */
+    --foreground: 220 40% 10%;       /* deep navy text #0A1429 */
+    --card: 0 0% 100%;                /* pure white cards */
+    --card-foreground: 220 40% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 40% 10%;
+    --primary: 213 100% 65%;        /* electric blue #4D9FFF */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 213 15% 90%;       /* #E0E5EB — supporting background */
+    --secondary-foreground: 220 40% 10%;
+    --muted: 213 12% 92%;           /* subtle gray */
+    --muted-foreground: 220 15% 45%;
+    --accent: 188 72% 65%;          /* cyan #62D5E8 */
+    --accent-foreground: 220 40% 10%;
+    --destructive: 352 72% 58%;     /* accent red #E34B5B */
+    --destructive-foreground: 0 0% 100%;
+    --border: 213 15% 86%;
+    --input: 213 15% 86%;
+    --ring: 213 100% 65%;
+    --radius: 0.625rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  h1, h2, h3, h4 {
+    @apply font-serif;
+  }
+}
+
+/* Loading cursor utility */
+.cursor-loading {
+  cursor: wait;
+}
+
+/* Starfield pattern for sidebar (very subtle against deep navy) */
+.starfield {
+  background-image:
+    radial-gradient(1.2px 1.2px at 20px 30px, rgba(255,255,255,0.25), transparent),
+    radial-gradient(1.2px 1.2px at 40px 70px, rgba(255,255,255,0.2), transparent),
+    radial-gradient(1px 1px at 90px 40px, rgba(255,255,255,0.15), transparent),
+    radial-gradient(1px 1px at 130px 80px, rgba(255,255,255,0.2), transparent),
+    radial-gradient(0.8px 0.8px at 160px 20px, rgba(255,255,255,0.15), transparent),
+    radial-gradient(1.2px 1.2px at 200px 60px, rgba(255,255,255,0.2), transparent),
+    radial-gradient(1px 1px at 50px 120px, rgba(255,255,255,0.1), transparent),
+    radial-gradient(0.8px 0.8px at 110px 140px, rgba(255,255,255,0.1), transparent);
+  background-repeat: repeat;
+  background-size: 220px 160px;
+}

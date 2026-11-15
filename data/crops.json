@@ -1,0 +1,528 @@
+{
+  "crops": [
+    {
+      "id": "field_corn",
+      "commonName": "Field Corn",
+      "scientificName": "Zea mays",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "high",
+      "droughtTolerance": "moderate",
+      "nitrogenBehavior": {
+        "demand": "high",
+        "demandCategory": "High N requirement: typical rate 150–200 lb N/acre for grain production in the Southeast, depending on yield goal and soil organic matter.",
+        "note": "Corn is one of the most N-demanding row crops. Residue has moderate C:N ratio (~40–60:1) and decomposes relatively quickly."
+      },
+      "residue": {
+        "quantity": "high",
+        "persistence": "moderate",
+        "description": "High stover volume, relatively persistent through winter but decomposes more rapidly than cereal rye straw."
+      },
+      "rootSystem": "Fibrous, relatively shallow compared with taproot crops.",
+      "sensitivePeriods": {
+        "pollinationSilking": {
+          "months": [
+            7,
+            8
+          ],
+          "note": "Pollination and silking typically occur in July–August in the North Carolina Piedmont. Heat stress above 35 °C and moisture deficits during this window can reduce kernel set.",
+          "source": "NC State Extension Corn Production Guide"
+        }
+      },
+      "growingWindow": {
+        "planting": "April–May",
+        "harvest": "September–October",
+        "description": "Full-season corn in the NC Piedmont is typically planted mid-April to early May and harvested September–October."
+      },
+      "diseasePestNotes": [
+        "Corn residue can harbor Fusarium species that may affect subsequent small-grain crops.",
+        "Rootworm and cutworm management may be needed in continuous-corn systems."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Corn Production Guide",
+          "url": "https://content.ces.ncsu.edu/corn-production-guide"
+        },
+        {
+          "citation": "USDA NASS Crop Production",
+          "url": "https://www.nass.usda.gov/Publications/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    },
+    {
+      "id": "soybean",
+      "commonName": "Soybean",
+      "scientificName": "Glycine max",
+      "family": "Fabaceae",
+      "type": "cash",
+      "waterDemand": "moderate_to_high",
+      "droughtTolerance": "moderate",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Fixes atmospheric N via Bradyrhizobium symbiosis when effectively nodulated. Most fixed N is sequestered in crop biomass and removed with grain harvest.",
+        "residualNcredit": {
+          "value": "15–30 lb N/acre",
+          "note": "NC State Extension estimates approximately 15–30 lb N/acre as a residual nitrogen credit following soybean. This is a contextual estimate, not a guaranteed field-specific amount.",
+          "source": "NC State Extension Soybean Production Guide"
+        },
+        "note": "Soybean grain exports substantial nitrogen. Do not treat all biological N fixation as a next-crop fertilizer replacement."
+      },
+      "residue": {
+        "quantity": "low",
+        "persistence": "low",
+        "description": "Relatively low-residue profile compared with corn or small grains; residue decomposes readily."
+      },
+      "rootSystem": "Taproot with extensive lateral branching.",
+      "sensitivePeriods": {
+        "podFill": {
+          "months": [
+            8,
+            9
+          ],
+          "note": "Pod fill and seed development typically occur August–September. Moisture stress and prolonged heat can reduce seed size and yield.",
+          "source": "NC State Extension Soybean Production Guide"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–June",
+        "harvest": "October–November",
+        "description": "Full-season soybean in the NC Piedmont is typically planted May–June and harvested October–November."
+      },
+      "diseasePestNotes": [
+        "Soybean cyst nematode (SCN, Heterodera glycines) can build populations in continuous or frequent soybean rotations.",
+        "White mold (Sclerotinia sclerotiorum) risk increases in cool, wet conditions and with tight rotations involving other susceptible hosts.",
+        "Moderate non-host break intervals help manage SCN."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Soybean Production Guide",
+          "url": "https://content.ces.ncsu.edu/north-carolina-soybean-production-guide"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    },
+    {
+      "id": "soft_red_winter_wheat",
+      "commonName": "Soft Red Winter Wheat",
+      "scientificName": "Triticum aestivum",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "moderate",
+      "droughtTolerance": "moderate",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Moderate N requirement; timing is important (split applications in spring).",
+        "note": "Straw residues have high C:N ratio and can contribute to soil organic matter but may temporarily immobilize N if incorporated fresh."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Significant straw biomass after grain harvest; provides ground-cover value if left on the surface."
+      },
+      "rootSystem": "Fibrous root system that develops in fall and resumes growth in spring.",
+      "sensitivePeriods": {
+        "grainFill": {
+          "months": [
+            5,
+            6
+          ],
+          "note": "Grain filling and maturity occur in May–June for winter wheat in the NC Piedmont.",
+          "source": "NC State Extension Small Grain Production Guide"
+        }
+      },
+      "growingWindow": {
+        "planting": "October–November",
+        "harvest": "June",
+        "description": "Winter wheat is planted in the fall (October–November), winters over, and is harvested the following June in the NC Piedmont."
+      },
+      "diseasePestNotes": [
+        "Fusarium head blight (scab) risk can increase when wheat follows corn or sorghum due to shared Fusarium inoculum in residue.",
+        "Hessian fly and rust diseases should be monitored."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Small Grain Production Guide",
+          "url": "https://content.ces.ncsu.edu/small-grain-production"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    },
+    {
+      "id": "grain_sorghum",
+      "commonName": "Grain Sorghum",
+      "scientificName": "Sorghum bicolor",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "moderate",
+      "droughtTolerance": "high",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Moderate N requirement, generally somewhat less per unit yield than corn.",
+        "note": "High-biomass stover residue can contribute organic matter but may carry Fusarium inoculum affecting subsequent small grains."
+      },
+      "residue": {
+        "quantity": "high",
+        "persistence": "moderate",
+        "description": "High-biomass stover that can improve soil coverage but decomposes more slowly than corn stover."
+      },
+      "rootSystem": "Fibrous, deep rooting capacity under drought stress.",
+      "sensitivePeriods": {
+        "grainFill": {
+          "months": [
+            8,
+            9
+          ],
+          "note": "Grain filling typically occurs in August–September. Sorghum is more drought-resilient than corn during this period.",
+          "source": "NC State Extension Sorghum Production"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–June",
+        "harvest": "September–October",
+        "description": "Grain sorghum in the NC Piedmont is typically planted May–June and harvested September–October."
+      },
+      "diseasePestNotes": [
+        "Fusarium head blight risk to subsequent wheat should be considered.",
+        "Sorghum can host some pests shared with corn."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Sorghum Production",
+          "url": "https://content.ces.ncsu.edu/sorghum-production"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_great_plains",
+        "us_southwest"
+      ],
+      "applicableGroups": ["temperate_humid", "semi_arid_temperate"]
+    },
+    {
+      "id": "sunflower",
+      "commonName": "Sunflowers",
+      "scientificName": "Helianthus annuus",
+      "family": "Asteraceae",
+      "type": "cash",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "nitrogenBehavior": {
+        "demand": "moderate",
+        "demandCategory": "Moderate N requirement; deep taproot can scavenge nutrients from lower soil profiles.",
+        "note": "Can extract water and nutrients from deeper soil layers due to taproot architecture."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "moderate",
+        "description": "Moderate residue from stalks and heads; persistent through winter."
+      },
+      "rootSystem": "Deep taproot that can extend below the typical corn root zone.",
+      "sensitivePeriods": {
+        "flowering": {
+          "months": [
+            7,
+            8
+          ],
+          "note": "Flowering typically occurs in July–August. Heat stress and moisture deficits can reduce oil content in oil-type varieties.",
+          "source": "USDA NASS Sunflower Production"
+        }
+      },
+      "growingWindow": {
+        "planting": "May–June",
+        "harvest": "September–October",
+        "description": "Sunflowers in the NC Piedmont are typically planted May–June and harvested September–October."
+      },
+      "diseasePestNotes": [
+        "Sclerotinia head rot and white mold are concerns; sunflower and soybean can both be hosts associated with Sclerotinia sclerotiorum.",
+        "A short rotation interval may not provide an adequate disease break for Sclerotinia. Extension guidance recommends managing field history and variety selection."
+      ],
+      "sources": [
+        {
+          "citation": "USDA NASS Sunflower Production",
+          "url": "https://www.nass.usda.gov/Publications/"
+        },
+        {
+          "citation": "NC State Extension Plant Pathology — Sclerotinia",
+          "url": "https://content.ces.ncsu.edu/sclerotinia-stem-rot-of-soybean"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_great_plains",
+        "us_midwest"
+      ],
+      "applicableGroups": ["temperate_humid", "semi_arid_temperate"]
+    },
+    {
+      "id": "cereal_rye",
+      "commonName": "Cereal Rye",
+      "scientificName": "Secale cereale",
+      "family": "Poaceae",
+      "type": "cover",
+      "waterDemand": "low",
+      "droughtTolerance": "high",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Nitrogen scavenger. Can temporarily immobilize available nitrogen due to high C:N ratio in residue.",
+        "immobilizationRisk": "Rye terminated at late boot or past can have C:N ratios >40:1, temporarily tying up available N in spring. Early termination reduces immobilization risk.",
+        "source": "NC State Extension Organic Grains — Cover Crops"
+      },
+      "residue": {
+        "quantity": "high",
+        "persistence": "high",
+        "description": "High biomass and very persistent residue that provides excellent soil coverage and erosion protection."
+      },
+      "rootSystem": "Dense, fibrous root system that scavenges available nutrients.",
+      "growingWindow": {
+        "planting": "September–October",
+        "termination": "March–April",
+        "description": "Winter cover crop planted September–October and terminated mid-March to mid-April in the NC Piedmont."
+      },
+      "diseasePestNotes": [
+        "Generally low disease concerns, but can host some nematodes if grown continuously.",
+        "Late termination can reduce spring soil moisture available for the next cash crop."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Organic Grains — Cover Crops",
+          "url": "https://organiccommodities.ces.ncsu.edu/organicgrains-cover-crops/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    },
+    {
+      "id": "crimson_clover",
+      "commonName": "Crimson Clover",
+      "scientificName": "Trifolium incarnatum",
+      "family": "Fabaceae",
+      "type": "cover",
+      "waterDemand": "moderate",
+      "droughtTolerance": "low_to_moderate",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Legume cover crop that can contribute nitrogen to the following crop.",
+        "residualNcredit": {
+          "value": "60–75 lb N/acre",
+          "note": "NC State Extension reports approximately 60–75 lb N/acre following crimson clover. Actual contribution depends on biomass production, maturity at termination, and growing conditions.",
+          "source": "NC State Extension Winter Annual Cover Crops"
+        },
+        "note": "N contribution varies with biomass, maturity, termination timing, and growing conditions. Do not treat as a guaranteed fertilizer replacement."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "low_to_moderate",
+        "description": "Soft residue that decomposes relatively quickly compared with cereal rye."
+      },
+      "rootSystem": "Shallow taproot with some nitrogen fixation nodules.",
+      "growingWindow": {
+        "planting": "September–October",
+        "termination": "March–April",
+        "description": "Winter legume cover crop planted September–October and terminated in spring before full bloom for maximum N contribution."
+      },
+      "diseasePestNotes": [
+        "Generally low disease pressure; provides break from grass-family diseases."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Winter Annual Cover Crops",
+          "url": "https://content.ces.ncsu.edu/winter-annual-cover-crops"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    },
+    {
+      "id": "hairy_vetch",
+      "commonName": "Hairy Vetch",
+      "scientificName": "Vicia villosa",
+      "family": "Fabaceae",
+      "type": "cover",
+      "waterDemand": "moderate",
+      "droughtTolerance": "moderate",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Legume cover crop with high nitrogen-fixation potential.",
+        "residualNcredit": {
+          "value": "80–100 lb N/acre",
+          "note": "NC State Extension reports approximately 80–100 lb N/acre following hairy vetch. Actual contribution depends on biomass, maturity, termination timing, and growing conditions.",
+          "source": "NC State Extension Winter Annual Cover Crops"
+        },
+        "note": "Volunteer growth can be an issue if seed is allowed to mature. Termination timing affects both N contribution and volunteer management."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "low_to_moderate",
+        "description": "Viny residue that provides moderate soil coverage; decomposes faster than cereal rye."
+      },
+      "rootSystem": "Deep taproot with N-fixing nodules.",
+      "growingWindow": {
+        "planting": "September–October",
+        "termination": "April–May",
+        "description": "Winter legume cover crop planted September–October and typically terminated April–May in the NC Piedmont."
+      },
+      "diseasePestNotes": [
+        "May harbor some pests if not rotated; generally beneficial as a break crop.",
+        "Volunteer hairy vetch can become a weed in subsequent crops if allowed to set seed."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Winter Annual Cover Crops",
+          "url": "https://content.ces.ncsu.edu/winter-annual-cover-crops"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    },
+    {
+      "id": "forage_radish",
+      "commonName": "Forage Radish / Daikon",
+      "scientificName": "Raphanus sativus",
+      "family": "Brassicaceae",
+      "type": "cover",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "moderate",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Nitrogen scavenger; bio-drilling effect from deep taproot can improve compaction layers but does not fix atmospheric N.",
+        "note": "Can scavenge residual N from lower soil profiles, making it available to subsequent shallow-rooted crops."
+      },
+      "residue": {
+        "quantity": "low",
+        "persistence": "low",
+        "description": "Can winter-kill in the NC Piedmont, leaving minimal spring living cover. Tissue decomposes rapidly."
+      },
+      "rootSystem": "Deep taproot (bio-drill) that can penetrate compacted subsoil layers; typically winter-kills.",
+      "growingWindow": {
+        "planting": "August–September",
+        "termination": "December–January (winter-kill)",
+        "description": "Planted late summer–early fall; typically winter-kills in the NC Piedmont. Leaves root channels that may improve water infiltration."
+      },
+      "diseasePestNotes": [
+        "Can host clubroot if Brassica diseases are present in the field history.",
+        "Winter-kill behavior means less spring erosion protection than living cover crops."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Small Farms — Winter Crops",
+          "url": "https://growingsmallfarms.ces.ncsu.edu/growingsmallfarms-wintercrops/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    },
+    {
+      "id": "pearl_millet",
+      "commonName": "Pearl Millet",
+      "scientificName": "Pennisetum glaucum",
+      "family": "Poaceae",
+      "type": "cover",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Warm-season biomass producer and nutrient scavenger.",
+        "note": "Rapid growth in summer heat; can produce significant biomass for grazing or soil coverage."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Significant warm-season biomass; stems are moderately persistent."
+      },
+      "rootSystem": "Fibrous, dense root system that improves soil structure.",
+      "growingWindow": {
+        "planting": "May–June",
+        "termination": "August–September",
+        "description": "Summer cover crop planted after small-grain harvest and terminated before fall planting."
+      },
+      "diseasePestNotes": [
+        "Generally resistant to many diseases that affect corn and sorghum.",
+        "Provides a beneficial break from grass-family diseases when rotated with corn or sorghum."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Summer Annual Forages",
+          "url": "https://content.ces.ncsu.edu/summer-annual-forages"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_great_plains"
+      ],
+      "applicableGroups": ["temperate_humid", "semi_arid_temperate"]
+    },
+    {
+      "id": "winter_oat",
+      "commonName": "Winter Oat",
+      "scientificName": "Avena sativa",
+      "family": "Poaceae",
+      "type": "cover",
+      "waterDemand": "moderate",
+      "droughtTolerance": "low_to_moderate",
+      "nitrogenBehavior": {
+        "demand": "low",
+        "demandCategory": "Nitrogen scavenger; moderate C:N ratio compared with cereal rye.",
+        "note": "Less persistent residue than cereal rye; decomposes more readily."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "low_to_moderate",
+        "description": "Moderate biomass that winter-kills in the NC Piedmont, providing some spring residue cover but less persistent protection than rye."
+      },
+      "rootSystem": "Fibrous root system that provides some soil stabilization.",
+      "growingWindow": {
+        "planting": "September–October",
+        "termination": "December–February (winter-kill)",
+        "description": "Winter cover crop that typically winter-kills in the NC Piedmont. Less spring biomass than cereal rye but may allow earlier spring field access."
+      },
+      "diseasePestNotes": [
+        "Generally low disease pressure; can host some cereal diseases at low levels.",
+        "Winter-kill means less spring coverage than living cover crops like cereal rye or crimson clover."
+      ],
+      "sources": [
+        {
+          "citation": "NC State Extension Small Farms — Winter Crops",
+          "url": "https://growingsmallfarms.ces.ncsu.edu/growingsmallfarms-wintercrops/"
+        }
+      ],
+      "supportedRegions": [
+        "us_southeast",
+        "us_midwest",
+        "us_northeast"
+      ],
+      "applicableGroups": ["temperate_humid"]
+    }
+  ]
+}

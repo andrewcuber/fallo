@@ -1,0 +1,354 @@
+const fs = require('fs');
+const path = require('path');
+
+const rotations = {
+  strategies: [
+    {
+      id: "soil_health_building",
+      name: "Soil Health Building",
+      archetype: "soil_health",
+      description:
+        "An archetype that prioritizes building soil organic matter, reducing synthetic nitrogen inputs, and maintaining living cover through strategic legume integrations and diverse residue. The specific sequence below is a regional example adapted for the North Carolina Piedmont using documented NC State Extension crops; other regions would substitute locally adapted legumes and cash crops.",
+      regionExample:
+        "North Carolina Piedmont — crimson clover and hairy vetch are widely used winter legume covers in this region. Corn, soybean, and wheat are the dominant cash crops.",
+      years: [
+        {
+          year: 1,
+          seasons: [
+            {
+              season: "pre_season",
+              crop: "crimson_clover",
+              activity:
+                "Crimson clover + forage radish mix planted the fall preceding Year 1; radish winter-kills, clover overwinters",
+              months: [9, 10, 11, 12, 1, 2],
+            },
+            {
+              season: "spring",
+              crop: "crimson_clover",
+              activity: "Clover continues growing; terminated March–April before planting corn",
+              months: [3, 4],
+            },
+            {
+              season: "spring_summer",
+              crop: "field_corn",
+              activity:
+                "Plant April–May into terminated clover residue; grow through summer; harvest September–October",
+              months: [4, 5, 6, 7, 8, 9, 10],
+            },
+            {
+              season: "fall",
+              crop: "cereal_rye",
+              activity: "Cereal rye planted after corn harvest; establishes for winter cover",
+              months: [10, 11],
+            },
+          ],
+        },
+        {
+          year: 2,
+          seasons: [
+            {
+              season: "winter",
+              crop: "cereal_rye",
+              activity: "Rye grows through winter; high biomass accumulation by spring",
+              months: [12, 1, 2, 3],
+            },
+            {
+              season: "spring",
+              crop: "cereal_rye",
+              activity: "Rye terminated March–April before or at soybean planting",
+              months: [3, 4],
+            },
+            {
+              season: "spring_summer",
+              crop: "soybean",
+              activity: "Plant May–June; grow through summer; harvest October–November",
+              months: [5, 6, 7, 8, 9, 10, 11],
+            },
+            {
+              season: "fall",
+              crop: "soft_red_winter_wheat",
+              activity: "Winter wheat planted October–November after soybean harvest",
+              months: [10, 11],
+            },
+          ],
+        },
+        {
+          year: 3,
+          seasons: [
+            {
+              season: "winter_spring",
+              crop: "soft_red_winter_wheat",
+              activity: "Wheat overwinters; resume growth March; grain fill May–June; harvest June",
+              months: [12, 1, 2, 3, 4, 5, 6],
+            },
+            {
+              season: "summer",
+              crop: "pearl_millet",
+              activity:
+                "Pearl millet summer cover crop planted after wheat harvest; grows June–August; terminated August–September",
+              months: [6, 7, 8, 9],
+            },
+            {
+              season: "fall",
+              crop: "crimson_clover",
+              activity:
+                "Early fall crimson clover (or crimson clover + winter oat mix) planted after millet termination to re-establish legume cover",
+              months: [9, 10],
+            },
+          ],
+        },
+      ],
+      tradeoffs: {
+        advantages: [
+          "Increased periods of living cover and persistent residue protect soil from erosion and temperature extremes.",
+          "Crimson clover can contribute 60–75 lb N/acre (contextual estimate) to the subsequent corn crop, potentially reducing synthetic N needs.",
+          "Greater botanical diversity (Fabaceae + Brassicaceae + Poaceae) may improve soil biology and reduce pest pressure.",
+          "Cereal rye provides excellent winter soil coverage and scavenges residual nitrogen.",
+          "Pearl millet produces summer biomass and provides a beneficial break from corn/sorghum diseases.",
+        ],
+        disadvantages: [
+          "Greater operational complexity than simple cash-crop rotations: more planting and termination operations.",
+          "Cereal rye terminated late can temporarily immobilize nitrogen and reduce spring soil moisture available to the cash crop.",
+          "Clover N contribution varies with biomass, maturity, and weather; do not treat as a guaranteed fertilizer replacement.",
+          "Timing of cover-crop termination is critical; delays in spring weather can compress the planting window.",
+        ],
+        operational: [
+          "Requires access to cover-crop seed and equipment for timely planting/termination.",
+          "Equipment for rolling/crimping or herbicide termination may be needed for cereal rye.",
+          "Markets for pearl millet as a cover crop are for soil health, not direct grain income.",
+        ],
+        warnings: [
+          "Cereal rye C:N ratio increases rapidly as it matures; late termination (>boot stage) can cause significant N immobilization in spring.",
+          "Forage radish winter-kills; while it provides bio-drill benefits, it does not provide spring living cover.",
+        ],
+      },
+    },
+    {
+      id: "water_resilience",
+      name: "Water Resilience",
+      archetype: "water_resilience",
+      description:
+        "An archetype that emphasizes drought-tolerant crops, shifts water demand away from peak summer stress periods, and maintains soil coverage during vulnerable seasons. The specific sequence below is a regional example adapted for the North Carolina Piedmont; sorghum and sunflower substituting for corn and soybean is a documented strategy in water-limited environments.",
+      regionExample:
+        "North Carolina Piedmont — grain sorghum offers stronger drought tolerance than corn in this region, and sunflower can exploit deeper soil moisture with its taproot.",
+      years: [
+        {
+          year: 1,
+          seasons: [
+            {
+              season: "pre_season",
+              crop: "winter_oat",
+              activity:
+                "Winter oat cover crop planted fall before Year 1; typically winter-kills in Piedmont, leaving moderate spring residue",
+              months: [9, 10, 11, 12, 1, 2],
+            },
+            {
+              season: "spring_summer",
+              crop: "grain_sorghum",
+              activity:
+                "Plant May–June after oat residue; grows through summer with stronger drought tolerance than corn; harvest September–October",
+              months: [4, 5, 6, 7, 8, 9, 10],
+            },
+            {
+              season: "fall",
+              crop: "soft_red_winter_wheat",
+              activity: "Winter wheat planted October–November after sorghum harvest",
+              months: [10, 11],
+            },
+          ],
+        },
+        {
+          year: 2,
+          seasons: [
+            {
+              season: "winter_spring",
+              crop: "soft_red_winter_wheat",
+              activity: "Wheat overwinters; resume growth March; grain fill May–June; harvest June",
+              months: [12, 1, 2, 3, 4, 5, 6],
+            },
+            {
+              season: "summer",
+              crop: "sunflower",
+              activity:
+                "Sunflowers planted after wheat harvest (June); grow through summer; harvest September–October",
+              months: [6, 7, 8, 9, 10],
+            },
+            {
+              season: "fall",
+              crop: "crimson_clover",
+              activity: "Crimson clover planted after sunflower harvest; overwinters as living cover",
+              months: [10, 11],
+            },
+          ],
+        },
+        {
+          year: 3,
+          seasons: [
+            {
+              season: "winter_spring",
+              crop: "crimson_clover",
+              activity:
+                "Clover grows through winter; terminated early (March) to allow early soybean planting",
+              months: [12, 1, 2, 3],
+            },
+            {
+              season: "spring_summer",
+              crop: "soybean",
+              activity:
+                "Early-maturing soybean planted after early clover termination; grow through summer; harvest September–October",
+              months: [4, 5, 6, 7, 8, 9, 10],
+            },
+          ],
+        },
+      ],
+      tradeoffs: {
+        advantages: [
+          "Grain sorghum has stronger drought tolerance than corn and requires somewhat less water per unit yield.",
+          "Shifts some summer crop demand to crops (sorghum, sunflower) that can handle heat and dry spells better than corn.",
+          "Winter wheat provides seasonal income and significant straw residue.",
+          "Crimson clover contributes N ahead of soybean and provides living winter cover.",
+        ],
+        disadvantages: [
+          "Sunflower and sorghum may have limited local market/elevator access compared with corn and soybean.",
+          "Wheat immediately following sorghum can raise Fusarium head blight concerns (see warning).",
+          "Sunflower and soybean can both be hosts for Sclerotinia; rotation timing may not provide an adequate disease break.",
+          "Oat winter-kill means less spring living cover than cereal rye would provide.",
+        ],
+        operational: [
+          "Sorghum and sunflower markets may be less accessible in some regions compared with corn and soybean.",
+          "Early clover termination for early soybean planting requires good spring weather windows.",
+          "Sunflower may require specialized harvesting equipment.",
+        ],
+        warnings: [
+          {
+            severity: "high",
+            text:
+              "Wheat immediately following sorghum (or corn) can increase Fusarium head blight risk. NC State Extension and other university sources recommend avoiding small grains planted into corn or sorghum residue when Fusarium is a concern, or adjusting management accordingly. This sequence retains the original proposed strategy for comparison but visibly flags the issue.",
+          },
+          {
+            severity: "moderate",
+            text:
+              "Sunflower and soybean can both be hosts associated with Sclerotinia sclerotiorum. A short rotation interval does not automatically provide an adequate disease break. Field history and resistant variety selection should be considered.",
+          },
+        ],
+      },
+    },
+    {
+      id: "crop_diversity",
+      name: "Crop Diversity & Pest Break",
+      archetype: "crop_diversity",
+      description:
+        "An archetype that maximizes botanical family diversity to break pest and disease cycles while maintaining soil coverage and balanced nutrient demands. By rotating across Poaceae, Asteraceae, and Fabaceae cash crops with complementary cover crops, this approach reduces the buildup of family-specific pests. The specific sequence below is a regional example for the North Carolina Piedmont; other regions would substitute locally adapted crops in the same three families.",
+      regionExample:
+        "North Carolina Piedmont — sunflower and grain sorghum are less common than corn/soybean in this region, but they are documented cash crops that add Asteraceae and additional Poaceae diversity to the rotation.",
+      years: [
+        {
+          year: 1,
+          seasons: [
+            {
+              season: "pre_season",
+              crop: "crimson_clover",
+              activity:
+                "Crimson clover + forage radish mix planted the fall preceding Year 1; radish winter-kills, clover overwinters",
+              months: [9, 10, 11, 12, 1, 2],
+            },
+            {
+              season: "spring",
+              crop: "crimson_clover",
+              activity: "Clover continues growing; terminated March–April before planting corn",
+              months: [3, 4],
+            },
+            {
+              season: "spring_summer",
+              crop: "field_corn",
+              activity:
+                "Plant April–May into terminated clover residue; grow through summer; harvest September–October",
+              months: [4, 5, 6, 7, 8, 9, 10],
+            },
+            {
+              season: "fall",
+              crop: "winter_oat",
+              activity:
+                "Winter oat planted after corn harvest; establishes briefly before typical Piedmont winter-kill",
+              months: [10, 11],
+            },
+          ],
+        },
+        {
+          year: 2,
+          seasons: [
+            {
+              season: "winter",
+              crop: "winter_oat",
+              activity: "Oat winter-kills, leaving spring residue before sunflower planting",
+              months: [12, 1, 2],
+            },
+            {
+              season: "spring_summer",
+              crop: "sunflower",
+              activity:
+                "Sunflowers planted May–June into oat residue; deep taproot accesses lower soil moisture; harvest September–October",
+              months: [5, 6, 7, 8, 9, 10],
+            },
+            {
+              season: "fall",
+              crop: "hairy_vetch",
+              activity:
+                "Hairy vetch planted after sunflower harvest; overwinters as living cover and N source for next crop",
+              months: [10, 11],
+            },
+          ],
+        },
+        {
+          year: 3,
+          seasons: [
+            {
+              season: "winter_spring",
+              crop: "hairy_vetch",
+              activity:
+                "Vetch grows through winter; terminated March–April before soybean planting",
+              months: [12, 1, 2, 3, 4],
+            },
+            {
+              season: "spring_summer",
+              crop: "soybean",
+              activity:
+                "Soybean planted May–June after vetch termination; grow through summer; harvest September–October",
+              months: [5, 6, 7, 8, 9, 10],
+            },
+          ],
+        },
+      ],
+      tradeoffs: {
+        advantages: [
+          "High botanical diversity across three major families (Poaceae, Asteraceae, Fabaceae) reduces the risk of family-specific pest and disease buildup.",
+          "Crimson clover and hairy vetch provide sequential legume N credits for non-legume cash crops.",
+          "Forage radish bio-drill effect can improve water infiltration before corn.",
+          "Sunflower's deep taproot can access water and nutrients from below the typical corn root zone.",
+          "No repeated cash-crop family in consecutive years provides a strong pest break.",
+        ],
+        disadvantages: [
+          "Sunflower markets may be less accessible than corn or soybean in some regions.",
+          "Managing three distinct cash crops requires broader equipment and operational knowledge.",
+          "Sclerotinia risk exists when sunflower and soybean appear in the same rotation (see warning).",
+          "Winter oat winter-kill means less spring living cover than persistent cereal rye would provide.",
+        ],
+        operational: [
+          "Sunflower may require specialized harvesting equipment and different storage handling.",
+          "Access to cover-crop seed for clover, radish, and vetch is needed.",
+          "Timely termination of vetch is critical to avoid compressing the soybean planting window.",
+        ],
+        warnings: [
+          {
+            severity: "moderate",
+            text:
+              "Sunflower and soybean can both be hosts associated with Sclerotinia sclerotiorum. A short rotation interval (one year in this sequence) may not provide an adequate disease break. Field history, resistant variety selection, and management should be considered.",
+          },
+        ],
+      },
+    },
+  ],
+};
+
+fs.writeFileSync(path.join(process.cwd(), 'data/rotations.json'), JSON.stringify(rotations, null, 2) + '\n');
+console.log('Updated rotations.json with archetypes');
