@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useField } from "@/components/providers";
+import Link from "next/link";
+import { useField, useFieldEnvironmentalData } from "@/components/providers";
 import {
   Card,
   CardContent,
@@ -31,9 +32,7 @@ import {
   formatAgGroupLabel,
   formatAgGroupDescription,
   formatMoistureZoneLabel,
-  formatMoistureZoneDescription,
   formatWaterRegimeLabel,
-  formatWaterRegimeDescription,
 } from "@/lib/agro-classifier";
 import type { GenerationResult } from "@/lib/rotation-generator";
 import {
@@ -189,10 +188,6 @@ export default function RotationsPage() {
   const { fields, activeField, priorities, setPriorities, setActiveField, setFieldRotations, isLoaded } =
     useField();
 
-  const [climate, setClimate] = useState<ClimateData | null>(null);
-  const [soil, setSoil] = useState<SoilData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const inFlightFieldRef = useRef<string | null>(null);
@@ -213,48 +208,15 @@ export default function RotationsPage() {
   }, [isLoaded, fieldId, activeField, fields, setActiveField]);
 
   const field = (fieldId ? fields.find((f) => f.id === fieldId) : undefined) ?? activeField ?? undefined;
-
-  const fetchData = useCallback(async () => {
-    if (!field) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [climateRes, soilRes] = await Promise.all([
-        fetch(`/api/climate?lat=${field.lat.toFixed(4)}&lon=${field.lon.toFixed(4)}`),
-        fetch(`/api/soil?lat=${field.lat.toFixed(4)}&lon=${field.lon.toFixed(4)}`),
-      ]);
-
-      const climateJson = await climateRes.json();
-      if (!climateRes.ok) {
-        setError(climateJson.error || `Climate API failed (${climateRes.status})`);
-        setClimate(null);
-        setSoil(null);
-        setLoading(false);
-        return;
-      }
-      setClimate(climateJson);
-
-      const soilJson = await soilRes.json();
-      if (!soilRes.ok) {
-        setSoil(null);
-      } else {
-        setSoil(soilJson);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      setClimate(null);
-      setSoil(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [field]);
-
-  useEffect(() => {
-    if (field) {
-      fetchData();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field?.id]);
+  const {
+    climateRaw,
+    soilRaw,
+    loading,
+    error,
+    refresh: fetchData,
+  } = useFieldEnvironmentalData(field);
+  const climate = climateRaw as ClimateData | null;
+  const soil = soilRaw as SoilData | null;
 
   const adaptedClimate = useMemo(() => adaptClimate(climate), [climate]);
   const adaptedSoil = useMemo(() => adaptSoil(soil), [soil]);
@@ -377,7 +339,7 @@ export default function RotationsPage() {
     return (
       <div className="space-y-6">
         <div>
-          <h2 className="text-2xl font-serif font-bold text-foreground">Rotation Lab</h2>
+          <h2 className="text-2xl font-serif font-bold text-foreground">Crop Rotation Lab</h2>
           <p className="text-muted-foreground mt-1 max-w-2xl">
             Field not found. Create a field to evaluate rotation strategies.
           </p>
@@ -406,7 +368,7 @@ export default function RotationsPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="space-y-1">
-        <h2 className="text-2xl font-serif font-bold text-foreground">Rotation Lab</h2>
+        <h2 className="text-2xl font-serif font-bold text-foreground">Crop Rotation Lab</h2>
         <p className="text-sm text-muted-foreground max-w-2xl">
           Super Intelligence (SI)-generated 3-year crop rotation planning tailored to your field&apos;s climate regime, soil properties, and local crop suitability.
         </p>
@@ -450,157 +412,65 @@ export default function RotationsPage() {
       {/* Main Content */}
       {!loading && !error && adaptedClimate && fieldClassification && (
         <>
-          {/* 1. Field Agroecological Profile, Data Coverage Summary, & SI Plan Generation */}
+          {/* 1. Simplified Field Agroecological Profile */}
           <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Compass className="h-4 w-4 text-electric" />
-                    <CardTitle className="text-sm font-semibold text-foreground">
-                      Field Agroecological Profile:{" "}
-                      {AG_GROUP_LABELS[fieldClassification.group]}
-                    </CardTitle>
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                        fieldClassification.confidence === "high"
-                          ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
-                          : fieldClassification.confidence === "moderate"
-                          ? "bg-amber-50 text-amber-700 border border-amber-100"
-                          : "bg-red-50 text-red-700 border border-red-100"
-                      }`}
-                    >
-                      {fieldClassification.confidence} confidence
-                    </span>
-                    {fieldEvidence && (
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[10px] font-medium tracking-wide ${
-                          fieldEvidence.level === "level_1_strong_local"
-                            ? "bg-blue-50 text-blue-700 border border-blue-200"
-                            : fieldEvidence.level === "level_2_global_modeled"
-                            ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
-                            : "bg-red-50 text-red-700 border border-red-200"
-                        }`}
-                      >
-                        {fieldEvidence.label}
-                      </span>
-                    )}
-                  </div>
-                  <CardDescription className="text-xs leading-relaxed">
-                    {formatAgGroupDescription(fieldClassification.group)}{" "}
-                    {fieldClassification.reasons[0] ??
-                      "Classified from NASA POWER climate history and recorded soil context."}
-                  </CardDescription>
-                  {fieldClassification.estimatedLgpDays !== null &&
-                    fieldClassification.estimatedLgpDays !== undefined && (
-                      <div className="rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] text-muted-foreground space-y-0.5">
-                        <p>
-                          <strong className="text-foreground">Growing season &amp; moisture:</strong>{" "}
-                          {formatMoistureZoneLabel(fieldClassification.gaezMoistureZone)} (~
-                          {fieldClassification.estimatedLgpDays} moist growing-period days/year) ·{" "}
-                          <strong className="text-foreground">Water regime:</strong>{" "}
-                          {formatWaterRegimeLabel(fieldClassification.waterRegime)}
-                        </p>
-                        <p className="text-muted-foreground/90">
-                          {formatMoistureZoneDescription(fieldClassification.gaezMoistureZone)}{" "}
-                          {formatWaterRegimeDescription(fieldClassification.waterRegime)}
-                        </p>
-                      </div>
-                    )}
-                  {geoContext?.disputedOrBorderNote && (
-                    <p className="text-[11px] text-muted-foreground flex items-center gap-1 pt-0.5">
-                      <Globe className="h-3 w-3 text-electric shrink-0" />
-                      <span>{geoContext.disputedOrBorderNote}</span>
-                    </p>
-                  )}
+            <CardHeader className="pb-2.5">
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Compass className="h-4 w-4 text-electric" />
+                  <CardTitle className="text-sm font-semibold text-foreground">
+                    Field Agroecological Profile:{" "}
+                    {AG_GROUP_LABELS[fieldClassification.group]}
+                  </CardTitle>
                 </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <Button
-                    size="sm"
-                    onClick={handleGenerate}
-                    disabled={generating || availableCropIds.length === 0}
-                    className={
-                      hasGeneratedPlans ? "bg-purple-600 hover:bg-purple-700 text-white" : ""
-                    }
-                  >
-                    {generating ? (
-                      <>
-                        <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        Generating Plans...
-                      </>
-                    ) : hasGeneratedPlans ? (
-                      <>
-                        <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                        Regenerate Field-Specific Plans
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                        Generate Field-Specific Plans
-                      </>
-                    )}
-                  </Button>
-                  {hasGeneratedPlans && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={generating}
-                      onClick={() => {
-                        setFieldRotations(field.id, null);
-                        setGenerateError(null);
-                      }}
-                    >
-                      Clear
-                    </Button>
+                <CardDescription className="text-xs leading-relaxed">
+                  {formatAgGroupDescription(fieldClassification.group)}
+                </CardDescription>
+                {fieldClassification.estimatedLgpDays !== null &&
+                  fieldClassification.estimatedLgpDays !== undefined && (
+                    <div className="rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+                      <p>
+                        <strong className="text-foreground">Growing season &amp; moisture:</strong>{" "}
+                        {formatMoistureZoneLabel(fieldClassification.gaezMoistureZone)} (~
+                        {fieldClassification.estimatedLgpDays} moist growing-period days/year) ·{" "}
+                        <strong className="text-foreground">Water regime:</strong>{" "}
+                        {formatWaterRegimeLabel(fieldClassification.waterRegime)}
+                      </p>
+                    </div>
                   )}
-                </div>
+                {geoContext?.disputedOrBorderNote && (
+                  <p className="text-[11px] text-muted-foreground flex items-center gap-1 pt-0.5">
+                    <Globe className="h-3 w-3 text-electric shrink-0" />
+                    <span>{geoContext.disputedOrBorderNote}</span>
+                  </p>
+                )}
               </div>
             </CardHeader>
 
             <CardContent className="space-y-2.5 pt-0 text-xs">
-              {/* Climate & Soil Data Coverage Summary */}
+              {/* Concise Agricultural Climate & Soil Context */}
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="rounded-md border border-border/70 bg-muted/25 px-3 py-2 space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-foreground flex items-center gap-1.5">
-                      <Database className="h-3.5 w-3.5 text-electric" />
-                      Climate Data Coverage (NASA POWER)
-                    </span>
-                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 border border-emerald-100">
-                      Available (~55 km grid)
-                    </span>
-                  </div>
+                  <span className="font-semibold text-foreground block">
+                    Climate Summary (20-Year Average)
+                  </span>
                   <p className="text-[11px] text-muted-foreground">
                     Annual: {climateTemp !== null && climateTemp !== undefined ? `${climateTemp.toFixed(1)} °C` : "—"},{" "}
                     {climatePrecip !== null && climatePrecip !== undefined ? `${climatePrecip.toFixed(0)} mm/yr` : "—"} ·
-                    May–Aug precip: {gsPrecip !== null && gsPrecip !== undefined ? `${gsPrecip.toFixed(0)} mm` : "—"} ·
-                    Summer dry spells: {dryDays !== null && dryDays !== undefined ? `${dryDays.toFixed(1)} d` : "—"} ·
+                    Growing-season rain: {gsPrecip !== null && gsPrecip !== undefined ? `${gsPrecip.toFixed(0)} mm` : "—"} ·
+                    Dry spells: {dryDays !== null && dryDays !== undefined ? `${dryDays.toFixed(1)} d` : "—"} ·
                     Heat days (&gt;35 °C): {heatDays !== null && heatDays !== undefined ? `${heatDays.toFixed(1)} d` : "—"}
                   </p>
                 </div>
 
                 <div className="rounded-md border border-border/70 bg-muted/25 px-3 py-2 space-y-1">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <span className="font-semibold text-foreground flex items-center gap-1.5">
-                      <Database className="h-3.5 w-3.5 text-electric" />
-                      {adaptedSoil?.source.toUpperCase().includes("SSURGO")
-                        ? "Soil Data Coverage (USDA SSURGO 0–30 cm Survey)"
-                        : "Soil Context (Regional Topsoil Reference Estimate)"}
+                    <span className="font-semibold text-foreground">
+                      Topsoil Context (0–30 cm)
                     </span>
-                    {adaptedSoil ? (
-                      adaptedSoil.source.toUpperCase().includes("SSURGO") ? (
-                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 border border-emerald-100">
-                          {soilCoveragePct !== null ? `${soilCoveragePct.toFixed(0)}% map-unit coverage` : "Survey available"}
-                        </span>
-                      ) : (
-                        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
-                          Regional reference (not coordinate-extracted)
-                        </span>
-                      )
-                    ) : (
+                    {adaptedSoil && !adaptedSoil.source.toUpperCase().includes("SSURGO") && (
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
-                        Unavailable (lower confidence)
+                        Regional estimate
                       </span>
                     )}
                   </div>
@@ -610,17 +480,11 @@ export default function RotationsPage() {
                       {soilOm !== null ? `${soilOm.toFixed(1)}%` : "—"} · pH:{" "}
                       {soilPh !== null ? soilPh.toFixed(1) : "—"} · Drainage: {soilDrainage ?? "—"} · Slope:{" "}
                       {soilSlope !== null ? `${soilSlope.toFixed(1)}%` : "—"}
-                      {soil?.mapUnit?.name
-                        ? ` · ${
-                            adaptedSoil.source.toUpperCase().includes("SSURGO")
-                              ? "Unit"
-                              : "Reference group"
-                          }: ${soil.mapUnit.name}`
-                        : ""}
+                      {soil?.mapUnit?.name ? ` · ${soil.mapUnit.name}` : ""}
                     </p>
                   ) : (
                     <p className="text-[11px] text-amber-800">
-                      Soil profile data is currently unavailable for these coordinates. Soil AWC, organic matter, pH, drainage, and slope are recorded as null and lower classification/scoring coverage.
+                      Soil profile data is unavailable for these coordinates.
                     </p>
                   )}
                 </div>
@@ -653,19 +517,80 @@ export default function RotationsPage() {
                         {detectedRegion
                           ? ` in ${detectedRegion.label}`
                           : ` at (${field.lat.toFixed(4)}, ${field.lon.toFixed(4)})`}
-                        . fallo does not display predefined or US reference crop rotations for unsupported regions.
-                      </p>
-                      <p className="text-[11px]">
-                        <strong className="text-foreground">Requirements for rotation support here:</strong>{" "}
-                        Regionally verified crop calendars, drought/heat thresholds, and host-disease rules from national or international agricultural research institutes for this climate zone.
+                        .
                       </p>
                     </div>
                   )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
 
-                  {!hasGeneratedPlans && availableCropNames.length > 0 && !generateError && !generating && (
-                    <p className="text-[11px]">
-                      Click <strong className="text-foreground">Generate Field-Specific Plans</strong> to create three SI-generated 3-year crop rotation plans (Soil Health Building, Water Resilience, Crop Diversity &amp; Pest Break) using the verified crops above.
-                    </p>
+          {/* 2. Farmer Priority Sliders + Generate Field-Specific Plans Action */}
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-electric" />
+                <CardTitle className="text-sm font-semibold text-foreground">
+                  Farmer Priority Weights
+                </CardTitle>
+              </div>
+              <CardDescription className="text-xs">
+                {hasGeneratedPlans
+                  ? "Weight the five suitability factors for your operation. SI-generated plans re-score and re-rank immediately."
+                  : "Select your priorities and adjust the sliders below, then generate field-specific 3-year crop rotation plans."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <PrioritySliders priorities={priorities} onChange={setPriorities} />
+
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-3 border-t border-border/70">
+                <p className="text-xs text-muted-foreground">
+                  {hasGeneratedPlans
+                    ? `SI-generated crop rotation plans are active for ${field.name}. You can regenerate plans at any time.`
+                    : "Ready to design three 3-year crop rotation plans (Soil Health Building, Water Resilience, Crop Diversity & Pest Break) guided by your weights above."}
+                </p>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    size="sm"
+                    onClick={handleGenerate}
+                    disabled={generating || availableCropIds.length === 0}
+                    className={
+                      hasGeneratedPlans
+                        ? "bg-purple-600 hover:bg-purple-700 text-white"
+                        : "bg-electric hover:bg-electric-dark text-white"
+                    }
+                  >
+                    {generating ? (
+                      <>
+                        <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        Generating Plans...
+                      </>
+                    ) : hasGeneratedPlans ? (
+                      <>
+                        <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                        Regenerate Field-Specific Plans
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                        Generate Field-Specific Plans
+                      </>
+                    )}
+                  </Button>
+                  {hasGeneratedPlans && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={generating}
+                      onClick={() => {
+                        setFieldRotations(field.id, null);
+                        setGenerateError(null);
+                      }}
+                    >
+                      Clear
+                    </Button>
                   )}
                 </div>
               </div>
@@ -710,26 +635,6 @@ export default function RotationsPage() {
             </CardContent>
           </Card>
 
-          {/* 2. Farmer Priority Sliders — Set Weights Before Generation or Re-Rank SI Plans Locally */}
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center gap-2">
-                <SlidersHorizontal className="h-4 w-4 text-electric" />
-                <CardTitle className="text-sm font-semibold text-foreground">
-                  Farmer Priority Weights
-                </CardTitle>
-              </div>
-              <CardDescription className="text-xs">
-                {hasGeneratedPlans
-                  ? "Weight the five suitability factors for your operation. SI-generated plans re-score and re-rank immediately."
-                  : "Set your relative priority weights across the five suitability factors before generating field-specific plans."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <PrioritySliders priorities={priorities} onChange={setPriorities} />
-            </CardContent>
-          </Card>
-
           {/* 3A. After Generation: Display SI-Generated 3-Year Plans */}
           {hasGeneratedPlans && (
             <div className="space-y-6">
@@ -760,19 +665,16 @@ export default function RotationsPage() {
             </div>
           )}
 
-          {/* 3B. Before Generation: Display Only Strategy Planning Objectives (No Predefined 3-Year Sequences) */}
+          {/* 3B. Before Generation: Display Strategy Planning Objectives */}
           {!hasGeneratedPlans && (
             <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground">
-                    Planning Objectives for {field.name} (Goals — Not Completed Crop Recommendations)
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    fallo does not display predefined static 3-year crop rotations. Below are the three planning objectives that will guide Super Intelligence (SI) generation once you click{" "}
-                    <strong className="text-foreground">Generate Field-Specific Plans</strong>.
-                  </p>
-                </div>
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Planning Objectives for {field.name}
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Three agronomic focus areas tailored to your field&apos;s climate and soil profile.
+                </p>
               </div>
 
               <div className="grid gap-4 lg:grid-cols-3">
@@ -815,9 +717,6 @@ export default function RotationsPage() {
                               {obj.name}
                             </CardTitle>
                           </div>
-                          <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 border border-amber-200">
-                            No SI-generated plan yet
-                          </span>
                         </div>
                         <CardDescription className="text-xs leading-relaxed text-muted-foreground">
                           {obj.objective}
@@ -832,12 +731,6 @@ export default function RotationsPage() {
                             </li>
                           ))}
                         </ul>
-
-                        <div className="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] text-muted-foreground mt-auto">
-                          {availableCropNames.length > 0
-                            ? "Planning goal only — click Generate Field-Specific Plans above to create a 3-year crop rotation plan."
-                            : "No SI-generated plan yet — verified local crop catalog coverage is required before 3-year sequences can be generated."}
-                        </div>
                       </CardContent>
                     </Card>
                   );
@@ -846,11 +739,45 @@ export default function RotationsPage() {
             </div>
           )}
 
-          {/* Concise Scoring Disclaimer */}
-          <div className="rounded-lg border border-border bg-card/70 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-            <strong className="text-foreground">Decision-support note:</strong> Suitability scores (0–100) are deterministic heuristics computed from NASA POWER regional climate (~55 km grid) and 0–30 cm topsoil context (USDA SSURGO survey averages in the US, or macro-regional topsoil reference estimates elsewhere)—not calibrated yield predictions.{" "}
-            <strong className="text-foreground">Data coverage</strong> indicates input completeness, not agronomic certainty.
-          </div>
+          {/* Subtle Expandable Data & Methodology Details */}
+          <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+            <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
+              <span className="flex items-center gap-2">
+                <Database className="h-3.5 w-3.5 text-muted-foreground" />
+                Data sources, coverage &amp; scoring methodology
+              </span>
+              <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
+                ▼
+              </span>
+            </summary>
+            <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
+              <p>
+                <strong className="text-foreground">Climate source:</strong>{" "}
+                {adaptedClimate.source} ({adaptedClimate.spatialResolution}).{" "}
+                {fieldClassification.reasons[0] ?? ""}
+              </p>
+              <p>
+                <strong className="text-foreground">Soil source:</strong>{" "}
+                {adaptedSoil
+                  ? adaptedSoil.source.toUpperCase().includes("SSURGO")
+                    ? `${adaptedSoil.source} (${soilCoveragePct !== null ? `${soilCoveragePct.toFixed(0)}% map-unit coverage` : "0–30 cm survey"})`
+                    : `${adaptedSoil.source} (regional topsoil reference estimate — not a coordinate-extracted on-site soil test)`
+                  : "Soil data unavailable for these coordinates."}
+              </p>
+              <p>
+                <strong className="text-foreground">Classification &amp; scoring note:</strong>{" "}
+                Classification confidence is{" "}
+                <strong className="text-foreground">{fieldClassification.confidence}</strong>
+                {fieldEvidence ? ` (${fieldEvidence.label})` : ""}. Suitability scores (0–100) are deterministic agronomic heuristics, not calibrated yield predictions.{" "}
+                <Link
+                  href="/data-sources"
+                  className="text-electric hover:underline font-medium"
+                >
+                  View full data source documentation →
+                </Link>
+              </p>
+            </div>
+          </details>
         </>
       )}
     </div>

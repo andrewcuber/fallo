@@ -7,7 +7,16 @@ import { useField } from "@/components/providers";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MapPin, Loader2 } from "lucide-react";
+import {
+  MapPin,
+  Loader2,
+  CloudSun,
+  Layers,
+  RefreshCw,
+  SlidersHorizontal,
+  CalendarDays,
+  GitCompare,
+} from "lucide-react";
 
 export default function FieldLayout({
   children,
@@ -28,9 +37,24 @@ export default function FieldLayout({
   }, [field, activeField, setActiveField]);
 
   const tabs = [
-    { label: "Climate", href: `/field/${id}/climate` },
-    { label: "Soil", href: `/field/${id}/soil` },
-    { label: "Rotation Lab", href: `/field/${id}/rotations` },
+    { label: "Climate", href: `/field/${id}/climate`, icon: CloudSun },
+    { label: "Soil", href: `/field/${id}/soil`, icon: Layers },
+    {
+      label: "Crop Rotation Lab",
+      href: `/field/${id}/rotations`,
+      icon: RefreshCw,
+    },
+    {
+      label: "What-If Simulator",
+      href: `/field/${id}/simulator`,
+      icon: SlidersHorizontal,
+    },
+    { label: "Field Calendar", href: `/field/${id}/calendar`, icon: CalendarDays },
+    {
+      label: "Climate Analogues",
+      href: `/field/${id}/analogues`,
+      icon: GitCompare,
+    },
   ];
 
   if (!isLoaded) {
@@ -86,21 +110,27 @@ export default function FieldLayout({
         </Link>
       </div>
 
-      <nav className="flex gap-1 border-b border-border">
-        {tabs.map((tab) => (
-          <Link
-            key={tab.href}
-            href={tab.href}
-            className={cn(
-              "px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
-              pathname === tab.href
-                ? "border-electric text-electric"
-                : "border-transparent text-muted-foreground hover:text-electric"
-            )}
-          >
-            {tab.label}
-          </Link>
-        ))}
+      <nav className="flex flex-wrap items-center gap-x-1 gap-y-1 border-b border-border">
+        {tabs.map((tab) => {
+          const Icon = tab.icon;
+          const active =
+            pathname === tab.href || pathname.startsWith(`${tab.href}/`);
+          return (
+            <Link
+              key={tab.href}
+              href={tab.href}
+              className={cn(
+                "inline-flex items-center gap-1.5 whitespace-nowrap px-2.5 lg:px-3 py-2 text-xs sm:text-sm font-medium transition-colors border-b-2 shrink-0",
+                active
+                  ? "border-electric text-electric"
+                  : "border-transparent text-muted-foreground hover:text-electric"
+              )}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              <span>{tab.label}</span>
+            </Link>
+          );
+        })}
       </nav>
 
       <div>{children}</div>

@@ -11,10 +11,130 @@ import {
   type RotationStrategy,
   type FarmerPriorities,
   type AIUsageMetadata,
+  type ClimateData as ScoringClimateData,
+  type SoilData as ScoringSoilData,
+  type HistoricalYearClimateRecord,
+  type ClimatePeriodSummary,
   DEFAULT_PRIORITIES,
   isVerifiedAiStrategyForField,
 } from "@/lib/rotation-scoring";
+import {
+  type WhatIfScenario,
+  DEFAULT_WHAT_IF_SCENARIO,
+} from "@/lib/what-if-simulator";
 import { normalizeCoordinates } from "@/lib/coordinates";
+
+export interface RawClimateApiResponse {
+  location: {
+    lat: number;
+    lon: number;
+    elevation: number | null;
+  };
+  periods: {
+    startYear: number;
+    endYear: number;
+    recentStart: number;
+    recentEnd: number;
+    baselineStart: number;
+    baselineEnd: number;
+  };
+  fullRecord: ClimatePeriodSummary;
+  baseline: ClimatePeriodSummary;
+  recent: ClimatePeriodSummary;
+  historicalYears?: HistoricalYearClimateRecord[];
+  stressMetrics: ScoringClimateData["stressMetrics"];
+  units: {
+    temp: string;
+    precip: string;
+    solar: string;
+    wetness: string;
+  };
+  source: string;
+  spatialResolution: string;
+  dataQuality: {
+    totalDays: number;
+    validDays: Record<string, number>;
+    missingDays: Record<string, number>;
+  };
+  parameters: string[];
+  warnings: string[];
+  cached?: boolean;
+}
+
+export interface RawSoilHorizon {
+  depthTop: number;
+  depthBottom: number;
+  sand: number | null;
+  silt: number | null;
+  clay: number | null;
+  om: number | null;
+  ph: number | null;
+  awc: number | null;
+}
+
+export interface RawSoilComponent {
+  cokey: string;
+  name: string;
+  percent: number;
+  kind: string;
+  majcompflag: string | null;
+  drainage: string | null;
+  slope: number | null;
+  horizons: RawSoilHorizon[];
+}
+
+export interface RawSoilApiResponse {
+  location: { lat: number; lon: number };
+  source: string;
+  coverage: string;
+  mapUnit: { mukey: string; name: string } | null;
+  totalComponentPercent: number;
+  components: RawSoilComponent[];
+  aggregated: ScoringSoilData["aggregated"];
+  dataCoverage: ScoringSoilData["dataCoverage"];
+  limitations: string[];
+  cached?: boolean;
+}
+
+export function adaptClimateResponse(
+  data: RawClimateApiResponse | null
+): ScoringClimateData | null {
+  if (!data) return null;
+  return {
+    location: data.location,
+    periods: data.periods,
+    fullRecord: {
+      avgAnnualTemp: data.fullRecord.avgAnnualTemp,
+      avgAnnualPrecip: data.fullRecord.avgAnnualPrecip,
+      avgDailySolar: data.fullRecord.avgDailySolar,
+      monthlyTemp: data.fullRecord.monthlyTemp,
+      monthlyPrecip: data.fullRecord.monthlyPrecip,
+      monthlySolar: data.fullRecord.monthlySolar,
+      annualPrecipTotals: data.fullRecord.annualPrecipTotals,
+      precipCV: data.fullRecord.precipCV,
+    },
+    baseline: data.baseline,
+    recent: data.recent,
+    historicalYears: data.historicalYears,
+    stressMetrics: data.stressMetrics,
+    source: data.source,
+    spatialResolution: data.spatialResolution,
+    limitations: [data.spatialResolution, ...data.warnings],
+  };
+}
+
+export function adaptSoilResponse(
+  data: RawSoilApiResponse | null
+): ScoringSoilData | null {
+  if (!data) return null;
+  return {
+    aggregated: data.aggregated,
+    dataCoverage: data.dataCoverage,
+    totalComponentPercent: data.totalComponentPercent,
+    source: data.source,
+    limitations: data.limitations,
+  };
+}
 
 export interface StoredRotations {
   /** Raw generated strategies (not pre-scored, so priority changes can re-run scoring locally) */
@@ -36,6 +156,8 @@ export interface Field {
   lon: number;
   /** Persisted AI-generated or custom rotation proposals for this field */
   generatedRotations?: StoredRotations | null;
+  /** Active strategy ID selected by the user for Field Calendar & cross-feature views */
+  selectedStrategyId?: string | null;
 }
 
 interface FieldContextValue {
@@ -47,6 +169,16 @@ interface FieldContextValue {
   setActiveField: (field: Field | null) => void;
   removeField: (id: string) => void;
   setFieldRotations: (id: string, rotations: StoredRotations | null) => void;
+  getSelectedStrategyId: (fieldId: string) => string | null;
+  setSelectedStrategyId: (fieldId: string, strategyId: string | null) => void;
+  getFieldWhatIfScenario: (fieldId: string) => WhatIfScenario;
+  setFieldWhatIfScenario: (fieldId: string, scenario: WhatIfScenario) => void;
+  resetFieldWhatIfScenario: (fieldId: string) => void;
+  getFieldScenarioRotations: (fieldId: string) => StoredRotations | null;
+  setFieldScenarioRotations: (
+    fieldId: string,
+    rotations: StoredRotations | null
+  ) => void;
   isLoaded: boolean;
 }
 
@@ -206,6 +338,11 @@ export function FieldProvider({ children }: { children: React.ReactNode }) {
   const [fields, setFields] = useState<Field[]>([]);
   const [activeField, setActiveFieldState] = useState<Field | null>(null);
   const [priorities, setPrioritiesState] = useState<FarmerPriorities>({ ...DEFAULT_PRIORITIES });
+  const [selectedStrategyMap, setSelectedStrategyMap] = useState<Record<string, string | null>>({});
+  const [whatIfScenarioMap, setWhatIfScenarioMap] = useState<Record<string, WhatIfScenario>>({});
+  const [scenarioRotationsMap, setScenarioRotationsMap] = useState<
+    Record<string, StoredRotations | null>
+  >({});
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
@@ -214,6 +351,13 @@ export function FieldProvider({ children }: { children: React.ReactNode }) {
     const savedPriorities = loadPriorities();
     setFields(saved);
     setPrioritiesState(savedPriorities);
+    const initialStrategyMap: Record<string, string | null> = {};
+    for (const f of saved) {
+      if (f.selectedStrategyId) {
+        initialStrategyMap[f.id] = f.selectedStrategyId;
+      }
+    }
+    setSelectedStrategyMap(initialStrategyMap);
     if (activeId) {
       const found = saved.find((f) => f.id === activeId) ?? null;
       setActiveFieldState(found);
@@ -253,7 +397,69 @@ export function FieldProvider({ children }: { children: React.ReactNode }) {
     setActiveFieldState((prev) =>
       prev ? applyFieldRotationsUpdate([prev], prev, id, rotations).activeField : null
     );
+    if (rotations === null) {
+      setSelectedStrategyMap((prev) => ({ ...prev, [id]: null }));
+    }
   }, []);
+
+  const getSelectedStrategyId = useCallback(
+    (fieldId: string): string | null => {
+      const fromMap = selectedStrategyMap[fieldId];
+      if (fromMap) return fromMap;
+      const f = fields.find((item) => item.id === fieldId);
+      if (f?.selectedStrategyId) return f.selectedStrategyId;
+      return f?.generatedRotations?.strategies?.[0]?.id ?? null;
+    },
+    [selectedStrategyMap, fields]
+  );
+
+  const setSelectedStrategyId = useCallback(
+    (fieldId: string, strategyId: string | null) => {
+      setSelectedStrategyMap((prev) => ({ ...prev, [fieldId]: strategyId }));
+      setFields((prev) =>
+        prev.map((f) => (f.id === fieldId ? { ...f, selectedStrategyId: strategyId } : f))
+      );
+      setActiveFieldState((prev) =>
+        prev && prev.id === fieldId ? { ...prev, selectedStrategyId: strategyId } : prev
+      );
+    },
+    []
+  );
+
+  const getFieldWhatIfScenario = useCallback(
+    (fieldId: string): WhatIfScenario => {
+      return whatIfScenarioMap[fieldId] ?? { ...DEFAULT_WHAT_IF_SCENARIO };
+    },
+    [whatIfScenarioMap]
+  );
+
+  const setFieldWhatIfScenario = useCallback(
+    (fieldId: string, scenario: WhatIfScenario) => {
+      setWhatIfScenarioMap((prev) => ({ ...prev, [fieldId]: scenario }));
+    },
+    []
+  );
+
+  const resetFieldWhatIfScenario = useCallback((fieldId: string) => {
+    setWhatIfScenarioMap((prev) => ({
+      ...prev,
+      [fieldId]: { ...DEFAULT_WHAT_IF_SCENARIO },
+    }));
+  }, []);
+
+  const getFieldScenarioRotations = useCallback(
+    (fieldId: string): StoredRotations | null => {
+      return scenarioRotationsMap[fieldId] ?? null;
+    },
+    [scenarioRotationsMap]
+  );
+
+  const setFieldScenarioRotations = useCallback(
+    (fieldId: string, rotations: StoredRotations | null) => {
+      setScenarioRotationsMap((prev) => ({ ...prev, [fieldId]: rotations }));
+    },
+    []
+  );
 
   const setActiveField = useCallback((field: Field | null) => {
     setActiveFieldState(field);
@@ -262,6 +468,21 @@ export function FieldProvider({ children }: { children: React.ReactNode }) {
   const removeField = useCallback((id: string) => {
     setFields((prev) => prev.filter((f) => f.id !== id));
     setActiveFieldState((prev) => (prev?.id === id ? null : prev));
+    setSelectedStrategyMap((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setWhatIfScenarioMap((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setScenarioRotationsMap((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   }, []);
 
   return (
@@ -275,6 +496,13 @@ export function FieldProvider({ children }: { children: React.ReactNode }) {
         setActiveField,
         removeField,
         setFieldRotations,
+        getSelectedStrategyId,
+        setSelectedStrategyId,
+        getFieldWhatIfScenario,
+        setFieldWhatIfScenario,
+        resetFieldWhatIfScenario,
+        getFieldScenarioRotations,
+        setFieldScenarioRotations,
         isLoaded,
       }}
     >
@@ -287,4 +515,170 @@ export function useField() {
   const ctx = useContext(FieldContext);
   if (!ctx) throw new Error("useField must be used within FieldProvider");
   return ctx;
+}
+
+// ============================================================================
+// Shared Environmental Data Cache & Hook (Climate + Soil per Coordinate Pair)
+// ============================================================================
+
+interface CachedEnvEntry {
+  climateRaw: RawClimateApiResponse | null;
+  soilRaw: RawSoilApiResponse | null;
+  climateError: string | null;
+  soilError: string | null;
+  fetchedAt: number;
+}
+
+const envMemoryCache = new Map<string, CachedEnvEntry>();
+const envInFlight = new Map<string, Promise<CachedEnvEntry>>();
+const ENV_CACHE_TTL_MS = 15 * 60 * 1000;
+
+function makeCoordKey(lat: number, lon: number): string {
+  return `${lat.toFixed(4)},${lon.toFixed(4)}`;
+}
+
+async function loadEnvironmentalData(
+  lat: number,
+  lon: number,
+  forceRefresh = false
+): Promise<CachedEnvEntry> {
+  const key = makeCoordKey(lat, lon);
+  if (!forceRefresh) {
+    const cached = envMemoryCache.get(key);
+    if (cached && Date.now() - cached.fetchedAt < ENV_CACHE_TTL_MS && !cached.climateError) {
+      return cached;
+    }
+    const inflight = envInFlight.get(key);
+    if (inflight) return inflight;
+  }
+
+  const promise = (async (): Promise<CachedEnvEntry> => {
+    let climateRaw: RawClimateApiResponse | null = null;
+    let soilRaw: RawSoilApiResponse | null = null;
+    let climateError: string | null = null;
+    let soilError: string | null = null;
+
+    try {
+      const [climateRes, soilRes] = await Promise.all([
+        fetch(`/api/climate?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`),
+        fetch(`/api/soil?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`),
+      ]);
+
+      try {
+        const climateJson = await climateRes.json();
+        if (!climateRes.ok) {
+          climateError = climateJson?.error || `Climate request failed (${climateRes.status})`;
+        } else {
+          climateRaw = climateJson as RawClimateApiResponse;
+        }
+      } catch (err) {
+        climateError = err instanceof Error ? err.message : "Failed to parse climate response";
+      }
+
+      try {
+        const soilJson = await soilRes.json();
+        if (!soilRes.ok) {
+          soilError = soilJson?.error || `Soil request failed (${soilRes.status})`;
+        } else {
+          soilRaw = soilJson as RawSoilApiResponse;
+        }
+      } catch (err) {
+        soilError = err instanceof Error ? err.message : "Failed to parse soil response";
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      climateError = msg;
+      soilError = msg;
+    }
+
+    const entry: CachedEnvEntry = {
+      climateRaw,
+      soilRaw,
+      climateError,
+      soilError,
+      fetchedAt: Date.now(),
+    };
+    if (climateRaw) {
+      envMemoryCache.set(key, entry);
+    }
+    return entry;
+  })();
+
+  envInFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    envInFlight.delete(key);
+  }
+}
+
+export function useFieldEnvironmentalData(field: Field | null | undefined) {
+  const coordKey = field ? makeCoordKey(field.lat, field.lon) : null;
+  const initialCached = coordKey ? envMemoryCache.get(coordKey) ?? null : null;
+
+  const [climateRaw, setClimateRaw] = useState<RawClimateApiResponse | null>(
+    initialCached?.climateRaw ?? null
+  );
+  const [soilRaw, setSoilRaw] = useState<RawSoilApiResponse | null>(
+    initialCached?.soilRaw ?? null
+  );
+  const [climateError, setClimateError] = useState<string | null>(
+    initialCached?.climateError ?? null
+  );
+  const [soilError, setSoilError] = useState<string | null>(
+    initialCached?.soilError ?? null
+  );
+  const [loading, setLoading] = useState<boolean>(Boolean(field && !initialCached?.climateRaw));
+
+  const fetchEnv = useCallback(
+    async (forceRefresh = false) => {
+      if (!field) return;
+      if (!forceRefresh) {
+        const cached = envMemoryCache.get(makeCoordKey(field.lat, field.lon));
+        if (cached && Date.now() - cached.fetchedAt < ENV_CACHE_TTL_MS && cached.climateRaw) {
+          setClimateRaw(cached.climateRaw);
+          setSoilRaw(cached.soilRaw);
+          setClimateError(cached.climateError);
+          setSoilError(cached.soilError);
+          setLoading(false);
+          return;
+        }
+      }
+
+      setLoading(true);
+      setClimateError(null);
+      setSoilError(null);
+      const entry = await loadEnvironmentalData(field.lat, field.lon, forceRefresh);
+      setClimateRaw(entry.climateRaw);
+      setSoilRaw(entry.soilRaw);
+      setClimateError(entry.climateError);
+      setSoilError(entry.soilError);
+      setLoading(false);
+    },
+    [field]
+  );
+
+  useEffect(() => {
+    if (field) {
+      fetchEnv(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [field?.id, field?.lat, field?.lon]);
+
+  const climate = React.useMemo(() => adaptClimateResponse(climateRaw), [climateRaw]);
+  const soil = React.useMemo(() => adaptSoilResponse(soilRaw), [soilRaw]);
+
+  const refresh = useCallback(() => fetchEnv(true), [fetchEnv]);
+
+  return {
+    climateRaw,
+    soilRaw,
+    climate,
+    soil,
+    loading,
+    error: climateError,
+    climateError,
+    soilError,
+    refresh,
+  };
 }

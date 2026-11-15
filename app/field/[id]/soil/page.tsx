@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useField } from "@/components/providers";
+import Link from "next/link";
+import { useField, useFieldEnvironmentalData } from "@/components/providers";
 import {
   Card,
   CardContent,
@@ -140,9 +141,6 @@ export default function SoilPage() {
   const params = useParams();
   const router = useRouter();
   const { fields, activeField, setActiveField, isLoaded } = useField();
-  const [data, setData] = useState<SoilData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const fieldId = typeof params.id === "string" ? params.id : undefined;
 
@@ -158,36 +156,13 @@ export default function SoilPage() {
   }, [isLoaded, fieldId, activeField, fields, setActiveField]);
 
   const field = activeField ?? (fieldId ? fields.find((f) => f.id === fieldId) : undefined);
-
-  const fetchSoil = async () => {
-    if (!field) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/soil?lat=${field.lat.toFixed(4)}&lon=${field.lon.toFixed(4)}`
-      );
-      const json = await res.json();
-      if (!res.ok) {
-        setError(json.error || `Request failed (${res.status})`);
-        setData(null);
-      } else {
-        setData(json);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (field) {
-      fetchSoil();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field?.id]);
+  const {
+    soilRaw,
+    loading,
+    soilError: error,
+    refresh: fetchSoil,
+  } = useFieldEnvironmentalData(field);
+  const data = soilRaw as SoilData | null;
 
   if (!isLoaded) {
     return <SoilSkeleton />;
@@ -232,8 +207,8 @@ export default function SoilPage() {
         <p className="text-muted-foreground max-w-2xl">
           {data
             ? isSsurgoSurvey
-              ? `USDA SSURGO soil survey data for ${field.name}. Properties are depth-weighted averages for the upper 30 cm.`
-              : `Regional reference topsoil estimate (0–30 cm) for ${field.name} — representative soil properties for this agroecological zone, not a coordinate-specific spatial extraction.`
+              ? `Topsoil properties (upper 30 cm) for ${field.name}, including texture, organic matter, water-holding capacity, pH, and drainage.`
+              : `Regional topsoil estimate (upper 30 cm) for ${field.name} — representative properties for this agroecological zone.`
             : `Soil texture, drainage, and properties for ${field.name}`}
         </p>
         <p className="text-xs text-muted-foreground">
@@ -279,10 +254,10 @@ export default function SoilPage() {
             <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-900 space-y-1">
               <p className="font-semibold flex items-center gap-1.5">
                 <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
-                Regional Topsoil Reference Estimate (Not Coordinate-Extracted)
+                Regional Topsoil Estimate
               </p>
               <p className="leading-relaxed text-amber-900/90">
-                This location is outside USDA SSURGO polygon survey coverage. The values below represent typical 0–30 cm topsoil properties for this agroecological region compiled from published FAO HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries. They are not spatially extracted at your exact coordinates and do not replace on-site soil testing.
+                These values represent typical 0–30 cm topsoil properties for this agroecological region rather than a field-specific survey at your exact coordinates. On-site soil testing is recommended before making fertilizer or lime decisions.
               </p>
             </div>
           )}
@@ -555,39 +530,42 @@ export default function SoilPage() {
             ) : null
           )}
 
-          {/* Limitations */}
-          {data.limitations.length > 0 && (
-            <Card className="border-amber-200 bg-amber-50/50">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 text-amber-800 text-sm">
-                  <AlertTriangle className="h-4 w-4" />
-                  Data Quality & Limitations
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ul className="list-disc list-inside text-sm text-amber-800/80 space-y-1">
+          {/* Subtle Expandable Source & Coverage Details */}
+          <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+            <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
+              <span>Data source, coverage &amp; limitations</span>
+              <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
+                ▼
+              </span>
+            </summary>
+            <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
+              <p>
+                <strong className="text-foreground">Data source:</strong> {data.source}
+              </p>
+              <p>
+                <strong className="text-foreground">Coverage &amp; methodology:</strong>{" "}
+                {data.coverage}
+              </p>
+              {data.limitations.length > 0 && (
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
                   {data.limitations.map((l, i) => (
                     <li key={i}>{l}</li>
                   ))}
                 </ul>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Source & Disclaimer */}
-          <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-4">
-            <p className="text-xs font-medium text-foreground">Data Source</p>
-            <p className="text-xs text-muted-foreground">{data.source}</p>
-            <p className="text-xs font-medium text-foreground mt-2">
-              Coverage & Limitations
-            </p>
-            <p className="text-xs text-muted-foreground">{data.coverage}</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Aggregated values are decision-support heuristics, not
-              field-level measurements. On-site soil testing is recommended
-              before management decisions.
-            </p>
-          </div>
+              )}
+              <p>
+                Aggregated values are decision-support heuristics, not field-level
+                measurements. On-site soil testing is recommended before management
+                decisions.{" "}
+                <Link
+                  href="/data-sources"
+                  className="text-electric hover:underline font-medium"
+                >
+                  Learn more about data sources →
+                </Link>
+              </p>
+            </div>
+          </details>
         </>
       )}
     </div>

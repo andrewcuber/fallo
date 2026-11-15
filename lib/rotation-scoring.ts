@@ -105,25 +105,55 @@ export interface RotationStrategy {
   generationInfo?: GenerationInfo;
 }
 
+export interface HistoricalYearClimateRecord {
+  year: number;
+  avgTemp: number | null;
+  totalPrecip: number | null;
+  avgSolar: number | null;
+  monthlyTemp: (number | null)[];
+  monthlyPrecip: (number | null)[];
+  monthlySolar: (number | null)[];
+  springPrecipMm: number | null;
+  growingSeasonPrecipMm: number | null;
+  summerDrySpellDays: number | null;
+  summerHeatDays: number | null;
+  daysWithData: number;
+}
+
+export interface ClimatePeriodSummary {
+  avgAnnualTemp: number | null;
+  avgAnnualPrecip: number | null;
+  avgDailySolar: number | null;
+  monthlyTemp: (number | null)[];
+  monthlyPrecip: (number | null)[];
+  monthlySolar: (number | null)[];
+  annualPrecipTotals?: { year: number; total: number | null }[];
+  precipCV?: number | null;
+}
+
 export interface ClimateData {
   location: { lat: number; lon: number; elevation: number | null };
-  fullRecord: {
-    avgAnnualTemp: number | null;
-    avgAnnualPrecip: number | null;
-    avgDailySolar: number | null;
-    monthlyTemp: (number | null)[];
-    monthlyPrecip: (number | null)[];
-    monthlySolar: (number | null)[];
+  periods?: {
+    startYear: number;
+    endYear: number;
+    recentStart: number;
+    recentEnd: number;
+    baselineStart: number;
+    baselineEnd: number;
   };
+  fullRecord: ClimatePeriodSummary;
+  baseline?: ClimatePeriodSummary;
+  recent?: ClimatePeriodSummary;
   stressMetrics: {
     summerDrySpells: { avgMaxConsecutiveDryDays: number | null; thresholdMm: number; monthsDesc: string };
     summerHeatDays: { avgDaysAboveThreshold: number | null; thresholdC: number; monthsDesc: string };
     springPrecip: { avgTotalMm: number | null; monthsDesc: string };
     growingSeasonPrecip: { avgTotalMm: number | null; monthsDesc: string };
   };
+  historicalYears?: HistoricalYearClimateRecord[];
   source: string;
   spatialResolution: string;
-  limitations: string[]; // synthesized by soil page
+  limitations: string[];
 }
 
 export interface SoilData {

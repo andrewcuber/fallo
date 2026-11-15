@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useField } from "@/components/providers";
+import Link from "next/link";
+import { useField, useFieldEnvironmentalData } from "@/components/providers";
 import {
   Card,
   CardContent,
@@ -132,9 +133,6 @@ export default function ClimatePage() {
   const params = useParams();
   const router = useRouter();
   const { fields, activeField, setActiveField, isLoaded } = useField();
-  const [data, setData] = useState<ClimateData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const fieldId = typeof params.id === "string" ? params.id : undefined;
 
@@ -150,36 +148,13 @@ export default function ClimatePage() {
   }, [isLoaded, fieldId, activeField, fields, setActiveField]);
 
   const field = activeField ?? (fieldId ? fields.find((f) => f.id === fieldId) : undefined);
-
-  const fetchClimate = async () => {
-    if (!field) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/climate?lat=${field.lat.toFixed(4)}&lon=${field.lon.toFixed(4)}`
-      );
-      const json = await res.json();
-      if (!res.ok) {
-        setError(json.error || `Request failed (${res.status})`);
-        setData(null);
-      } else {
-        setData(json);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (field) {
-      fetchClimate();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field?.id]);
+  const {
+    climateRaw,
+    loading,
+    climateError: error,
+    refresh: fetchClimate,
+  } = useFieldEnvironmentalData(field);
+  const data = climateRaw as ClimateData | null;
 
   if (!isLoaded) {
     return <ClimateSkeleton />;
@@ -519,47 +494,47 @@ export default function ClimatePage() {
             </CardContent>
           </Card>
 
-          {/* Warnings */}
-          {data.warnings.length > 0 && (
-            <Card className="border-amber-200 bg-amber-50/50">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 text-amber-800 text-sm">
-                  <AlertTriangle className="h-4 w-4" />
-                  Data Quality Notes
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ul className="list-disc list-inside text-sm text-amber-800/80 space-y-1">
+          {/* Subtle Expandable Source & Data Details */}
+          <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+            <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
+              <span>Data source, spatial resolution &amp; record details</span>
+              <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
+                ▼
+              </span>
+            </summary>
+            <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
+              <p>
+                <strong className="text-foreground">Data source:</strong> {data.source}
+              </p>
+              <p>
+                <strong className="text-foreground">Spatial resolution &amp; scope:</strong>{" "}
+                {data.spatialResolution} Daily values are satellite and reanalysis products,
+                not direct on-farm weather station measurements.
+              </p>
+              <p>
+                <strong className="text-foreground">Record completeness:</strong>{" "}
+                Valid data days — temperature {fmtInt(data.dataQuality.validDays["t2m"])} /{" "}
+                {data.dataQuality.totalDays}, precipitation{" "}
+                {fmtInt(data.dataQuality.validDays["precip"])} /{" "}
+                {data.dataQuality.totalDays}, solar{" "}
+                {fmtInt(data.dataQuality.validDays["solar"])} /{" "}
+                {data.dataQuality.totalDays}.{" "}
+                <Link
+                  href="/data-sources"
+                  className="text-electric hover:underline font-medium"
+                >
+                  Learn more about data sources →
+                </Link>
+              </p>
+              {data.warnings.length > 0 && (
+                <ul className="list-disc list-inside text-amber-800/90 space-y-1 pt-1">
                   {data.warnings.map((w, i) => (
                     <li key={i}>{w}</li>
                   ))}
                 </ul>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Source & Disclaimer */}
-          <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-4">
-            <p className="text-xs font-medium text-foreground">Data Source</p>
-            <p className="text-xs text-muted-foreground">{data.source}</p>
-            <p className="text-xs font-medium text-foreground mt-2">
-              Spatial Resolution & Limitations
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {data.spatialResolution} Daily values are reanalysis products,
-              not direct observations. Use this profile as regional climate
-              context, not as a substitute for on-site weather stations or
-              field-level forecasts.
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Valid data days: temperature {fmtInt(data.dataQuality.validDays["t2m"])} /{" "}
-              {data.dataQuality.totalDays}, precipitation{" "}
-              {fmtInt(data.dataQuality.validDays["precip"])} /{" "}
-              {data.dataQuality.totalDays}, solar{" "}
-              {fmtInt(data.dataQuality.validDays["solar"])} /{" "}
-              {data.dataQuality.totalDays}.
-            </p>
-          </div>
+              )}
+            </div>
+          </details>
         </>
       )}
     </div>

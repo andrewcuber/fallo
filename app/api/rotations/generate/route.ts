@@ -5,6 +5,10 @@ import {
   resolveRuntimeAIProvider,
   isVercelDeploymentEnvironment,
   getMissingVercelWifEnvVars,
+  checkGenerationRateLimit,
+  getInFlightGenerationCount,
+  MAX_CONCURRENT_GENERATIONS,
+  MAX_GENERATION_REQUEST_BYTES,
   type GenerationContext,
 } from "@/lib/rotation-generator";
 
@@ -33,9 +37,63 @@ export const maxDuration = 120;
  */
 
 export async function POST(req: NextRequest) {
+  const contentLengthHeader = req.headers.get("content-length");
+  if (contentLengthHeader) {
+    const byteLength = Number(contentLengthHeader);
+    if (Number.isFinite(byteLength) && byteLength > MAX_GENERATION_REQUEST_BYTES) {
+      return NextResponse.json(
+        { error: "Payload too large", message: "Request payload exceeds 256 KB limit." },
+        { status: 413 }
+      );
+    }
+  }
+
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  const clientIp =
+    forwardedFor?.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip")?.trim() ||
+    "local-client";
+
+  // Best-effort per-instance rate limit and concurrency protection.
+  // Note: In serverless deployments, in-memory Maps/Sets are scoped to each warm
+  // function instance rather than globally shared across all instances.
+  const rateStatus = checkGenerationRateLimit(clientIp);
+  if (!rateStatus.allowed) {
+    return NextResponse.json(
+      {
+        error: "Rate limit exceeded",
+        message: `Too many rotation generation requests. Please wait ${rateStatus.retryAfterSeconds} seconds before generating again.`,
+      },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(rateStatus.retryAfterSeconds),
+        },
+      }
+    );
+  }
+
+  if (getInFlightGenerationCount() >= MAX_CONCURRENT_GENERATIONS) {
+    return NextResponse.json(
+      {
+        error: "Server busy",
+        message:
+          "Maximum concurrent SI generation requests are currently in progress. Please wait a moment and try again.",
+      },
+      { status: 429 }
+    );
+  }
+
   let body: unknown;
   try {
-    body = await req.json();
+    const rawBody = await req.text();
+    if (rawBody.length > MAX_GENERATION_REQUEST_BYTES) {
+      return NextResponse.json(
+        { error: "Payload too large", message: "Request payload exceeds 256 KB limit." },
+        { status: 413 }
+      );
+    }
+    body = JSON.parse(rawBody);
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }

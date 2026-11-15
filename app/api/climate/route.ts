@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LRUCache } from "lru-cache";
 import { normalizeCoordinates } from "@/lib/coordinates";
+import type { HistoricalYearClimateRecord } from "@/lib/rotation-scoring";
 
 const NASA_FILL_VALUE = -999;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -82,6 +83,7 @@ interface ClimateResponse {
   baseline: PeriodStats;
   recent: PeriodStats;
   stressMetrics: StressMetrics;
+  historicalYears: HistoricalYearClimateRecord[];
   units: {
     temp: string;
     precip: string;
@@ -471,6 +473,77 @@ export async function GET(request: NextRequest) {
 
   const stressMetrics = computeStressMetrics(entries);
 
+  function computeHistoricalYears(allEntries: DailyEntry[]): HistoricalYearClimateRecord[] {
+    const DRY_THRESHOLD_MM = 1.0;
+    const HEAT_THRESHOLD_C = 35.0;
+    const years = Array.from(new Set(allEntries.map((e) => e.year))).sort((a, b) => a - b);
+
+    return years.map((y) => {
+      const yearEntries = allEntries.filter((e) => e.year === y);
+      const temps = yearEntries.map((e) => e.t2m).filter((v): v is number => v !== null);
+      const precips = yearEntries.map((e) => e.precip).filter((v): v is number => v !== null);
+      const solars = yearEntries.map((e) => e.solar).filter((v): v is number => v !== null);
+
+      const monthlyTemp: (number | null)[] = [];
+      const monthlyPrecip: (number | null)[] = [];
+      const monthlySolar: (number | null)[] = [];
+
+      for (let m = 1; m <= 12; m++) {
+        const mEntries = yearEntries.filter((e) => e.month === m);
+        const mt = mEntries.map((e) => e.t2m).filter((v): v is number => v !== null);
+        const mp = mEntries.map((e) => e.precip).filter((v): v is number => v !== null);
+        const ms = mEntries.map((e) => e.solar).filter((v): v is number => v !== null);
+
+        monthlyTemp.push(mt.length > 0 ? avg(mt) : null);
+        monthlyPrecip.push(mp.length > 0 ? sum(mp) : null);
+        monthlySolar.push(ms.length > 0 ? avg(ms) : null);
+      }
+
+      const summerEntries = yearEntries.filter((e) => e.month >= 6 && e.month <= 8);
+      let maxConsecDry = 0;
+      let curDry = 0;
+      for (const e of summerEntries) {
+        if (e.precip !== null && e.precip < DRY_THRESHOLD_MM) {
+          curDry++;
+          maxConsecDry = Math.max(maxConsecDry, curDry);
+        } else {
+          curDry = 0;
+        }
+      }
+
+      const julAugEntries = yearEntries.filter((e) => e.month >= 7 && e.month <= 8);
+      const heatDays = julAugEntries.filter(
+        (e) => e.t2mMax !== null && e.t2mMax > HEAT_THRESHOLD_C
+      ).length;
+
+      const springEntries = yearEntries.filter(
+        (e) => e.month >= 3 && e.month <= 5 && e.precip !== null
+      );
+      const gsEntries = yearEntries.filter(
+        (e) => e.month >= 5 && e.month <= 8 && e.precip !== null
+      );
+
+      return {
+        year: y,
+        avgTemp: temps.length > 0 ? avg(temps) : null,
+        totalPrecip: precips.length > 0 ? sum(precips) : null,
+        avgSolar: solars.length > 0 ? avg(solars) : null,
+        monthlyTemp,
+        monthlyPrecip,
+        monthlySolar,
+        springPrecipMm:
+          springEntries.length > 0 ? sum(springEntries.map((e) => e.precip!)) : null,
+        growingSeasonPrecipMm:
+          gsEntries.length > 0 ? sum(gsEntries.map((e) => e.precip!)) : null,
+        summerDrySpellDays: summerEntries.length > 0 ? maxConsecDry : null,
+        summerHeatDays: julAugEntries.length > 0 ? heatDays : null,
+        daysWithData: temps.length,
+      };
+    });
+  }
+
+  const historicalYears = computeHistoricalYears(entries);
+
   // Elevation from geometry
   let elevation: number | null = null;
   if (
@@ -504,6 +577,7 @@ export async function GET(request: NextRequest) {
     baseline: baselineStats,
     recent: recentStats,
     stressMetrics,
+    historicalYears,
     units: {
       temp: "°C",
       precip: "mm",
