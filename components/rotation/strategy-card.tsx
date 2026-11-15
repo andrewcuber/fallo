@@ -11,7 +11,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
-  Trophy,
   AlertTriangle,
   ShieldAlert,
   CalendarDays,
@@ -50,8 +49,7 @@ function OverallScoreBadge({ score, fitLabel }: { score: number | null; fitLabel
 
   return (
     <div className={`inline-flex flex-col items-end gap-0.5 rounded-lg px-3 py-1.5 shrink-0 ${color}`}>
-      <div className="flex items-center gap-1.5">
-        <Trophy className="h-3.5 w-3.5" />
+      <div className="flex items-baseline gap-1">
         <span className="tabular-nums font-bold text-lg leading-none">{score}</span>
         <span className="text-xs opacity-80">/ 100</span>
       </div>

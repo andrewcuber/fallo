@@ -623,18 +623,18 @@ export function resolveGlobalSoilFallback(
   };
 
   const harmonizationNotes = [
-    `Harmonized 0–30 cm topsoil profile from FAO/IIASA Harmonized World Soil Database (HWSD v2.2, 1 km resolution, layers D1 0–20 cm & D2 20–40 cm) cross-referenced with ISRIC SoilGrids v2.0 250m predictions (${matchedUnit.wrbSoilGroup}).`,
+    `Estimated 0–30 cm topsoil profile from regional reference data: FAO/IIASA Harmonized World Soil Database (HWSD v2.2, 1 km resolution, layers D1 0–20 cm & D2 20–40 cm) cross-referenced with ISRIC SoilGrids v2.0 250m predictions (${matchedUnit.wrbSoilGroup}).`,
     `Organic matter (${omPct.toFixed(2)}%) is derived from reported Soil Organic Carbon (SOC = ${matchedUnit.socPct.toFixed(2)}%) using the conventional Van Bemmelen factor (OM = SOC × 1.724).`,
-    `Available Water Capacity (AWC = ${matchedUnit.awc.toFixed(3)} cm/cm) is harmonized for 0–30 cm accounting for texture, organic carbon, bulk density (${matchedUnit.bulkDensityGcm3.toFixed(2)} g/cm³), and coarse fragments (${matchedUnit.coarseFragmentsPct.toFixed(0)}%).`,
+    `Available Water Capacity (AWC = ${matchedUnit.awc.toFixed(3)} cm/cm) is estimated for 0–30 cm accounting for texture, organic carbon, bulk density (${matchedUnit.bulkDensityGcm3.toFixed(2)} g/cm³), and coarse fragments (${matchedUnit.coarseFragmentsPct.toFixed(0)}%).`,
     `Values are regional digital soil mapping predictions with Q0.05–Q0.95 uncertainty intervals (±${spread}%), NOT laboratory soil tests from the farmer's field.`,
   ];
 
   // Coverage is set to 72% (Partial) to reflect modeled 250m–1km global soil inventory rather than 1:24,000 field survey
   const modeledCoveragePct = 72;
   const sourceStr =
-    "FAO/IIASA HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m WCS/WebDAV harmonized fallback)";
+    "FAO/IIASA HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m WCS/WebDAV regional reference & estimated topsoil data)";
   const coverageStr =
-    "Global 0–30 cm topsoil estimate (FAO HWSD v2.2 1 km & ISRIC SoilGrids v2.0 250 m with Q0.05–Q0.95 uncertainty intervals).";
+    "Estimated 0–30 cm topsoil data from regional reference sources (FAO HWSD v2.2 1 km & ISRIC SoilGrids v2.0 250 m with Q0.05–Q0.95 uncertainty intervals).";
 
   const aggregated = {
     depth0_30cm: {

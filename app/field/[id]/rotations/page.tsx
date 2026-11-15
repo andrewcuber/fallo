@@ -28,7 +28,6 @@ import { classifyAgGroup, type AgGroup } from "@/lib/agro-classifier";
 import {
   DEFAULT_AI_TIMEOUT_MS,
   type GenerationResult,
-  type RejectedProposalInfo,
 } from "@/lib/rotation-generator";
 import {
   RefreshCw,
@@ -206,8 +205,6 @@ export default function RotationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
-  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
-  const [rejectedProposals, setRejectedProposals] = useState<RejectedProposalInfo[]>([]);
   const inFlightFieldRef = useRef<string | null>(null);
 
   const fieldId = typeof params.id === "string" ? params.id : undefined;
@@ -332,13 +329,9 @@ export default function RotationsPage() {
     inFlightFieldRef.current = field.id;
     setGenerating(true);
     setGenerateError(null);
-    setGenerationStatus(null);
-    setRejectedProposals([]);
 
     const controller = new AbortController();
-    let clientTimedOut = false;
     const timeoutId = setTimeout(() => {
-      clientTimedOut = true;
       controller.abort();
     }, DEFAULT_AI_TIMEOUT_MS);
 
@@ -360,20 +353,8 @@ export default function RotationsPage() {
       });
       const data = (await res.json()) as GenerationResult & { error?: string; message?: string };
 
-      if (Array.isArray(data.rejectedProposals) && data.rejectedProposals.length > 0) {
-        setRejectedProposals(data.rejectedProposals);
-      }
-
-      if (!res.ok) {
-        setGenerateError(data.message ?? data.aiUnavailableReason ?? `Generation failed (${res.status})`);
-        setGenerationStatus("unavailable");
-        return;
-      }
-      if (data.proposals.length === 0) {
-        setGenerationStatus(data.supportStatus ?? "unavailable");
-        setGenerateError(
-          data.aiUnavailableReason ?? "Field-specific crop sequences could not be validated."
-        );
+      if (!res.ok || !Array.isArray(data.proposals) || data.proposals.length === 0) {
+        setGenerateError("We couldn't finish generating your plans. Please try again later.");
         return;
       }
 
@@ -389,15 +370,8 @@ export default function RotationsPage() {
         validationStatus: "passed",
         usageMetadata: data.usageMetadata,
       });
-      setGenerationStatus(data.supportStatus);
-    } catch (err) {
-      if (clientTimedOut || (err instanceof Error && err.name === "AbortError")) {
-        setGenerateError(
-          `AI generation request timed out after ${Math.round(DEFAULT_AI_TIMEOUT_MS / 1000)} seconds. No automatic retries were sent.`
-        );
-      } else {
-        setGenerateError(err instanceof Error ? err.message : "Network error");
-      }
+    } catch {
+      setGenerateError("We couldn't finish generating your plans. Please try again later.");
     } finally {
       clearTimeout(timeoutId);
       inFlightFieldRef.current = null;
@@ -424,12 +398,6 @@ export default function RotationsPage() {
   }
 
   const hasGeneratedPlans = generatedResults.length > 0;
-  const savedMeta = field.generatedRotations;
-  const firstGenInfo = generatedResults[0]?.strategy.generationInfo;
-  const activeProvider = savedMeta?.aiProvider ?? firstGenInfo?.aiProvider;
-  const activeModel = savedMeta?.aiModel ?? firstGenInfo?.aiModel;
-  const activeGeneratedAt = savedMeta?.generatedAt ?? firstGenInfo?.generatedAt;
-  const activeUsage = savedMeta?.usageMetadata ?? firstGenInfo?.usageMetadata;
 
   const climateTemp = adaptedClimate?.fullRecord.avgAnnualTemp;
   const climatePrecip = adaptedClimate?.fullRecord.avgAnnualPrecip;
@@ -450,7 +418,7 @@ export default function RotationsPage() {
       <div className="space-y-1">
         <h2 className="text-2xl font-serif font-bold text-foreground">Rotation Lab</h2>
         <p className="text-sm text-muted-foreground max-w-2xl">
-          AI-assisted, deterministically validated 3-year crop rotation planning tailored to your field&apos;s climate regime, soil properties, and verified crop suitability.
+          AI-generated 3-year crop rotation planning tailored to your field&apos;s climate regime, soil properties, and local crop suitability.
         </p>
         <p className="text-xs text-muted-foreground">
           Field: <strong className="text-foreground">{field.name}</strong> ({field.lat.toFixed(4)},{" "}
@@ -564,7 +532,7 @@ export default function RotationsPage() {
                     {generating ? (
                       <>
                         <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        Generating Field-Specific Plans...
+                        Generating Plans...
                       </>
                     ) : hasGeneratedPlans ? (
                       <>
@@ -586,8 +554,6 @@ export default function RotationsPage() {
                       onClick={() => {
                         setFieldRotations(field.id, null);
                         setGenerateError(null);
-                        setGenerationStatus(null);
-                        setRejectedProposals([]);
                       }}
                     >
                       Clear
@@ -688,94 +654,49 @@ export default function RotationsPage() {
                     </div>
                   )}
 
-                  {!hasGeneratedPlans && availableCropNames.length > 0 && !generateError && (
+                  {!hasGeneratedPlans && availableCropNames.length > 0 && !generateError && !generating && (
                     <p className="text-[11px]">
-                      Click <strong className="text-foreground">Generate Field-Specific Plans</strong> to send one AI request that proposes and deterministically validates three 3-year crop sequences (Soil Health Building, Water Resilience, Crop Diversity &amp; Pest Break) using only the verified crops above.
+                      Click <strong className="text-foreground">Generate Field-Specific Plans</strong> to create three AI-generated 3-year crop rotation plans (Soil Health Building, Water Resilience, Crop Diversity &amp; Pest Break) using the verified crops above.
                     </p>
                   )}
                 </div>
               </div>
 
-              {generateError && (
-                <div className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800 border border-amber-200 space-y-1">
-                  <p className="font-semibold">AI plan generation notice:</p>
-                  <p>{generateError}</p>
+              {generating && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="rounded-lg bg-electric/5 px-4 py-3.5 text-xs text-foreground border border-electric/25 flex items-start gap-3"
+                >
+                  <RefreshCw className="h-4 w-4 text-electric animate-spin shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-semibold text-foreground">
+                      Generating your crop rotation plans. This may take up to 2 minutes.
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Evaluating local climate patterns, topsoil properties, and 3-year crop sequences for {field.name}&hellip;
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {generateError && !generating && (
+                <div className="rounded-md bg-amber-50 px-3 py-2.5 text-xs text-amber-900 border border-amber-200 space-y-1">
+                  <p className="font-semibold">{generateError}</p>
                   {hasGeneratedPlans && (
-                    <p className="text-emerald-800 font-medium">
-                      Your previously validated AI-generated plans for {field.name} remain preserved below.
+                    <p className="text-[11px] text-emerald-800 font-medium">
+                      Your existing AI-generated plans for {field.name} remain available below.
                     </p>
                   )}
                 </div>
               )}
 
-              {rejectedProposals.length > 0 && (
-                <div className="rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 border border-red-100 space-y-1">
-                  <p className="font-semibold">
-                    Rejected invalid AI proposal{rejectedProposals.length > 1 ? "s" : ""} (failed deterministic validation):
-                  </p>
-                  <ul className="list-disc list-inside space-y-0.5">
-                    {rejectedProposals.map((r) => (
-                      <li key={r.id}>
-                        <strong>{r.name}</strong>: {r.errors.join("; ")}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Provenance & Real Token Usage Metadata Banner (when AI plans are active) */}
-              {hasGeneratedPlans && (
-                <div className="rounded-md bg-emerald-50/90 px-3 py-2 text-[11px] text-emerald-800 border border-emerald-200 flex items-center justify-between gap-3 flex-wrap">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700 shrink-0" />
-                    <span className="font-semibold">
-                      Deterministically validated AI-generated plans active
-                    </span>
-                    {activeProvider && (
-                      <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
-                        provider: {activeProvider}
-                      </span>
-                    )}
-                    {activeModel && (
-                      <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
-                        model: {activeModel}
-                      </span>
-                    )}
-                    <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
-                      validation: passed
-                    </span>
-                    {generationStatus && (
-                      <span className="rounded bg-white/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-900 border border-emerald-200">
-                        status: {generationStatus}
-                      </span>
-                    )}
-                    {activeGeneratedAt && (
-                      <span className="text-[10px] text-emerald-700">
-                        · Generated {new Date(activeGeneratedAt).toLocaleString()}
-                      </span>
-                    )}
-                  </div>
-
-                  {activeUsage && (
-                    <div className="flex items-center gap-2 font-mono text-[10px] text-emerald-900 bg-white/80 px-2 py-0.5 rounded border border-emerald-200">
-                      <span>Tokens:</span>
-                      {typeof activeUsage.promptTokenCount === "number" && (
-                        <span>in={activeUsage.promptTokenCount}</span>
-                      )}
-                      {typeof activeUsage.candidatesTokenCount === "number" && (
-                        <span>out={activeUsage.candidatesTokenCount}</span>
-                      )}
-                      {typeof activeUsage.thoughtsTokenCount === "number" && (
-                        <span>thought={activeUsage.thoughtsTokenCount}</span>
-                      )}
-                      {typeof activeUsage.totalTokenCount === "number" && (
-                        <span>total={activeUsage.totalTokenCount}</span>
-                      )}
-                      {typeof activeUsage.estimatedCostUsd === "number" && (
-                        <span>(~${activeUsage.estimatedCostUsd.toFixed(4)})</span>
-                      )}
-                    </div>
-                  )}
+              {hasGeneratedPlans && !generating && (
+                <div className="rounded-md bg-emerald-50/90 px-3 py-2 text-xs text-emerald-800 border border-emerald-200 flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                  <span className="font-medium">
+                    AI-generated crop rotation plans tailored to {field.name}
+                  </span>
                 </div>
               )}
             </CardContent>
@@ -792,7 +713,7 @@ export default function RotationsPage() {
               </div>
               <CardDescription className="text-xs">
                 {hasGeneratedPlans
-                  ? "Weight the five suitability factors for your operation. Validated AI-generated plans re-score and re-rank immediately without making a new model call."
+                  ? "Weight the five suitability factors for your operation. AI-generated plans re-score and re-rank immediately."
                   : "Set your relative priority weights across the five suitability factors before generating field-specific plans."}
               </CardDescription>
             </CardHeader>
@@ -801,7 +722,7 @@ export default function RotationsPage() {
             </CardContent>
           </Card>
 
-          {/* 3A. After Generation: Display ONLY Validated AI-Generated 3-Year Plans */}
+          {/* 3A. After Generation: Display AI-Generated 3-Year Plans */}
           {hasGeneratedPlans && (
             <div className="space-y-6">
               <div className="grid gap-4 lg:grid-cols-3">
@@ -820,7 +741,7 @@ export default function RotationsPage() {
                   <div className="flex items-center gap-2">
                     <BarChart3 className="h-4 w-4 text-electric" />
                     <CardTitle className="text-sm font-semibold text-foreground">
-                      Factor comparison (validated AI plans)
+                      Factor comparison (AI-generated plans)
                     </CardTitle>
                   </div>
                 </CardHeader>
@@ -906,7 +827,7 @@ export default function RotationsPage() {
 
                         <div className="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] text-muted-foreground mt-auto">
                           {availableCropNames.length > 0
-                            ? "Planning goal only — click Generate Field-Specific Plans above to generate and validate a 3-year crop sequence."
+                            ? "Planning goal only — click Generate Field-Specific Plans above to create a 3-year crop rotation plan."
                             : "No AI-generated plan yet — verified local crop catalog coverage is required before 3-year sequences can be generated."}
                         </div>
                       </CardContent>
@@ -919,7 +840,7 @@ export default function RotationsPage() {
 
           {/* Concise Scoring Disclaimer */}
           <div className="rounded-lg border border-border bg-card/70 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-            <strong className="text-foreground">Decision-support note:</strong> Suitability scores (0–100) are deterministic heuristics computed from NASA POWER regional climate (~55 km grid) and USDA SSURGO 0–30 cm soil averages—not calibrated yield predictions.{" "}
+            <strong className="text-foreground">Decision-support note:</strong> Suitability scores (0–100) are deterministic heuristics computed from NASA POWER regional climate (~55 km grid) and 0–30 cm topsoil data (USDA SSURGO survey averages or FAO HWSD v2.2 &amp; ISRIC SoilGrids estimated topsoil data)—not calibrated yield predictions.{" "}
             <strong className="text-foreground">Data coverage</strong> indicates input completeness, not agronomic certainty.
           </div>
         </>

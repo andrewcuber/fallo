@@ -351,7 +351,7 @@ export async function GET(request: NextRequest) {
 
   if (!isInsideUS) {
     const response = buildGlobalFallbackResponse(
-      `Location (${geo.countryName} — ${geo.admin1Name}) is outside USDA SSURGO (US-only) coverage. Using harmonized FAO HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m) 0–30 cm global soil baseline.`
+      `Location (${geo.countryName} — ${geo.admin1Name}) is outside USDA SSURGO (US-only) coverage. Using regional reference and estimated 0–30 cm topsoil data from FAO HWSD v2.2 (1 km) & ISRIC SoilGrids v2.0 (250 m).`
     );
     cache.set(cacheKey, response);
     return NextResponse.json(response);
@@ -370,7 +370,7 @@ export async function GET(request: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     const response = buildGlobalFallbackResponse(
-      `USDA SSURGO spatial query did not complete (${message}). Falling back to harmonized FAO HWSD v2.2 & ISRIC SoilGrids v2.0 0–30 cm global soil profile.`
+      `USDA SSURGO spatial query did not complete (${message}). Using regional reference and estimated 0–30 cm topsoil data from FAO HWSD v2.2 & ISRIC SoilGrids v2.0.`
     );
     cache.set(cacheKey, response);
     return NextResponse.json(response);
@@ -379,7 +379,7 @@ export async function GET(request: NextRequest) {
   try {
     if (!mukeyRows || mukeyRows.length === 0) {
       const response = buildGlobalFallbackResponse(
-        "No USDA SSURGO map unit found at this coordinate. Falling back to harmonized FAO HWSD v2.2 & ISRIC SoilGrids v2.0 0–30 cm global soil profile."
+        "No USDA SSURGO map unit found at this coordinate. Using regional reference and estimated 0–30 cm topsoil data from FAO HWSD v2.2 & ISRIC SoilGrids v2.0."
       );
       cache.set(cacheKey, response);
       return NextResponse.json(response);

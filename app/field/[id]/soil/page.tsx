@@ -229,7 +229,9 @@ export default function SoilPage() {
         </h2>
         <p className="text-muted-foreground max-w-2xl">
           {data
-            ? `SSURGO soil data for ${field.name}. Properties are depth-weighted averages for the upper 30 cm.`
+            ? data.source.toUpperCase().includes("SSURGO")
+              ? `USDA SSURGO soil survey data for ${field.name}. Properties are depth-weighted averages for the upper 30 cm.`
+              : `Regional reference and estimated topsoil data (0–30 cm) for ${field.name}.`
             : `Soil texture, drainage, and properties for ${field.name}`}
         </p>
         <p className="text-xs text-muted-foreground">

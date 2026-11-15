@@ -85,7 +85,7 @@ export default function DataSourcesPage() {
               <div>
                 <CardTitle>Dual-Tier Soil Architecture: USDA SSURGO &amp; FAO HWSD v2.2 / ISRIC SoilGrids v2.0</CardTitle>
                 <CardDescription>
-                  Primary US polygon survey (SSURGO) with global 0–30 cm harmonized fallback (HWSD v2.2 1 km &amp; SoilGrids 250 m)
+                  Primary US polygon survey (SSURGO) with global 0–30 cm regional reference &amp; estimated topsoil data (HWSD v2.2 1 km &amp; SoilGrids 250 m)
                 </CardDescription>
               </div>
             </div>
@@ -94,7 +94,7 @@ export default function DataSourcesPage() {
             <p className="text-sm text-muted-foreground">
               Inside the United States, fallo queries USDA NRCS Soil Data Access (SSURGO) for depth-weighted
               0–30 cm topsoil properties. Outside the US (or where SSURGO has no polygon coverage), fallo
-              automatically resolves a harmonized 0–30 cm global soil baseline combining FAO/IIASA Harmonized
+              resolves estimated 0–30 cm topsoil data from regional reference sources combining FAO/IIASA Harmonized
               World Soil Database v2.2 (1 km, 7 depth layers) and ISRIC SoilGrids v2.0 (250 m WCS/WebDAV
               mean &amp; Q0.05–Q0.95 prediction intervals), converting soil organic carbon (SOC) to organic
               matter via the Van Bemmelen factor (1.724) and deriving available water capacity (AWC) via
