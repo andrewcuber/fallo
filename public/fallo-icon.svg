@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 439 426" role="img" aria-label="fallo mark">
+  <rect x="20" y="22" width="181" height="181" rx="22" fill="#FFFFFF"/>
+  <rect x="238" y="22" width="181" height="181" rx="22" fill="#FFFFFF"/>
+  <rect x="20" y="245" width="181" height="181" rx="22" fill="#FFFFFF"/>
+  <path fill="#3BB4F1" fill-rule="evenodd" d="M259 244 H397 A22 22 0 0 1 419 266 V404 A22 22 0 0 1 397 426 H259 A22 22 0 0 1 237 404 V266 A22 22 0 0 1 259 244 Z M257 264 H399 V406 H257 Z"/>
+</svg>

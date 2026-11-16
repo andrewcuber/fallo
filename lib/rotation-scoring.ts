@@ -481,17 +481,84 @@ function scoreNitrogen(strategy: RotationStrategy, _climate: ClimateData, soil: 
         citations.push({ text: `${credit.source}: ${credit.value}`, url: sourceEntry?.url });
         if (crop.id === "crimson_clover") {
           score += 12;
-          positive.push(`Crimson clover can contribute ~60–75 lb N/acre (contextual estimate) to the following crop.`);
+          positive.push(
+            `Crimson clover has a conditional ~60–75 lb N/acre upper-range potential for a subsequent crop after termination (actual available N depends on establishment, stand vigor, biomass, termination, and mineralization).`
+          );
         } else if (crop.id === "hairy_vetch") {
           score += 15;
-          positive.push(`Hairy vetch can contribute ~80–100 lb N/acre (contextual estimate) to the following crop.`);
+          positive.push(
+            `Hairy vetch has a conditional ~80–100 lb N/acre upper-range potential for a subsequent crop after termination (not a guaranteed contribution; actual available N depends on establishment, stand vigor, biomass, termination, and subsequent mineralization).`
+          );
         } else if (crop.id === "soybean") {
           score += 5;
-          positive.push(`Soybean leaves a modest residual N credit (~15–30 lb N/acre, contextual estimate) but most fixed N is removed with grain.`);
+          positive.push(
+            `Soybean leaves a modest residual N credit (~15–30 lb N/acre, contextual estimate) but most fixed N is removed with grain.`
+          );
         } else {
           score += 6;
           positive.push(`${crop.commonName} contributes nitrogen via biological fixation.`);
         }
+      }
+    }
+  }
+
+  // Check concurrent legume cover-crop overlap vs. post-termination subsequent-crop N availability,
+  // and conditional malting barley excess-N / grain protein quality risk
+  for (let yIdx = 0; yIdx < strategy.years.length; yIdx++) {
+    const yr = strategy.years[yIdx];
+    const prevYr = yIdx > 0 ? strategy.years[yIdx - 1] : null;
+    const cashSeasons = yr.seasons.filter((s) => getCrop(s.crop)?.type === "cash");
+    const legumeCovers = yr.seasons.filter((s) => {
+      const c = getCrop(s.crop);
+      return c?.type === "cover" && c.family === "Fabaceae";
+    });
+
+    for (const legSea of legumeCovers) {
+      const legCrop = getCrop(legSea.crop);
+      if (!legCrop) continue;
+      for (const cashSea of cashSeasons) {
+        const cashCrop = getCrop(cashSea.crop);
+        if (!cashCrop) continue;
+        const shared = cashSea.months.filter((m) => legSea.months.includes(m));
+        const coverTermMonth = legSea.months[legSea.months.length - 1];
+        const cashInterior =
+          cashSea.months.length > 2 ? cashSea.months.slice(1, -1) : [];
+        if (
+          shared.length >= 2 &&
+          (shared.includes(cashSea.months[0]) ||
+            cashInterior.includes(coverTermMonth))
+        ) {
+          const creditDeduction =
+            legCrop.id === "hairy_vetch"
+              ? 15
+              : legCrop.id === "crimson_clover"
+                ? 12
+                : 6;
+          score -= creditDeduction;
+          negative.push(
+            `Year ${yr.year}: ${legCrop.commonName}'s residual N credit (${legCrop.nitrogenBehavior.residualNcredit?.value ?? "80–100 lb N/acre"}) is a post-termination credit mineralized for a subsequent crop—it is NOT assigned or available to concurrently growing ${cashCrop.commonName} during their ${shared.length}-month overlap, when living ${legCrop.commonName} competes with the cash crop.`
+          );
+        }
+      }
+    }
+
+    const barleySeason = yr.seasons.find(
+      (s) => s.crop === "spring_barley" || s.crop === "winter_barley"
+    );
+    if (barleySeason) {
+      const barleyCrop = getCrop(barleySeason.crop);
+      const highNLegume =
+        yr.seasons.find(
+          (s) => s.crop === "hairy_vetch" || s.crop === "alfalfa_annual_forage"
+        ) ??
+        prevYr?.seasons.find(
+          (s) => s.crop === "hairy_vetch" || s.crop === "alfalfa_annual_forage"
+        );
+      if (barleyCrop && highNLegume) {
+        const legCrop = getCrop(highNLegume.crop);
+        negative.push(
+          `Year ${yr.year}: ${barleyCrop.commonName} is paired with or follows ${legCrop?.commonName ?? "Hairy Vetch"}. If grown for malting, acceptable grain protein specifications depend on the maltster, buyer, barley class, and contract, and excess or late-mineralizing legume nitrogen increases the risk of exceeding buyer specifications and lodging.`
+        );
       }
     }
   }

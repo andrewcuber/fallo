@@ -499,13 +499,13 @@
       "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low",
-        "demandCategory": "Legume cover crop with high nitrogen-fixation potential.",
+        "demandCategory": "Legume cover crop with high nitrogen-fixation potential when grown to spring bloom.",
         "residualNcredit": {
-          "value": "80–100 lb N/acre",
-          "note": "NC State Extension reports approximately 80–100 lb N/acre following hairy vetch. Actual contribution depends on biomass, maturity, termination timing, and growing conditions.",
+          "value": "80–100 lb N/acre (conditional upper-range potential)",
+          "note": "NC State Extension and USDA NRCS SARE report 80–100 lb N/acre as an upper-range potential following vigorous hairy vetch terminated near spring bloom, not a guaranteed contribution. Actual available nitrogen depends on timely autumn establishment, winter survival, stand vigor, biomass accumulation, termination timing, and subsequent soil mineralization. Living vetch does not supply this credit to a concurrently growing spring crop.",
           "source": "NC State Extension Winter Annual Cover Crops"
         },
-        "note": "Volunteer growth can be an issue if seed is allowed to mature. Termination timing affects both N contribution and volunteer management."
+        "note": "Volunteer growth and climbing tendrils can cause severe lodging and grain contamination if overlapped with small grains (barley, wheat) in spring. Terminate prior to spring cash-crop planting."
       },
       "residue": {
         "quantity": "moderate",
@@ -1315,8 +1315,8 @@
     },
     {
       "id": "spring_barley",
-      "commonName": "Spring / Winter Feed & Malt Barley",
-      "synonyms": ["Barley", "Two-Row Barley", "Six-Row Barley"],
+      "commonName": "Spring Barley (Feed & Malt)",
+      "synonyms": ["Spring Barley", "Two-Row Spring Malt Barley", "Six-Row Spring Feed Barley"],
       "scientificName": "Hordeum vulgare",
       "family": "Poaceae",
       "type": "cash",
@@ -1326,8 +1326,8 @@
       "evidenceLevel": "level_1_strong_local",
       "nitrogenBehavior": {
         "demand": "low_to_moderate",
-        "demandCategory": "Lower N and water requirement than wheat or corn (60–110 lb N/acre); excess N in malt barley is avoided to keep grain protein moderate.",
-        "note": "Maturing 2–3 weeks earlier than wheat, barley escapes peak summer heat and drought stress in Nevada, the US West, Mediterranean, and MENA."
+        "demandCategory": "Lower N and water requirement than wheat or corn (60–110 lb N/acre). If grown for malting, acceptable grain protein specifications depend on the maltster, buyer, barley class, and contract; excess or late-mineralizing legume N increases the risk of exceeding buyer specifications and lodging.",
+        "note": "Spring-habit (non-vernalizing) barley planted in spring in cold/temperate zones or in late autumn/winter in mild-winter Mediterranean, MENA, and Australian systems."
       },
       "residue": {
         "quantity": "moderate",
@@ -1338,18 +1338,18 @@
       "sensitivePeriods": {
         "headingGrainFill": {
           "months": [5, 6],
-          "note": "Heading and grain fill occur in May–June in Northern Hemisphere spring/winter systems, completing before peak July–August heat.",
+          "note": "Heading and grain fill occur in May–June in Northern Hemisphere spring systems, completing before peak July–August heat.",
           "source": "University of Nevada Cooperative Extension & USDA ARS"
         }
       },
       "growingWindow": {
-        "planting": "February–April (Spring) or October–November (Winter)",
-        "harvest": "June–July (NH) / November–December (SH)",
-        "description": "Most drought- and salinity-tolerant temperate small grain, widely grown across Nevada/US Southwest, Great Plains, Northern China, Europe, Australia, and MENA."
+        "planting": "February–April (NH Spring) / November–December (MENA / Mild-Winter) / May–September (SH Spring)",
+        "harvest": "June–July (NH) / April–May (MENA) / November–January (SH)",
+        "description": "Spring-habit feed and malting barley (non-vernalizing), sown in spring across continental/temperate zones or in autumn/winter across mild-winter Mediterranean, MENA, South Asian, and Australian systems."
       },
       "diseasePestNotes": [
         "Cereal cyst nematode and net blotch require rotating with non-grass crops (alfalfa/medics, safflower, brassicas, or pulses).",
-        "Early harvest allows timely establishment of a summer or autumn cover crop."
+        "Overwintering viny cover crops (such as hairy vetch) must be terminated before spring barley seeding; overlapping March–May growth causes vine twining, lodging, and destructive late termination."
       ],
       "sources": [
         {
@@ -1359,6 +1359,73 @@
         {
           "citation": "ICARDA Dryland Barley Improvement & GRDC Barley Guide",
           "url": "https://www.icarda.org/research/crops/barley"
+        }
+      ],
+      "supportedRegions": [
+        "us_southwest",
+        "us_great_plains",
+        "us_midwest",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "australia_southern_wheatbelt",
+        "mena_mediterranean_arid",
+        "ssa_east_southern_humid"
+      ],
+      "applicableGroups": [
+        "semi_arid_temperate",
+        "arid",
+        "temperate_mediterranean",
+        "continental",
+        "temperate_humid",
+        "highland_montane"
+      ]
+    },
+    {
+      "id": "winter_barley",
+      "commonName": "Winter Barley (Feed & Malt)",
+      "synonyms": ["Winter Barley", "Autumn-Sown Barley"],
+      "scientificName": "Hordeum vulgare",
+      "family": "Poaceae",
+      "type": "cash",
+      "waterDemand": "low_to_moderate",
+      "droughtTolerance": "high",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "low_to_moderate",
+        "demandCategory": "Requires modest autumn N for tillering and split spring topdress (60–110 lb N/acre total). If grown for malting, acceptable grain protein specifications depend on the maltster, buyer, barley class, and contract; excess or late-mineralizing legume N increases the risk of exceeding buyer specifications and lodging.",
+        "note": "Autumn-seeded vernalizing cereal that overwinters and matures in May–June, 2–3 weeks ahead of winter wheat."
+      },
+      "residue": {
+        "quantity": "moderate_to_high",
+        "persistence": "moderate",
+        "description": "Living autumn–winter ground cover followed by durable early-summer straw."
+      },
+      "rootSystem": "Autumn-established fibrous root system reaching 1.2–1.5 m by spring heading.",
+      "sensitivePeriods": {
+        "headingGrainFill": {
+          "months": [4, 5],
+          "note": "Heading and grain fill occur in April–May in Northern Hemisphere winter barley (October–November in Southern Hemisphere), escaping summer drought.",
+          "source": "USDA ARS, ICARDA & GRDC Barley Agronomy"
+        }
+      },
+      "growingWindow": {
+        "planting": "September–November (NH Autumn) / April–May (SH Autumn)",
+        "harvest": "May–June (NH) / November–December (SH)",
+        "description": "Autumn-planted overwintering barley requiring winter vernalization; harvested in late spring / early summer across Mediterranean, temperate European, MENA, US, and Australian winter-grain zones."
+      },
+      "diseasePestNotes": [
+        "Barley yellow dwarf virus (BYDV), net blotch, and scald are reduced by rotating with broadleaf pulses and oilseeds.",
+        "Early May–June harvest opens a wide window for double-crop pulses or summer cover crops."
+      ],
+      "sources": [
+        {
+          "citation": "ICARDA Dryland Barley Improvement & GRDC Barley Guide",
+          "url": "https://www.icarda.org/research/crops/barley"
+        },
+        {
+          "citation": "USDA ARS & Penn State / Virginia Tech Winter Barley Production Guides",
+          "url": "https://www.ars.usda.gov/"
         }
       ],
       "supportedRegions": [
@@ -1807,8 +1874,8 @@
     },
     {
       "id": "winter_canola",
-      "commonName": "Winter / Spring Rapeseed (Canola)",
-      "synonyms": ["Oilseed Rape", "Canola", "Youcai"],
+      "commonName": "Winter Rapeseed / Canola",
+      "synonyms": ["Winter Oilseed Rape", "Winter Canola", "Youcai"],
       "scientificName": "Brassica napus",
       "family": "Brassicaceae",
       "type": "cash",
@@ -1819,7 +1886,7 @@
       "nitrogenBehavior": {
         "demand": "moderate_to_high",
         "demandCategory": "High autumn/spring N uptake with deep taproot scavenging; leaves friable soil structure and 20–30 kg N/ha mineralizable leaf-drop residue for following wheat or rice.",
-        "note": "Premier broadleaf cash break crop in cereal-dominated rotations across China (Yangtze & Northern plains), Europe, Australia, South Asia, and North America."
+        "note": "Premier overwintering broadleaf cash break crop in cereal-dominated rotations across China (Yangtze & Northern plains), Europe, Australia, South Asia, and North America."
       },
       "residue": {
         "quantity": "moderate_to_high",
@@ -1835,9 +1902,9 @@
         }
       },
       "growingWindow": {
-        "planting": "September–October (NH Winter) / April–May (NH Spring or SH Australia)",
-        "harvest": "May–June (NH Winter) / August–September (NH Spring) / November (SH Australia)",
-        "description": "Major Brassicaceae oilseed cash crop grown in rotation with rice, wheat, barley, corn, and pulses."
+        "planting": "September–October (NH Winter) / April–May (SH Winter)",
+        "harvest": "May–June (NH Winter) / October–November (SH)",
+        "description": "Autumn-seeded overwintering Brassicaceae oilseed cash crop grown in rotation with rice, wheat, barley, corn, and pulses."
       },
       "diseasePestNotes": [
         "Host of Sclerotinia stem rot (Sclerotinia sclerotiorum) and clubroot; do not plant in more than 1 year of a 3-year rotation or stack with soybean/sunflower.",
@@ -1869,6 +1936,67 @@
         "temperate_mediterranean",
         "semi_arid_temperate",
         "continental"
+      ]
+    },
+    {
+      "id": "spring_canola",
+      "commonName": "Spring Canola / Rapeseed",
+      "synonyms": ["Spring Oilseed Rape", "Spring Canola"],
+      "scientificName": "Brassica napus",
+      "family": "Brassicaceae",
+      "type": "cash",
+      "waterDemand": "moderate",
+      "droughtTolerance": "moderate",
+      "irrigationRegime": "irrigated_or_rainfed",
+      "evidenceLevel": "level_1_strong_local",
+      "nitrogenBehavior": {
+        "demand": "moderate_to_high",
+        "demandCategory": "Requires 70–110 lb N/acre plus adequate sulfur for oil and protein synthesis; deep taproot scavenges residual profile nitrate.",
+        "note": "Spring-sown non-vernalizing canola for cool continental, northern plains, and high-elevation spring–summer systems where winters are too severe for autumn-sown rapeseed."
+      },
+      "residue": {
+        "quantity": "moderate",
+        "persistence": "moderate",
+        "description": "Stubble and pod shatter residue decompose moderately quickly after late-summer harvest."
+      },
+      "rootSystem": "Taproot reaching 1.0–1.5 m that breaks cereal root-disease cycles.",
+      "sensitivePeriods": {
+        "floweringPodFill": {
+          "months": [6, 7],
+          "note": "Flowering in June–July (NH Spring); daytime temperatures above 30–32 °C during bloom can cause flower abortion.",
+          "source": "NDSU Extension Canola Production Guide & AAFC Canada"
+        }
+      },
+      "growingWindow": {
+        "planting": "April–May (NH Spring) / April–May (Australia Winter-Rainfall) / September–October (SH Spring)",
+        "harvest": "August–September (NH Spring) / October–November (Australia) / January–February (SH)",
+        "description": "Spring-habit (non-vernalizing) Brassicaceae oilseed sown in spring in continental/temperate zones or in autumn/winter in mild-winter Mediterranean and Australian systems."
+      },
+      "diseasePestNotes": [
+        "Host of Sclerotinia stem rot (Sclerotinia sclerotiorum) and clubroot; maintain a minimum 3-year interval between Brassicaceae/Sclerotinia host crops.",
+        "Flea beetle pressure is highest during spring cotyledon emergence."
+      ],
+      "sources": [
+        {
+          "citation": "North Dakota State University (NDSU) Extension — Canola Production Field Guide",
+          "url": "https://www.ndsu.edu/agriculture/extension"
+        },
+        {
+          "citation": "FAO Crop Calendar — Brassica napus (Spring Systems)",
+          "url": "https://cropcalendar.apps.fao.org/"
+        }
+      ],
+      "supportedRegions": [
+        "us_great_plains",
+        "east_asia_china_temperate",
+        "europe_temperate_med",
+        "australia_southern_wheatbelt"
+      ],
+      "applicableGroups": [
+        "continental",
+        "semi_arid_temperate",
+        "temperate_humid",
+        "highland_montane"
       ]
     },
     {
