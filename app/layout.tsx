@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Lora } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { FieldProvider } from "@/components/providers";
 import { AppShell } from "@/components/app-shell";
@@ -33,6 +34,7 @@ export default function RootLayout({
         <FieldProvider>
           <AppShell>{children}</AppShell>
         </FieldProvider>
+        <Analytics />
       </body>
     </html>
   );
