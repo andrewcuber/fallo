@@ -240,6 +240,7 @@ export interface GenerationResult {
   aiModel?: string;
   generatedAt?: string;
   usageMetadata?: AIUsageMetadata;
+  retryCount?: number;
 }
 
 export interface AIProviderClient {
@@ -1137,6 +1138,7 @@ ${formatCompatibilityRulesForPrompt()}
 - Keep each strategy's "description" to 1 concise sentence stating its objective for this field.
 - Include 2–3 short "advantages", 1–2 "disadvantages", and 1–2 "operational" bullets grounded in the field's actual climate/soil metrics, water regime (${classification.waterRegime ?? geo.defaultWaterRegime}), and verified crop traits.
 - Align seasonal planting/harvest months with the field's hemisphere (${geo.hemisphere}) and dominant seasonality (${classification.dominantSeasonality ?? "local calendar"}).
+- Diversify crop combinations across the 3 strategies so they do not all repeat the exact same high-risk crop pairs; never place primary Sclerotinia oilseed hosts (sunflower, winter_canola, spring_canola) in more than 1 year or fill all 3 years with Sclerotinia-susceptible crops.
 - Do not assume or mention a default US state/region (such as North Carolina) unless the field's coordinates and region tag place it there.
 - Return ONLY valid JSON matching the schema below.
 
@@ -1216,6 +1218,128 @@ export const MAX_CONCURRENT_GENERATIONS = 5;
 export const GENERATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 export const GENERATION_RATE_LIMIT_MAX_REQUESTS = 8; // max 8 requests per IP per 10-minute window
 export const MAX_GENERATION_REQUEST_BYTES = 256 * 1024; // 256 KB max payload
+export const MAX_VALIDATION_RETRY_ATTEMPTS = 1; // At most 1 corrective retry when all proposals fail validation
+
+export interface AggregatedRejectionAnalysis {
+  uniqueErrors: string[];
+  sharedRejectionReasons: string[];
+  requiresCropDiversification: boolean;
+  perStrategySummaries: string[];
+}
+
+function classifyErrorCategory(errorText: string): string {
+  const lower = errorText.toLowerCase();
+  if (lower.includes("sclerotinia")) return "Sclerotinia host stacking";
+  if (lower.includes("botanical family sequence constraint")) return "Botanical family repetition";
+  if (lower.includes("overlapping activity months")) return "Same-year cash-crop window overlap";
+  if (lower.includes("no cash crop")) return "Missing cash crop in one or more years";
+  if (lower.includes("not in the verified catalog")) return "Unverified crop ID";
+  if (lower.includes("not documented for agricultural group")) return "Unsupported agricultural group crop";
+  if (lower.includes("not documented for region")) return "Unsupported regional crop";
+  return errorText;
+}
+
+/**
+ * Aggregate deterministic validation errors across rejected proposals and detect
+ * when multiple strategies failed for the same agronomic constraint.
+ */
+export function aggregateRejectionReasons(
+  rejectedProposals: RejectedProposalInfo[]
+): AggregatedRejectionAnalysis {
+  const uniqueErrorsSet = new Set<string>();
+  const categoryStrategyCounts = new Map<string, number>();
+  const exactErrorStrategyCounts = new Map<string, number>();
+  const perStrategySummaries: string[] = [];
+
+  for (const rejected of rejectedProposals) {
+    perStrategySummaries.push(`"${rejected.name}" (${rejected.id}): ${rejected.errors.join("; ")}`);
+    const seenCategoriesForStrategy = new Set<string>();
+    const seenExactForStrategy = new Set<string>();
+
+    for (const err of rejected.errors) {
+      uniqueErrorsSet.add(err);
+      const cat = classifyErrorCategory(err);
+      seenCategoriesForStrategy.add(cat);
+      seenExactForStrategy.add(err);
+    }
+
+    for (const cat of seenCategoriesForStrategy) {
+      categoryStrategyCounts.set(cat, (categoryStrategyCounts.get(cat) ?? 0) + 1);
+    }
+    for (const exact of seenExactForStrategy) {
+      exactErrorStrategyCounts.set(exact, (exactErrorStrategyCounts.get(exact) ?? 0) + 1);
+    }
+  }
+
+  const sharedRejectionReasons: string[] = [];
+  for (const [cat, count] of categoryStrategyCounts.entries()) {
+    if (count >= 2 || (rejectedProposals.length === 1 && count === 1)) {
+      sharedRejectionReasons.push(cat);
+    }
+  }
+
+  const requiresCropDiversification =
+    rejectedProposals.length >= 2 &&
+    Array.from(categoryStrategyCounts.values()).some((count) => count >= 2);
+
+  return {
+    uniqueErrors: Array.from(uniqueErrorsSet),
+    sharedRejectionReasons,
+    requiresCropDiversification,
+    perStrategySummaries,
+  };
+}
+
+/**
+ * Build a corrective retry prompt that feeds exact deterministic rejection reasons
+ * back to the AI provider and instructs it to diversify crop combinations.
+ */
+export function buildRetrySystemPrompt(
+  basePrompt: string,
+  rejectedProposals: RejectedProposalInfo[],
+  availableCrops: string[]
+): string {
+  const analysis = aggregateRejectionReasons(rejectedProposals);
+  const perPlanLines = analysis.perStrategySummaries.map((s) => `  - ${s}`).join("\n");
+  const uniqueConstraintLines = analysis.uniqueErrors.map((e) => `  - ${e}`).join("\n");
+
+  const diversificationDirective = analysis.requiresCropDiversification
+    ? `\n- CRITICAL CROP DIVERSIFICATION REQUIREMENT: Multiple proposals in your previous response failed for the same reason (${analysis.sharedRejectionReasons.join(", ")}) because they repeated the same incompatible crop combinations. You MUST diversify crop selections across the 3 strategies using different non-conflicting cash and cover crops from the AVAILABLE CROPS list (${availableCrops.join(", ")}).`
+    : `\n- Replace the offending crops in the rejected strategies using non-conflicting alternatives from the AVAILABLE CROPS list (${availableCrops.join(", ")}).`;
+
+  return `${basePrompt}
+
+## CORRECTIVE RETRY CONSTRAINTS (PREVIOUS ATTEMPT REJECTED BY DETERMINISTIC VALIDATOR)
+Your previous response was rejected by deterministic agronomic validation:
+${perPlanLines}
+
+Specific validation errors that MUST be resolved in this retry:
+${uniqueConstraintLines}
+${diversificationDirective}
+- Ensure every regenerated strategy strictly passes all Hard Agronomic Constraints while returning valid JSON matching the OUTPUT SCHEMA.`;
+}
+
+function mergeUsageMetadata(
+  first?: AIUsageMetadata,
+  second?: AIUsageMetadata
+): AIUsageMetadata | undefined {
+  if (!first && !second) return undefined;
+  if (!first) return second;
+  if (!second) return first;
+  return {
+    promptTokenCount: (first.promptTokenCount ?? 0) + (second.promptTokenCount ?? 0),
+    candidatesTokenCount: (first.candidatesTokenCount ?? 0) + (second.candidatesTokenCount ?? 0),
+    thoughtsTokenCount:
+      first.thoughtsTokenCount !== undefined || second.thoughtsTokenCount !== undefined
+        ? (first.thoughtsTokenCount ?? 0) + (second.thoughtsTokenCount ?? 0)
+        : undefined,
+    totalTokenCount: (first.totalTokenCount ?? 0) + (second.totalTokenCount ?? 0),
+    estimatedCostUsd:
+      typeof first.estimatedCostUsd === "number" && typeof second.estimatedCostUsd === "number"
+        ? first.estimatedCostUsd + second.estimatedCostUsd
+        : first.estimatedCostUsd ?? second.estimatedCostUsd ?? null,
+  };
+}
 
 /**
  * NOTE ON SERVERLESS SCOPE:
@@ -1429,59 +1553,8 @@ export async function generateRotations(
       };
     }
 
-    // 3. Build prompt with real classification and call AI
-    const prompt = buildSystemPrompt(normalizedContext, classification, availableCrops);
-    let rawAiText: string;
-    try {
-      rawAiText = await aiProvider.generate({
-        prompt,
-        maxTokens: DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
-        signal: options?.signal,
-        timeoutMs: options?.timeoutMs,
-      });
-    } catch (err) {
-      const safeErr = sanitizeGenerationErrorMessage(
-        err instanceof Error ? err.message : String(err)
-      );
-      return {
-        classification: classificationSummary,
-        geography: geo,
-        evidenceLevel: evidence.level,
-        evidenceSummary: evidence.summary,
-        availableCrops,
-        proposals: [],
-        supportStatus: "unavailable",
-        aiUnavailableReason: `AI provider (${aiProvider.providerName}) call failed: ${safeErr}`,
-        aiProvider: aiProvider.providerName,
-        aiModel: aiProvider.modelName,
-      };
-    }
-
-    // 4. Parse with Zod
-    let parsed: AIProposal;
-    try {
-      const cleaned = extractJsonString(rawAiText);
-      const json = JSON.parse(cleaned);
-      parsed = AIProposalSchema.parse(json);
-    } catch (err) {
-      return {
-        classification: classificationSummary,
-        geography: geo,
-        evidenceLevel: evidence.level,
-        evidenceSummary: evidence.summary,
-        availableCrops,
-        proposals: [],
-        supportStatus: "unavailable",
-        aiUnavailableReason: `AI response could not be parsed or validated: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-        aiProvider: aiProvider.providerName,
-        aiModel: aiProvider.modelName,
-        usageMetadata: aiProvider.lastUsageMetadata,
-      };
-    }
-
-    // 5. Validate each proposal deterministically; reject invalid proposals and preserve soft warnings
+    // 3. Build prompt with real classification and call AI (with bounded validation retry)
+    const basePrompt = buildSystemPrompt(normalizedContext, classification, availableCrops);
     const validationCtx: ValidationContext = {
       agGroup: classification.group,
       regionTag: effectiveRegionTag,
@@ -1490,55 +1563,140 @@ export async function generateRotations(
       hemisphere: geo.hemisphere === "equatorial" ? "tropical" : geo.hemisphere,
     };
 
-    const acceptedResults: StrategyResult[] = [];
-    const rejectedProposals: RejectedProposalInfo[] = [];
+    let currentPrompt = basePrompt;
+    let acceptedResults: StrategyResult[] = [];
+    let rejectedProposals: RejectedProposalInfo[] = [];
+    let latestRationale: string | undefined;
+    let accumulatedUsage: AIUsageMetadata | undefined;
+    let retryCount = 0;
     const generatedAt = new Date().toISOString();
 
-    for (const strat of parsed.strategies) {
-      const validation = validateProposal(strat, validationCtx);
-
-      if (!validation.valid) {
-        rejectedProposals.push({
-          id: strat.id,
-          name: strat.name,
-          errors: validation.errors,
-          warnings: validation.warnings,
-        });
-        continue;
+    for (let attempt = 0; attempt <= MAX_VALIDATION_RETRY_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        retryCount = attempt;
+        currentPrompt = buildRetrySystemPrompt(basePrompt, rejectedProposals, availableCrops);
       }
 
-      const mergedWarnings = mergeValidationWarnings(strat.tradeoffs.warnings, validation.warnings);
-
-      const strategyWithMeta: RotationStrategy = {
-        ...strat,
-        tradeoffs: {
-          ...strat.tradeoffs,
-          warnings: mergedWarnings,
-        },
-        generationInfo: {
-          source: "ai-assisted",
-          generatedAt,
-          agGroup: classification.group,
-          supportStatus,
-          validationStatus: "passed",
-          validationErrors: [],
-          validationWarnings: validation.warnings,
-          rationale: parsed.rationale,
+      let rawAiText: string;
+      try {
+        rawAiText = await aiProvider.generate({
+          prompt: currentPrompt,
+          maxTokens: DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+          signal: options?.signal,
+          timeoutMs: options?.timeoutMs,
+        });
+        accumulatedUsage = mergeUsageMetadata(accumulatedUsage, aiProvider.lastUsageMetadata);
+      } catch (err) {
+        if (attempt > 0 && rejectedProposals.length > 0) {
+          // If the retry attempt itself fails at the network/provider level, preserve the
+          // deterministic rejection diagnostics from the initial attempt.
+          break;
+        }
+        const safeErr = sanitizeGenerationErrorMessage(
+          err instanceof Error ? err.message : String(err)
+        );
+        return {
+          classification: classificationSummary,
+          geography: geo,
+          evidenceLevel: evidence.level,
+          evidenceSummary: evidence.summary,
+          availableCrops,
+          proposals: [],
+          supportStatus: "unavailable",
+          aiUnavailableReason: `AI provider (${aiProvider.providerName}) call failed: ${safeErr}`,
           aiProvider: aiProvider.providerName,
           aiModel: aiProvider.modelName,
-          fieldId: normalizedContext.fieldId,
-          usageMetadata: aiProvider.lastUsageMetadata,
-        },
-      };
+          retryCount,
+        };
+      }
 
-      const result = scoreStrategy(
-        strategyWithMeta,
-        normalizedContext.climate,
-        normalizedContext.soil,
-        normalizedContext.priorities,
-        effectiveRegionTag
-      );
-      acceptedResults.push(result);
+      // 4. Parse with Zod
+      let parsed: AIProposal;
+      try {
+        const cleaned = extractJsonString(rawAiText);
+        const json = JSON.parse(cleaned);
+        parsed = AIProposalSchema.parse(json);
+      } catch (err) {
+        if (attempt > 0 && rejectedProposals.length > 0) {
+          break;
+        }
+        return {
+          classification: classificationSummary,
+          geography: geo,
+          evidenceLevel: evidence.level,
+          evidenceSummary: evidence.summary,
+          availableCrops,
+          proposals: [],
+          supportStatus: "unavailable",
+          aiUnavailableReason: `AI response could not be parsed or validated: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          aiProvider: aiProvider.providerName,
+          aiModel: aiProvider.modelName,
+          usageMetadata: accumulatedUsage,
+          retryCount,
+        };
+      }
+
+      // 5. Validate each proposal deterministically; reject invalid proposals and preserve soft warnings
+      const attemptAccepted: StrategyResult[] = [];
+      const attemptRejected: RejectedProposalInfo[] = [];
+      latestRationale = parsed.rationale;
+
+      for (const strat of parsed.strategies) {
+        const validation = validateProposal(strat, validationCtx);
+
+        if (!validation.valid) {
+          attemptRejected.push({
+            id: strat.id,
+            name: strat.name,
+            errors: validation.errors,
+            warnings: validation.warnings,
+          });
+          continue;
+        }
+
+        const mergedWarnings = mergeValidationWarnings(strat.tradeoffs.warnings, validation.warnings);
+
+        const strategyWithMeta: RotationStrategy = {
+          ...strat,
+          tradeoffs: {
+            ...strat.tradeoffs,
+            warnings: mergedWarnings,
+          },
+          generationInfo: {
+            source: "ai-assisted",
+            generatedAt,
+            agGroup: classification.group,
+            supportStatus,
+            validationStatus: "passed",
+            validationErrors: [],
+            validationWarnings: validation.warnings,
+            rationale: parsed.rationale,
+            aiProvider: aiProvider.providerName,
+            aiModel: aiProvider.modelName,
+            fieldId: normalizedContext.fieldId,
+            usageMetadata: accumulatedUsage,
+          },
+        };
+
+        const result = scoreStrategy(
+          strategyWithMeta,
+          normalizedContext.climate,
+          normalizedContext.soil,
+          normalizedContext.priorities,
+          effectiveRegionTag
+        );
+        attemptAccepted.push(result);
+      }
+
+      acceptedResults = attemptAccepted;
+      rejectedProposals = attemptRejected;
+
+      // Stop if at least one proposal passed deterministic validation, or if signal was aborted
+      if (acceptedResults.length > 0 || rejectedProposals.length === 0 || options?.signal?.aborted) {
+        break;
+      }
     }
 
     if (acceptedResults.length === 0) {
@@ -1557,7 +1715,8 @@ export async function generateRotations(
         aiUnavailableReason: `All AI-generated proposals were rejected by deterministic agronomic validation: ${rejectionSummary}`,
         aiProvider: aiProvider.providerName,
         aiModel: aiProvider.modelName,
-        usageMetadata: aiProvider.lastUsageMetadata,
+        usageMetadata: accumulatedUsage,
+        retryCount,
       };
     }
 
@@ -1571,12 +1730,13 @@ export async function generateRotations(
       availableCrops,
       proposals: rankedProposals,
       rejectedProposals: rejectedProposals.length > 0 ? rejectedProposals : undefined,
-      rationale: parsed.rationale,
+      rationale: latestRationale,
       supportStatus,
       aiProvider: aiProvider.providerName,
       aiModel: aiProvider.modelName,
       generatedAt,
-      usageMetadata: aiProvider.lastUsageMetadata,
+      usageMetadata: accumulatedUsage,
+      retryCount,
     };
   } finally {
     releaseFieldGenerationLock(normalizedContext.fieldId);

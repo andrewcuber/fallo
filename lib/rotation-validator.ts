@@ -135,15 +135,17 @@ export const ROTATION_COMPATIBILITY_RULES = {
     rotationYears: 3,
     minCashCropsPerYear: 1,
     maxCashCropSharedMonths: 1,
+    maxDoubleCropTransitionMonths: 2,
     maxYearsPerFamily: 2,
-    maxSclerotiniaYears: 1,
+    maxSclerotiniaYears: 2,
+    maxPrimarySclerotiniaOilseedYears: 1,
     rules: [
       "Use ONLY crop IDs from the verified available crop catalog for the field's agricultural group and region. Do not invent crops, varieties, planting windows, or agronomic traits.",
       "Each strategy must cover exactly 3 years (Year 1, Year 2, Year 3), with 1–4 seasonal entries per year.",
       "Every year must include at least 1 cash crop.",
-      "Two cash crops within the same year must not overlap by more than 1 transition month.",
-      "No botanical family (e.g., Poaceae, Fabaceae, Asteraceae, Brassicaceae) may appear in more than 2 years across the 3-year rotation.",
-      "Sclerotinia-susceptible crops (sunflower, soybean) must not appear in more than 1 year across the 3-year rotation, because a 3-year plan cannot provide a multi-year non-host break between two Sclerotinia host years.",
+      "Two same-season cash crops within the same year must not overlap by more than 1 transition month (winter-to-summer double-crop cash transitions may share at most 2 harvest/planting boundary months).",
+      "No botanical family (e.g., Poaceae, Fabaceae, Asteraceae, Brassicaceae) may appear in more than 2 years of cash crops across the 3-year rotation.",
+      "Primary Sclerotinia oilseed hosts (sunflower, winter_canola, spring_canola) must not appear in more than 1 year of a 3-year upland rotation, and total Sclerotinia-susceptible cash crops (sunflower, winter_canola, spring_canola, soybean) must not appear in all 3 years without at least 1 non-host cereal/grass break year.",
     ],
   },
   softAdvisories: {
@@ -154,6 +156,8 @@ export const ROTATION_COMPATIBILITY_RULES = {
     rules: [
       "Avoid planting soft_red_winter_wheat in the year immediately following field_corn or grain_sorghum due to shared Fusarium head blight inoculum in residue (flagged as a Fusarium warning).",
       "Avoid planting soybean in more than 1 year of the 3-year rotation to limit soybean cyst nematode (SCN) pressure (flagged as an SCN warning).",
+      "Avoid combining a primary Sclerotinia oilseed host (sunflower, winter_canola, spring_canola) and soybean in the same 3-year rotation when non-host alternatives are available; a 2-year combination separated by a 1-year non-host cereal break is accepted as a manageable risk with a Sclerotinia warning and diversity score penalty.",
+      "Avoid repeating the same botanical family across all 3 years via cover crops (e.g., planting Poaceae or Fabaceae cover crops in the cash-crop break year), which is flagged as a green-bridge advisory warning.",
       "Include at least 3 distinct botanical families across the 3-year rotation when the available crop catalog permits (fewer than 3 families is flagged as a low-diversity warning).",
       "Terminate overwintering cover crops (especially viny hairy_vetch and tall cereal_rye) prior to or at cash-crop planting; do not leave winter covers overlapping spring cash crops across multiple active-growth months or terminating during cash-crop reproductive stages (flagged as a cover-crop overlap/termination warning).",
       "Match seasonal crop varieties to their regional and climatic growing schedule: use spring_barley, spring_wheat, or spring_canola for spring-sown schedules (or documented mild-winter autumn/winter sowing in Mediterranean, MENA, South Asian Rabi, and Australian winter-rainfall systems), and use winter_barley, soft_red_winter_wheat, or winter_canola for cold-winter vernalizing overwinter schedules.",
@@ -885,13 +889,51 @@ function getKnownFamilies(crop: Crop | undefined): string {
   return crop?.family ?? "unknown";
 }
 
+/**
+ * Primary highly susceptible Sclerotinia oilseed hosts that build heavy
+ * sclerotial loads in soil (must not appear in >1 year of a 3-year upland rotation).
+ */
+export const PRIMARY_SCLEROTINIA_HOSTS = new Set<string>([
+  "sunflower",
+  "winter_canola",
+  "spring_canola",
+]);
+
+/**
+ * Moderate / climate-conditional Sclerotinia hosts (primarily in cool, wet,
+ * dense-canopy conditions; manageable with cultivar tolerance, row spacing,
+ * and a non-host cereal break year).
+ */
+export const MODERATE_SCLEROTINIA_HOSTS = new Set<string>([
+  "soybean",
+]);
+
+export const ALL_SCLEROTINIA_HOSTS = new Set<string>([
+  ...PRIMARY_SCLEROTINIA_HOSTS,
+  ...MODERATE_SCLEROTINIA_HOSTS,
+]);
+
+/**
+ * Cool-season / overwintering cash crops that harvest in spring or early summer,
+ * allowing double-cropping with a warm-season summer cash crop in the same year.
+ */
+const WINTER_COOL_CASH_CROPS = new Set<string>([
+  "soft_red_winter_wheat",
+  "winter_barley",
+  "winter_canola",
+  "chickpea",
+  "lentil",
+]);
+
 export function getSclerotiniaHosts(crops: (Crop | undefined)[]): string[] {
-  return crops
-    .filter((c): c is Crop => !!c)
-    .filter((c) =>
-      c.diseasePestNotes?.some((n) => n.toLowerCase().includes("sclerotinia"))
+  return Array.from(
+    new Set(
+      crops
+        .filter((c): c is Crop => !!c)
+        .filter((c) => ALL_SCLEROTINIA_HOSTS.has(c.id))
+        .map((c) => c.id)
     )
-    .map((c) => c.id);
+  );
 }
 
 /**
@@ -1002,27 +1044,87 @@ export function validateProposal(
   }
 
   // ── 4. Planting window plausibility ──
-  // Ensure no two cash crops in the same year have overlapping growingWindow months
-  // beyond the allowed single transition month.
+  // Ensure no two same-season cash crops in the same year have overlapping growingWindow months
+  // beyond the allowed single transition month, while allowing up to 2 harvest/planting boundary
+  // months (with a transition warning) for cool-to-warm cash double-cropping or autumn seeding
+  // of an overwintering cash crop after summer harvest.
   const maxSharedMonths = ROTATION_COMPATIBILITY_RULES.hardConstraints.maxCashCropSharedMonths;
-  for (const year of proposal.years) {
+  const maxDoubleCropMonths =
+    ROTATION_COMPATIBILITY_RULES.hardConstraints.maxDoubleCropTransitionMonths;
+  const boundaryTransitionMonths = new Set([4, 5, 6, 9, 10, 11, 12]);
+  const autumnEstablishmentMonths = new Set([8, 9, 10, 11, 12]);
+
+  // Helper: detect when a season in Year N is purely the autumn establishment phase of an
+  // overwintering crop whose main winter/spring growth and harvest/termination continues in Year N+1.
+  const isAutumnEstablishmentContinuingNextYear = (
+    yearIdx: number,
+    season: RotationStrategy["years"][number]["seasons"][number]
+  ): boolean => {
+    if (yearIdx < 0 || yearIdx >= proposal.years.length - 1) return false;
+    const months = Array.from(new Set(season.months));
+    if (months.length === 0 || months.length > 4) return false;
+    if (!months.every((m) => autumnEstablishmentMonths.has(m))) return false;
+    const nextYear = proposal.years[yearIdx + 1];
+    return nextYear.seasons.some(
+      (ns) =>
+        ns.crop === season.crop &&
+        ns.months.some((m) => m >= 1 && m <= 6)
+    );
+  };
+
+  for (let yIdx = 0; yIdx < proposal.years.length; yIdx++) {
+    const year = proposal.years[yIdx];
     const cashSeasons = year.seasons.filter((s) => {
       const c = cropLibrary[s.crop];
       return c?.type === "cash";
     });
     for (let i = 0; i < cashSeasons.length; i++) {
       for (let j = i + 1; j < cashSeasons.length; j++) {
-        const overlap = cashSeasons[i].months.filter((m) => cashSeasons[j].months.includes(m));
+        const cropA = cashSeasons[i].crop;
+        const cropB = cashSeasons[j].crop;
+        const monthsA = Array.from(new Set(cashSeasons[i].months));
+        const monthsB = Array.from(new Set(cashSeasons[j].months));
+        const overlap = monthsA.filter((m) => monthsB.includes(m));
+
         if (overlap.length > maxSharedMonths) {
-          errors.push(
-            `Year ${year.year}: cash crops "${cashSeasons[i].crop}" and "${cashSeasons[j].crop}" have overlapping activity months.`
-          );
-          checks.push({
-            name: `Year ${year.year} window overlap`,
-            passed: false,
-            severity: "error",
-            message: `Cash crops overlap in months: ${overlap.map((m) => m).join(", ")}`,
-          });
+          const isCoolWarmPair =
+            cropA !== cropB &&
+            ((WINTER_COOL_CASH_CROPS.has(cropA) && !WINTER_COOL_CASH_CROPS.has(cropB)) ||
+              (!WINTER_COOL_CASH_CROPS.has(cropA) && WINTER_COOL_CASH_CROPS.has(cropB)));
+          const unsharedA = monthsA.filter((m) => !overlap.includes(m)).length;
+          const unsharedB = monthsB.filter((m) => !overlap.includes(m)).length;
+          const aIsAutumnRelay = isAutumnEstablishmentContinuingNextYear(yIdx, cashSeasons[i]);
+          const bIsAutumnRelay = isAutumnEstablishmentContinuingNextYear(yIdx, cashSeasons[j]);
+          const allBoundaryMonths = overlap.every((m) => boundaryTransitionMonths.has(m));
+          const isDoubleCropTransition =
+            isCoolWarmPair &&
+            allBoundaryMonths &&
+            overlap.length <= maxDoubleCropMonths &&
+            ((unsharedA >= 2 && unsharedB >= 2) ||
+              (aIsAutumnRelay && unsharedB >= 2) ||
+              (bIsAutumnRelay && unsharedA >= 2));
+
+          if (isDoubleCropTransition) {
+            const overlapNames = overlap.map((m) => MONTH_SHORT_NAMES[m - 1] ?? String(m)).join(", ");
+            const warnMsg = `Year ${year.year} double-crop transition: cash crops "${cropA}" and "${cropB}" share boundary months (${overlapNames}); harvest of the preceding crop must complete before planting the following crop.`;
+            warnings.push(warnMsg);
+            checks.push({
+              name: `Year ${year.year} double-crop window transition`,
+              passed: false,
+              severity: "warning",
+              message: warnMsg,
+            });
+          } else {
+            errors.push(
+              `Year ${year.year}: cash crops "${cropA}" and "${cropB}" have overlapping activity months.`
+            );
+            checks.push({
+              name: `Year ${year.year} window overlap`,
+              passed: false,
+              severity: "error",
+              message: `Cash crops overlap in months: ${overlap.map((m) => m).join(", ")}`,
+            });
+          }
         }
       }
     }
@@ -1040,66 +1142,170 @@ export function validateProposal(
   }
 
   // ── 5. Family sequence constraints ──
-  // Penalize/flag if the same family appears in > maxYearsPerFamily years across the 3-year rotation.
+  // Hard-reject when the same botanical family appears in > maxYearsPerFamily years of CASH crops.
+  // When cash crops satisfy <= maxYearsPerFamily years per family, but a cover crop causes a
+  // family to appear across all 3 years, attach a soft green-bridge advisory warning.
+  // Note: An autumn-only establishment season in Year N that continues into Year N+1 as the
+  // same overwintering crop is counted in its harvest/completion year (Year N+1), not twice.
   const maxYearsPerFamily = ROTATION_COMPATIBILITY_RULES.hardConstraints.maxYearsPerFamily;
-  const familyByYear = proposal.years.map((y) => {
+  const cashFamilyByYear = proposal.years.map((y, yIdx) => {
+    const families = new Set<string>();
+    const cashSeasonsInYear = y.seasons.filter((s) => cropLibrary[s.crop]?.type === "cash");
+    cashSeasonsInYear.forEach((s) => {
+      if (
+        cashSeasonsInYear.length > 1 &&
+        isAutumnEstablishmentContinuingNextYear(yIdx, s)
+      ) {
+        return;
+      }
+      const c = cropLibrary[s.crop];
+      if (c?.type === "cash") {
+        const fam = getKnownFamilies(c);
+        if (fam !== "unknown") families.add(fam);
+      }
+    });
+    return Array.from(families);
+  });
+
+  const allFamilyByYear = proposal.years.map((y, yIdx) => {
     const families = new Set<string>();
     y.seasons.forEach((s) => {
+      if (
+        y.seasons.length > 1 &&
+        isAutumnEstablishmentContinuingNextYear(yIdx, s)
+      ) {
+        return;
+      }
       const fam = getKnownFamilies(cropLibrary[s.crop]);
       if (fam !== "unknown") families.add(fam);
     });
     return Array.from(families);
   });
 
-  const familyCounts: Record<string, number> = {};
-  familyByYear.forEach((fams) => {
+  const cashFamilyCounts: Record<string, number> = {};
+  cashFamilyByYear.forEach((fams) => {
     fams.forEach((f) => {
-      familyCounts[f] = (familyCounts[f] || 0) + 1;
+      cashFamilyCounts[f] = (cashFamilyCounts[f] || 0) + 1;
     });
   });
 
-  const repeatedFamilies = Object.entries(familyCounts).filter(([, count]) => count > maxYearsPerFamily);
-  const passFamilySeq = repeatedFamilies.length === 0;
-  checks.push({
-    name: "Family diversity over 3 years",
-    passed: passFamilySeq,
-    severity: passFamilySeq ? "info" : "error",
-    message: passFamilySeq
-      ? "Botanical families are reasonably distributed across the rotation."
-      : `Family(ies) appearing in >${maxYearsPerFamily} years: ${repeatedFamilies.map(([f]) => f).join(", ")}`,
+  const allFamilyCounts: Record<string, number> = {};
+  allFamilyByYear.forEach((fams) => {
+    fams.forEach((f) => {
+      allFamilyCounts[f] = (allFamilyCounts[f] || 0) + 1;
+    });
   });
+
+  const repeatedCashFamilies = Object.entries(cashFamilyCounts).filter(
+    ([, count]) => count > maxYearsPerFamily
+  );
+  const repeatedCoverBridgeFamilies = Object.entries(allFamilyCounts).filter(
+    ([f, count]) => count > maxYearsPerFamily && (cashFamilyCounts[f] || 0) <= maxYearsPerFamily
+  );
+
+  const passFamilySeq = repeatedCashFamilies.length === 0;
   if (!passFamilySeq) {
+    checks.push({
+      name: "Family diversity over 3 years",
+      passed: false,
+      severity: "error",
+      message: `Cash-crop family(ies) appearing in >${maxYearsPerFamily} years: ${repeatedCashFamilies.map(([f]) => f).join(", ")}`,
+    });
     errors.push(
-      `Botanical family sequence constraint violated: ${repeatedFamilies.map(([f]) => f).join(", ")} appear in more than ${maxYearsPerFamily} years.`
+      `Botanical family sequence constraint violated: ${repeatedCashFamilies.map(([f]) => f).join(", ")} appear in more than ${maxYearsPerFamily} years.`
     );
+  } else if (repeatedCoverBridgeFamilies.length > 0) {
+    const bridgeMsg = `Botanical family bridge advisory: ${repeatedCoverBridgeFamilies
+      .map(([f]) => `${f} (cash crops in ${cashFamilyCounts[f] || 0} of 3 years, plus cover crops)`)
+      .join(", ")} appear across all 3 years. Terminate same-family cover crops on time to prevent green-bridge pest or disease carryover.`;
+    warnings.push(bridgeMsg);
+    checks.push({
+      name: "Family diversity over 3 years",
+      passed: false,
+      severity: "warning",
+      message: bridgeMsg,
+    });
+  } else {
+    checks.push({
+      name: "Family diversity over 3 years",
+      passed: true,
+      severity: "info",
+      message: "Botanical families are reasonably distributed across the rotation.",
+    });
   }
 
   // ── 6. Disease compatibility ──
-  // Sclerotinia host stacking
+  // Sclerotinia host accumulation:
+  // - Hard error when Sclerotinia hosts appear in all 3 years (no non-host break year) OR
+  //   primary oilseed hosts (sunflower, winter_canola, spring_canola) appear in >= 2 years
+  //   without an intervening flooded paddy_rice phase.
+  // - Manageable risk warning when Sclerotinia hosts appear in 2 of 3 years with at most 1
+  //   primary oilseed host year (e.g. sunflower + soybean or canola + soybean with a cereal break).
   const maxSclerotiniaYears = ROTATION_COMPATIBILITY_RULES.hardConstraints.maxSclerotiniaYears;
+  const maxPrimaryOilseedYears =
+    ROTATION_COMPATIBILITY_RULES.hardConstraints.maxPrimarySclerotiniaOilseedYears;
   const sclerotiniaHosts = getSclerotiniaHosts(allCrops);
   const sclerotiniaYears = new Map<number, string[]>();
-  proposal.years.forEach((y) => {
-    const hosts = y.seasons
-      .filter((s) => sclerotiniaHosts.includes(s.crop))
-      .map((s) => s.crop);
+  const primarySclerotiniaYears = new Map<number, string[]>();
+
+  proposal.years.forEach((y, yIdx) => {
+    const hosts = Array.from(
+      new Set(
+        y.seasons
+          .filter((s) => !isAutumnEstablishmentContinuingNextYear(yIdx, s))
+          .filter((s) => sclerotiniaHosts.includes(s.crop))
+          .map((s) => s.crop)
+      )
+    );
     if (hosts.length > 0) sclerotiniaYears.set(y.year, hosts);
+
+    const primaryHosts = hosts.filter((id) => PRIMARY_SCLEROTINIA_HOSTS.has(id));
+    if (primaryHosts.length > 0) primarySclerotiniaYears.set(y.year, primaryHosts);
   });
+
   const sclerotiniaYearCount = sclerotiniaYears.size;
-  const passSclerotinia = sclerotiniaYearCount <= maxSclerotiniaYears;
-  checks.push({
-    name: "Sclerotinia host accumulation",
-    passed: passSclerotinia,
-    severity: passSclerotinia ? "info" : "error",
-    message: passSclerotinia
-      ? "Sclerotinia-susceptible crops are not accumulated across multiple years."
-      : `Sclerotinia hosts appear in ${sclerotiniaYearCount} years: ${Array.from(sclerotiniaYears.entries()).map(([y, h]) => `Year ${y} (${h.join(", ")})`).join("; ")}`,
-  });
-  if (!passSclerotinia) {
+  const primaryOilseedYearCount = primarySclerotiniaYears.size;
+  const hasPaddyRiceFloodBreak = allCropIds.includes("paddy_rice");
+
+  const isHardSclerotiniaStacking =
+    sclerotiniaYearCount > maxSclerotiniaYears ||
+    (primaryOilseedYearCount > maxPrimaryOilseedYears && !hasPaddyRiceFloodBreak);
+
+  const sclerotiniaYearDetails = Array.from(sclerotiniaYears.entries())
+    .map(([y, h]) => `Year ${y} (${h.join(", ")})`)
+    .join("; ");
+
+  if (isHardSclerotiniaStacking) {
+    checks.push({
+      name: "Sclerotinia host accumulation",
+      passed: false,
+      severity: "error",
+      message: `High-risk Sclerotinia host stacking across ${sclerotiniaYearCount} years: ${sclerotiniaYearDetails}`,
+    });
     errors.push(
-      `Sclerotinia host stacking: hosts appear in ${sclerotiniaYearCount} years. ` +
+      `Sclerotinia host stacking: hosts appear in ${sclerotiniaYearCount} years (${sclerotiniaYearDetails}). ` +
         `Consider lengthening the rotation interval or selecting non-host alternatives.`
     );
+  } else if (sclerotiniaYearCount === 2) {
+    const sclerotiniaWarn =
+      `Sclerotinia risk: Sclerotinia-susceptible crops appear in 2 of 3 years (${sclerotiniaYearDetails}). ` +
+      (hasPaddyRiceFloodBreak
+        ? `The flooded paddy_rice phase helps degrade soil sclerotia, but canopy moisture and disease history should still be monitored.`
+        : `A single non-host break year may not fully deplete sclerotia in cool, wet conditions; use Sclerotinia-tolerant varieties, wider row spacing, or substitute a non-host crop where white mold history is present.`);
+    warnings.push(sclerotiniaWarn);
+    checks.push({
+      name: "Sclerotinia host accumulation",
+      passed: false,
+      severity: "warning",
+      message: sclerotiniaWarn,
+    });
+  } else {
+    checks.push({
+      name: "Sclerotinia host accumulation",
+      passed: true,
+      severity: "info",
+      message: "Sclerotinia-susceptible crops are not accumulated across multiple years.",
+    });
   }
 
   // Wheat following sorghum / corn Fusarium check
