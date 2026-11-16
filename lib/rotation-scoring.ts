@@ -792,8 +792,8 @@ function scoreDiversityPestBreak(strategy: RotationStrategy): FactorScore {
     }
   }
 
-  // Sclerotinia: sunflower and soybean proximity
-  const sclerotiniaHosts = ["soybean", "sunflower"];
+  // Sclerotinia: sunflower, canola, and soybean proximity across years
+  const sclerotiniaHosts = ["soybean", "sunflower", "winter_canola", "spring_canola"];
   const hostIndices = sequence
     .map((id, idx) => (sclerotiniaHosts.includes(id) ? idx : -1))
     .filter((i) => i >= 0);
@@ -803,11 +803,19 @@ function scoreDiversityPestBreak(strategy: RotationStrategy): FactorScore {
       return Math.min(min, curr - hostIndices[i - 1]);
     }, Infinity);
     if (minGap <= 3) {
-      score -= 12;
+      const hasPaddyRiceBreak = sequence.includes("paddy_rice");
+      const hostNames = Array.from(
+        new Set(
+          sequence
+            .filter((id) => sclerotiniaHosts.includes(id))
+            .map((id) => getCrop(id)?.commonName || id)
+        )
+      ).join(" and ");
+      score -= hasPaddyRiceBreak ? 6 : 12;
       negative.push(
-        "Sclerotinia consideration: sunflower and soybean are both potential hosts. Short rotation intervals may not provide an adequate disease break."
+        `Sclerotinia consideration: ${hostNames} are Sclerotinia-susceptible hosts. Short rotation intervals may not provide a complete disease break${hasPaddyRiceBreak ? " (though the flooded rice phase helps degrade soil sclerotia)" : ""}.`
       );
-      limitations.push("Sclerotinia host-interval recommendations vary by region and field history.");
+      limitations.push("Sclerotinia host-interval recommendations vary by region, canopy moisture, and field history.");
     }
   }
 
@@ -1069,14 +1077,43 @@ function selectObjectiveCandidateCrops(
     return { ids: chosen.map((c) => c.id), names: chosen.map((c) => c.commonName) };
   }
 
-  // crop_diversity: pick crops from distinct botanical families first
+  // crop_diversity: pick crops from distinct botanical families first,
+  // avoiding stacking multiple Sclerotinia hosts in the candidate list when
+  // non-host family representatives are available.
+  const sclerotiniaSet = new Set(["soybean", "sunflower", "winter_canola", "spring_canola"]);
   const seenFamilies = new Set<string>();
   const diverseChosen: Crop[] = [];
+  let hasSclerotiniaHost = false;
+
+  // Pass 1: pick distinct families, preferring non-Sclerotinia crops once 1 Sclerotinia host is chosen
   for (const crop of validCrops) {
-    if (!seenFamilies.has(crop.family)) {
-      seenFamilies.add(crop.family);
-      diverseChosen.push(crop);
-      if (diverseChosen.length === 4) break;
+    if (seenFamilies.has(crop.family)) continue;
+    const isSclerotinia = sclerotiniaSet.has(crop.id);
+    if (isSclerotinia && hasSclerotiniaHost) {
+      const hasNonHostAlternativeInFamily = validCrops.some(
+        (c) => c.family === crop.family && !sclerotiniaSet.has(c.id)
+      );
+      const hasOtherUnseenNonHostFamily = validCrops.some(
+        (c) => !seenFamilies.has(c.family) && c.family !== crop.family && !sclerotiniaSet.has(c.id)
+      );
+      if (hasNonHostAlternativeInFamily || hasOtherUnseenNonHostFamily) {
+        continue;
+      }
+    }
+    seenFamilies.add(crop.family);
+    diverseChosen.push(crop);
+    if (isSclerotinia) hasSclerotiniaHost = true;
+    if (diverseChosen.length === 4) break;
+  }
+
+  // Pass 2: fill any remaining slots from unseen families first, then remaining crops
+  if (diverseChosen.length < 4) {
+    for (const crop of validCrops) {
+      if (!seenFamilies.has(crop.family) && !diverseChosen.some((c) => c.id === crop.id)) {
+        seenFamilies.add(crop.family);
+        diverseChosen.push(crop);
+        if (diverseChosen.length === 4) break;
+      }
     }
   }
   if (diverseChosen.length < 4) {

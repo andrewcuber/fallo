@@ -20,6 +20,9 @@ import {
   validateProposal,
   isStrategyStructurallyValid,
   formatCompatibilityRulesForPrompt,
+  getSclerotiniaHosts,
+  PRIMARY_SCLEROTINIA_HOSTS,
+  MODERATE_SCLEROTINIA_HOSTS,
   evaluateCropOverlapAndTermination,
   evaluateSeasonalVarietyAlignment,
   evaluateNitrogenAndBarleyCompatibility,
@@ -28,6 +31,9 @@ import {
 import {
   generateRotations,
   buildSystemPrompt,
+  buildRetrySystemPrompt,
+  aggregateRejectionReasons,
+  MAX_VALIDATION_RETRY_ATTEMPTS,
   getAvailableCropsForContext,
   GenerationRequestSchema,
   OpenAICompatibleProvider,
@@ -454,31 +460,42 @@ test("Cash-crop month overlap (>1 shared month in same year) rejected", () => {
   assert.ok(result.errors.some((e) => e.includes("overlapping activity months")));
 });
 
-test("Crop-family repetition in >2 years rejected", () => {
-  const strategy = makeValidStrategy();
-  // Year 1 has field_corn (Poaceae), Year 2 has cereal_rye (Poaceae) + soybean, Year 3 has wheat (Poaceae)
-  strategy.years[1].seasons.push({
+test("Crop-family repetition in >2 cash-crop years rejected while cover-crop bridge produces warning", () => {
+  // Case 1: Cash crops of the same family (Poaceae) in all 3 years -> hard rejected
+  const cashRepeatStrategy = makeValidStrategy();
+  cashRepeatStrategy.years[1].seasons[0].crop = "grain_sorghum";
+  const cashRes = validateProposal(cashRepeatStrategy, {
+    agGroup: "temperate_humid",
+    regionTag: "us_southeast",
+    availableCropIds: ["field_corn", "grain_sorghum", "soft_red_winter_wheat", "cereal_rye", "crimson_clover", "forage_radish"],
+  });
+  assert.equal(cashRes.valid, false);
+  assert.ok(cashRes.errors.some((e) => e.includes("Poaceae") && e.includes("more than 2 years")));
+
+  // Case 2: Cash crops in <=2 years per family, but cereal_rye cover crop in Year 2 brings Poaceae to 3 years -> accepted with bridge warning
+  const coverBridgeStrategy = makeValidStrategy();
+  coverBridgeStrategy.years[1].seasons.push({
     season: "Winter",
     crop: "cereal_rye",
     activity: "Winter rye",
     months: [12, 1, 2],
   });
-  const result = validateProposal(strategy, {
+  const bridgeRes = validateProposal(coverBridgeStrategy, {
     agGroup: "temperate_humid",
     regionTag: "us_southeast",
-    availableCropIds: ["field_corn", "soybean", "soft_red_winter_wheat", "cereal_rye"],
+    availableCropIds: ["field_corn", "soybean", "soft_red_winter_wheat", "cereal_rye", "crimson_clover", "forage_radish"],
   });
-  assert.equal(result.valid, false);
-  assert.ok(result.errors.some((e) => e.includes("Poaceae") && e.includes("more than 2 years")));
+  assert.equal(bridgeRes.valid, true);
+  assert.ok(bridgeRes.warnings.some((w) => w.includes("Botanical family bridge advisory")));
 });
 
-test("Sclerotinia host stacking rejected across both consecutive and non-consecutive years", () => {
-  // Case 1: Year 1 sunflower, Year 2 soybean
-  const consecutive = makeValidStrategy();
-  consecutive.years[0].seasons[0].crop = "sunflower";
-  consecutive.years[1].seasons[0].crop = "soybean";
-  consecutive.years[2].seasons[0].crop = "field_corn";
-  const res1 = validateProposal(consecutive, {
+test("Sclerotinia host stacking: high-risk sequences rejected while manageable 2-year combinations produce warning", () => {
+  // Case 1 (Hard rejection): Sclerotinia hosts in all 3 years (no non-host cereal break year)
+  const allThreeYearsHost = makeValidStrategy();
+  allThreeYearsHost.years[0].seasons[0].crop = "sunflower";
+  allThreeYearsHost.years[1].seasons[0].crop = "soybean";
+  allThreeYearsHost.years[2].seasons[0].crop = "soybean";
+  const res1 = validateProposal(allThreeYearsHost, {
     agGroup: "temperate_humid",
     regionTag: "us_southeast",
     availableCropIds: ["sunflower", "soybean", "field_corn"],
@@ -486,24 +503,44 @@ test("Sclerotinia host stacking rejected across both consecutive and non-consecu
   assert.equal(res1.valid, false);
   assert.ok(res1.errors.some((e) => e.includes("Sclerotinia")));
 
-  // Case 2: Year 1 sunflower, Year 2 corn, Year 3 soybean
-  const separated = makeValidStrategy();
-  separated.years[0].seasons = [
+  // Case 2 (Hard rejection): Primary Sclerotinia oilseed hosts (sunflower, winter_canola, spring_canola) in >=2 years
+  const twoPrimaryOilseeds = makeValidStrategy();
+  twoPrimaryOilseeds.years[0].seasons = [
     { season: "Summer", crop: "sunflower", activity: "Plant sunflower", months: [5, 6, 7, 8, 9] },
   ];
-  separated.years[1].seasons = [
+  twoPrimaryOilseeds.years[1].seasons = [
     { season: "Summer", crop: "field_corn", activity: "Plant corn", months: [4, 5, 6, 7, 8] },
   ];
-  separated.years[2].seasons = [
-    { season: "Summer", crop: "soybean", activity: "Plant soybean", months: [5, 6, 7, 8, 9] },
+  twoPrimaryOilseeds.years[2].seasons = [
+    { season: "Summer", crop: "sunflower", activity: "Plant sunflower", months: [5, 6, 7, 8, 9] },
   ];
-  const res2 = validateProposal(separated, {
+  const res2 = validateProposal(twoPrimaryOilseeds, {
     agGroup: "temperate_humid",
     regionTag: "us_southeast",
     availableCropIds: ["sunflower", "soybean", "field_corn"],
   });
   assert.equal(res2.valid, false);
   assert.ok(res2.errors.some((e) => e.includes("Sclerotinia")));
+
+  // Case 3 (Manageable risk -> valid with warning): 1 year sunflower + 1 year corn + 1 year soybean
+  const manageableTwoYear = makeValidStrategy();
+  manageableTwoYear.years[0].seasons = [
+    { season: "Summer", crop: "sunflower", activity: "Plant sunflower", months: [5, 6, 7, 8, 9] },
+  ];
+  manageableTwoYear.years[1].seasons = [
+    { season: "Summer", crop: "field_corn", activity: "Plant corn", months: [4, 5, 6, 7, 8] },
+  ];
+  manageableTwoYear.years[2].seasons = [
+    { season: "Summer", crop: "soybean", activity: "Plant soybean", months: [5, 6, 7, 8, 9] },
+  ];
+  const res3 = validateProposal(manageableTwoYear, {
+    agGroup: "temperate_humid",
+    regionTag: "us_southeast",
+    availableCropIds: ["sunflower", "soybean", "field_corn"],
+  });
+  assert.equal(res3.valid, true);
+  assert.equal(res3.errors.length, 0);
+  assert.ok(res3.warnings.some((w) => w.includes("Sclerotinia risk")));
 });
 
 test("Wheat following sorghum produces warning (not hard error)", () => {
@@ -800,7 +837,7 @@ test("Invalid agronomic proposal is rejected, never returned in proposals, and p
   const invalidSclerotinia = makeValidStrategy("invalid_sclerotinia", "Invalid Sclerotinia Plan");
   invalidSclerotinia.years[0].seasons[0].crop = "sunflower";
   invalidSclerotinia.years[1].seasons[0].crop = "soybean";
-  invalidSclerotinia.years[2].seasons[0].crop = "field_corn";
+  invalidSclerotinia.years[2].seasons[0].crop = "sunflower";
 
   const result = await generateRotations(
     {
@@ -3395,6 +3432,348 @@ test("Cover-crop winter suitability flags winter-kill species scheduled through 
   assert.equal(cloverFinding.severity, "warning");
   assert.ok(cloverFinding.message.includes("-7.2 °C"));
   assert.ok(!cloverFinding.message.includes("10–15"));
+});
+
+// ─── 18. Validation Audit, Sclerotinia Classification & Bounded Retry ──
+
+section("Validation Audit, Sclerotinia Classification & Bounded Retry");
+
+test("getSclerotiniaHosts excludes non-host disease suppressors (paddy_rice) and accurately classifies primary vs. moderate hosts", () => {
+  const allCatalogCrops = Object.values(cropLibrary);
+  const hosts = getSclerotiniaHosts(allCatalogCrops);
+
+  // paddy_rice mentions Sclerotinia only because flooded rice ERADICATES sclerotia -> must NOT be in hosts
+  assert.ok(
+    !hosts.includes("paddy_rice"),
+    "paddy_rice is a Poaceae non-host whose flooded phase eradicates sclerotia; must not be classified as a Sclerotinia host"
+  );
+  assert.ok(PRIMARY_SCLEROTINIA_HOSTS.has("sunflower"));
+  assert.ok(PRIMARY_SCLEROTINIA_HOSTS.has("winter_canola"));
+  assert.ok(PRIMARY_SCLEROTINIA_HOSTS.has("spring_canola"));
+  assert.ok(MODERATE_SCLEROTINIA_HOSTS.has("soybean"));
+  assert.deepEqual(
+    hosts.slice().sort(),
+    ["soybean", "spring_canola", "sunflower", "winter_canola"]
+  );
+
+  // A subtropical China rotation with paddy_rice (Year 1) -> winter_canola (Year 2) -> field_corn (Year 3)
+  // has only 1 actual Sclerotinia host year (winter_canola) and must pass without Sclerotinia warnings or errors
+  const riceCanolaCorn: RotationStrategy = {
+    id: "rice_canola_corn",
+    name: "Yangtze Rice-Canola-Corn",
+    archetype: "crop_diversity",
+    description: "Subtropical irrigated rice followed by winter rapeseed and maize.",
+    years: [
+      {
+        year: 1,
+        seasons: [
+          { season: "Monsoon", crop: "paddy_rice", activity: "Irrigated lowland rice", months: [5, 6, 7, 8, 9] },
+        ],
+      },
+      {
+        year: 2,
+        seasons: [
+          { season: "Winter-Spring", crop: "winter_canola", activity: "Winter rapeseed", months: [10, 11, 12, 1, 2, 3, 4, 5] },
+        ],
+      },
+      {
+        year: 3,
+        seasons: [
+          { season: "Spring-Summer", crop: "field_corn", activity: "Spring maize", months: [4, 5, 6, 7, 8, 9] },
+        ],
+      },
+    ],
+    tradeoffs: { advantages: ["Diversified"], disadvantages: ["High water"], operational: ["Drain before canola"], warnings: [] },
+  };
+
+  const res = validateProposal(riceCanolaCorn, {
+    agGroup: "subtropical_humid",
+    regionTag: "east_asia_china_subtropical",
+    availableCropIds: ["paddy_rice", "winter_canola", "field_corn", "soybean"],
+    hemisphere: "northern",
+  });
+  assert.equal(res.valid, true);
+  assert.equal(res.errors.length, 0);
+  assert.ok(!res.warnings.some((w) => w.includes("Sclerotinia")));
+});
+
+test("All three canonical reference rotations in data/rotations.json pass deterministic validation with appropriate warnings", () => {
+  const availableUsSoutheast = getAvailableCropsForContext("temperate_humid", "us_southeast");
+
+  for (const strat of staticStrategies) {
+    const res = validateProposal(strat, {
+      agGroup: "temperate_humid",
+      regionTag: "us_southeast",
+      availableCropIds: availableUsSoutheast,
+      hemisphere: "northern",
+    });
+    assert.equal(
+      res.valid,
+      true,
+      `Canonical reference strategy "${strat.id}" should pass deterministic validation, but got errors: ${res.errors.join("; ")}`
+    );
+  }
+});
+
+test("Multi-region Sclerotinia and double-crop validation distinguishes manageable risks from hard incompatibilities", () => {
+  // 1. US Great Plains (continental): winter_canola (Y1) -> spring_wheat (Y2) -> soybean (Y3)
+  // Manageable 2-year Sclerotinia risk separated by non-host cereal -> accepted with warning + scoring penalty
+  const plainsRotation: RotationStrategy = {
+    id: "plains_canola_wheat_soy",
+    name: "Plains Canola-Wheat-Soy",
+    archetype: "crop_diversity",
+    description: "Three-family rotation for the Great Plains.",
+    years: [
+      {
+        year: 1,
+        seasons: [
+          { season: "Winter-Spring", crop: "winter_canola", activity: "Winter canola", months: [9, 10, 11, 12, 1, 2, 3, 4, 5, 6] },
+        ],
+      },
+      {
+        year: 2,
+        seasons: [
+          { season: "Spring-Summer", crop: "spring_wheat", activity: "Spring wheat", months: [3, 4, 5, 6, 7, 8] },
+        ],
+      },
+      {
+        year: 3,
+        seasons: [
+          { season: "Summer", crop: "soybean", activity: "Soybean", months: [5, 6, 7, 8, 9, 10] },
+        ],
+      },
+    ],
+    tradeoffs: { advantages: ["3 families"], disadvantages: ["Canola winter survival"], operational: ["Direct harvest"], warnings: [] },
+  };
+
+  const plainsValidation = validateProposal(plainsRotation, {
+    agGroup: "continental",
+    regionTag: "us_great_plains",
+    availableCropIds: ["winter_canola", "spring_wheat", "soybean", "field_corn", "sunflower"],
+    hemisphere: "northern",
+  });
+  assert.equal(plainsValidation.valid, true);
+  assert.ok(plainsValidation.warnings.some((w) => w.includes("Sclerotinia risk")));
+
+  const plainsScored = scoreStrategy(plainsRotation, makeClimate(), makeSoil(), DEFAULT_PRIORITIES, "us_great_plains");
+  assert.ok(
+    plainsScored.factorScores.diversityPestBreak.negativeContributors.some((n) =>
+      n.includes("Sclerotinia consideration")
+    )
+  );
+
+  // 2. US Great Plains (continental): winter_canola (Y1) -> spring_wheat (Y2) -> sunflower (Y3)
+  // Two primary Sclerotinia oilseed hosts in a 3-year upland rotation -> HARD REJECTED
+  const stackedPrimaryOilseeds: RotationStrategy = {
+    ...plainsRotation,
+    id: "stacked_oilseeds",
+    years: [
+      plainsRotation.years[0],
+      plainsRotation.years[1],
+      {
+        year: 3,
+        seasons: [
+          { season: "Summer", crop: "sunflower", activity: "Oilseed sunflower", months: [5, 6, 7, 8, 9] },
+        ],
+      },
+    ],
+  };
+  const stackedValidation = validateProposal(stackedPrimaryOilseeds, {
+    agGroup: "continental",
+    regionTag: "us_great_plains",
+    availableCropIds: ["winter_canola", "spring_wheat", "soybean", "field_corn", "sunflower"],
+    hemisphere: "northern",
+  });
+  assert.equal(stackedValidation.valid, false);
+  assert.ok(stackedValidation.errors.some((e) => e.includes("Sclerotinia host stacking")));
+
+  // 3. Winter-to-summer cash double-crop sharing 2 boundary months (May-June [5,6]) -> accepted with double-crop transition warning
+  const doubleCropStrategy = makeValidStrategy("double_crop_wheat_soy", "Double Crop Wheat-Soy");
+  doubleCropStrategy.years[1].seasons = [
+    { season: "Winter-Spring", crop: "soft_red_winter_wheat", activity: "Winter wheat harvested June", months: [1, 2, 3, 4, 5, 6] },
+    { season: "Summer", crop: "soybean", activity: "Double-crop soybean planted May-June", months: [5, 6, 7, 8, 9, 10] },
+  ];
+  doubleCropStrategy.years[2].seasons = [
+    { season: "Summer", crop: "sunflower", activity: "Sunflower cash crop", months: [5, 6, 7, 8, 9] },
+    { season: "Fall", crop: "forage_radish", activity: "Plant radish", months: [8, 9, 10] },
+  ];
+  const doubleCropRes = validateProposal(doubleCropStrategy, {
+    agGroup: "temperate_humid",
+    regionTag: "us_southeast",
+    availableCropIds: ["field_corn", "soft_red_winter_wheat", "soybean", "sunflower", "cereal_rye", "crimson_clover", "forage_radish"],
+    hemisphere: "northern",
+  });
+  assert.equal(doubleCropRes.valid, true);
+  assert.ok(doubleCropRes.warnings.some((w) => w.includes("double-crop transition")));
+
+  // 4. Single overwintering winter_canola planted in Oct of Year 1 and harvested in May-Jun of Year 2
+  // must NOT be double-counted as 2 Sclerotinia host years
+  const overwinterCanolaOnce: RotationStrategy = {
+    id: "overwinter_canola_once",
+    name: "Overwinter Canola Single Crop",
+    archetype: "crop_diversity",
+    description: "Single winter canola crop spanning Year 1 autumn to Year 2 spring.",
+    years: [
+      {
+        year: 1,
+        seasons: [
+          { season: "Spring-Summer", crop: "spring_wheat", activity: "Spring wheat", months: [3, 4, 5, 6, 7, 8] },
+          { season: "Fall", crop: "winter_canola", activity: "Plant winter canola in Oct", months: [10, 11] },
+        ],
+      },
+      {
+        year: 2,
+        seasons: [
+          { season: "Winter-Spring", crop: "winter_canola", activity: "Overwinter and harvest canola in June", months: [12, 1, 2, 3, 4, 5, 6] },
+        ],
+      },
+      {
+        year: 3,
+        seasons: [
+          { season: "Summer", crop: "field_corn", activity: "Maize", months: [4, 5, 6, 7, 8, 9] },
+        ],
+      },
+    ],
+    tradeoffs: { advantages: ["Single canola break"], disadvantages: ["Winter cold"], operational: ["Timely seeding"], warnings: [] },
+  };
+  const overwinterCanolaRes = validateProposal(overwinterCanolaOnce, {
+    agGroup: "continental",
+    regionTag: "us_great_plains",
+    availableCropIds: ["spring_wheat", "winter_canola", "field_corn"],
+    hemisphere: "northern",
+  });
+  assert.equal(overwinterCanolaRes.valid, true);
+  assert.equal(overwinterCanolaRes.errors.length, 0);
+  assert.ok(!overwinterCanolaRes.warnings.some((w) => w.includes("Sclerotinia risk")));
+});
+
+test("Bounded retry pipeline aggregates rejection reasons, requests crop diversification, and validates regenerated proposals", async () => {
+  // Attempt 1: All 3 proposals fail for the same Sclerotinia host-stacking error (3 years of hosts or 2 primary oilseed years)
+  const badPlan1 = makeValidStrategy("soil_health_plan", "Soil Health Plan");
+  badPlan1.years[0].seasons = [{ season: "Summer", crop: "sunflower", activity: "Sunflower", months: [5, 6, 7, 8, 9] }];
+  badPlan1.years[1].seasons = [{ season: "Summer", crop: "soybean", activity: "Soybean", months: [5, 6, 7, 8, 9] }];
+  badPlan1.years[2].seasons = [{ season: "Summer", crop: "sunflower", activity: "Sunflower", months: [5, 6, 7, 8, 9] }];
+
+  const badPlan2 = makeValidStrategy("water_resilience_plan", "Water Resilience Plan");
+  badPlan2.years[0].seasons = [{ season: "Summer", crop: "sunflower", activity: "Sunflower", months: [5, 6, 7, 8, 9] }];
+  badPlan2.years[1].seasons = [{ season: "Summer", crop: "field_corn", activity: "Corn", months: [4, 5, 6, 7, 8] }];
+  badPlan2.years[2].seasons = [{ season: "Summer", crop: "sunflower", activity: "Sunflower", months: [5, 6, 7, 8, 9] }];
+
+  const badPlan3 = makeValidStrategy("crop_diversity_plan", "Crop Diversity Plan");
+  badPlan3.years[0].seasons = [{ season: "Summer", crop: "soybean", activity: "Soybean", months: [5, 6, 7, 8, 9] }];
+  badPlan3.years[1].seasons = [{ season: "Summer", crop: "sunflower", activity: "Sunflower", months: [5, 6, 7, 8, 9] }];
+  badPlan3.years[2].seasons = [{ season: "Summer", crop: "soybean", activity: "Soybean", months: [5, 6, 7, 8, 9] }];
+
+  // Attempt 2: Corrective response with diversified, valid 3-year rotations
+  const goodPlan1 = makeValidStrategy("soil_health_plan", "Soil Health Plan");
+  const goodPlan2 = makeValidStrategy("water_resilience_plan", "Water Resilience Plan");
+  goodPlan2.years[0].seasons = [{ season: "Summer", crop: "grain_sorghum", activity: "Sorghum", months: [5, 6, 7, 8, 9] }];
+  goodPlan2.years[1].seasons = [{ season: "Summer", crop: "soybean", activity: "Soybean", months: [5, 6, 7, 8, 9] }];
+  goodPlan2.years[2].seasons = [{ season: "Spring", crop: "soft_red_winter_wheat", activity: "Wheat", months: [3, 4, 5, 6] }];
+  const goodPlan3 = makeValidStrategy("crop_diversity_plan", "Crop Diversity Plan");
+  goodPlan3.years[0].seasons = [{ season: "Summer", crop: "field_corn", activity: "Corn", months: [4, 5, 6, 7, 8] }];
+  goodPlan3.years[1].seasons = [{ season: "Summer", crop: "sunflower", activity: "Sunflower", months: [5, 6, 7, 8, 9] }];
+  goodPlan3.years[2].seasons = [{ season: "Summer", crop: "soybean", activity: "Soybean", months: [5, 6, 7, 8, 9] }];
+
+  const capturedPrompts: string[] = [];
+  let callCount = 0;
+
+  const retryMockProvider: AIProviderClient = {
+    providerName: "mock-retry-provider",
+    modelName: "gemini-4-argon",
+    async generate({ prompt }) {
+      callCount++;
+      capturedPrompts.push(prompt);
+      if (callCount === 1) {
+        return JSON.stringify({
+          strategies: [badPlan1, badPlan2, badPlan3],
+          rationale: "Initial attempt with Sclerotinia host stacking across all 3 plans.",
+        });
+      }
+      return JSON.stringify({
+        strategies: [goodPlan1, goodPlan2, goodPlan3],
+        rationale: "Regenerated diversified plans resolving Sclerotinia host stacking.",
+      });
+    },
+  };
+
+  const result = await generateRotations(
+    {
+      fieldId: "retry_field_1",
+      fieldName: "Retry Test Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    retryMockProvider
+  );
+
+  assert.equal(callCount, 2, "Provider should be called twice (1 initial + 1 bounded retry)");
+  assert.equal(result.retryCount, 1);
+  assert.equal(result.proposals.length, 3, "All 3 regenerated valid proposals should be accepted");
+  assert.ok(
+    capturedPrompts[1].includes("CORRECTIVE RETRY CONSTRAINTS"),
+    "Retry prompt must include corrective retry constraints section"
+  );
+  assert.ok(
+    capturedPrompts[1].includes("Sclerotinia host stacking"),
+    "Retry prompt must include the specific Sclerotinia rejection reason"
+  );
+  assert.ok(
+    capturedPrompts[1].includes("CRITICAL CROP DIVERSIFICATION REQUIREMENT"),
+    "Retry prompt must instruct Gemini to diversify crop selections when multiple plans share the same failure"
+  );
+
+  // Verify that goodPlan3 (Corn -> Sunflower -> Soybean) preserves its soft Sclerotinia warning
+  const diversityProposal = result.proposals.find((p) => p.strategy.id === "crop_diversity_plan")!;
+  assert.ok(
+    diversityProposal.strategy.generationInfo?.validationWarnings?.some((w) =>
+      w.includes("Sclerotinia risk")
+    ),
+    "Accepted manageable-risk proposal must preserve its Sclerotinia validation warning"
+  );
+});
+
+test("Bounded retry pipeline stops after MAX_VALIDATION_RETRY_ATTEMPTS and never bypasses validation", async () => {
+  const alwaysInvalid = makeValidStrategy("always_invalid", "Always Invalid Plan");
+  alwaysInvalid.years[0].seasons[0].crop = "sunflower";
+  alwaysInvalid.years[1].seasons[0].crop = "soybean";
+  alwaysInvalid.years[2].seasons[0].crop = "sunflower";
+
+  let callCount = 0;
+  const persistentBadProvider: AIProviderClient = {
+    providerName: "mock-persistent-bad-provider",
+    async generate() {
+      callCount++;
+      return JSON.stringify({
+        strategies: [alwaysInvalid],
+        rationale: "Still invalid on retry.",
+      });
+    },
+  };
+
+  const result = await generateRotations(
+    {
+      fieldId: "retry_field_2",
+      fieldName: "Persistent Failure Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    persistentBadProvider
+  );
+
+  assert.equal(callCount, 1 + MAX_VALIDATION_RETRY_ATTEMPTS, "Must stop after 1 bounded retry (2 calls total)");
+  assert.equal(result.retryCount, MAX_VALIDATION_RETRY_ATTEMPTS);
+  assert.equal(result.proposals.length, 0, "Must never bypass deterministic validation");
+  assert.equal(result.supportStatus, "unavailable");
+  assert.equal(result.rejectedProposals?.length, 1);
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────
