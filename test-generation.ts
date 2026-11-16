@@ -15,6 +15,7 @@
  */
 
 import { strict as assert } from "assert";
+import zlib from "node:zlib";
 import { classifyAgGroup, isGroupSupported } from "@/lib/agro-classifier";
 import {
   validateProposal,
@@ -125,6 +126,25 @@ import {
   buildUnifiedFieldEvidenceProfile,
 } from "@/lib/global-data-providers";
 import { evaluateFieldCropEvidenceLevel } from "@/lib/rotation-scoring";
+import {
+  SOILGRIDS_WCS_BASE_URL,
+  WRB_SOIL_GROUPS,
+  SOILGRIDS_DEPTH_LAYERS,
+  SOILGRIDS_PROPERTIES,
+  VAN_BEMMELEN_OM_FACTOR,
+  SOILGRIDS_DEFAULT_NODATA,
+  MAX_NEIGHBOR_DISTANCE_METERS,
+  haversineDistanceMeters,
+  decodeSoilGridsGeoTiff,
+  getPixelCenterCoordinates,
+  isRawSoilGridsValueValid,
+  selectBestPixelFromGrid,
+  computeDepthWeighted0_30cm,
+  convertRawSoilGridsValue,
+  buildSoilGridsWcsUrl,
+  fetchSoilGridsWcsProfile,
+  clearSoilGridsCacheForTests,
+} from "@/lib/soilgrids-wcs";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -3774,6 +3794,1114 @@ test("Bounded retry pipeline stops after MAX_VALIDATION_RETRY_ATTEMPTS and never
   assert.equal(result.proposals.length, 0, "Must never bypass deterministic validation");
   assert.equal(result.supportStatus, "unavailable");
   assert.equal(result.rejectedProposals?.length, 1);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// 19. Live International ISRIC SoilGrids v2.0 OGC WCS Adapter & GeoTIFF Decoder
+// ═══════════════════════════════════════════════════════════════════════
+
+section("19. Live International ISRIC SoilGrids v2.0 OGC WCS Adapter & GeoTIFF Decoder");
+
+/**
+ * Test helper: Encode a synthetic GeoTIFF buffer matching ISRIC SoilGrids MapServer WCS output format
+ * (tiled or strip-based, Deflate or uncompressed, Predictor=1 or Predictor=2, GeoTIFF scale/tiepoint tags,
+ * and GDAL_NODATA tag) for deterministic unit and regression testing.
+ */
+function encodeSyntheticSoilGridsGeoTiff(params: {
+  grid: number[][];
+  bitsPerSample?: 8 | 16;
+  sampleFormat?: number;
+  samplesPerPixel?: number;
+  compression?: 1 | 8;
+  predictor?: number;
+  tiled?: boolean;
+  tileWidth?: number;
+  tileLength?: number;
+  rowsPerStrip?: number;
+  noDataValue?: number | null;
+  originLon?: number;
+  originLat?: number;
+  scaleX?: number;
+  scaleY?: number;
+}): Buffer {
+  const height = params.grid.length;
+  const width = params.grid[0]?.length ?? 0;
+  const bitsPerSample = params.bitsPerSample ?? 16;
+  const sampleFormat = params.sampleFormat ?? (bitsPerSample === 16 ? 2 : 1);
+  const samplesPerPixel = params.samplesPerPixel ?? 1;
+  const compression = params.compression ?? 8;
+  const predictor = params.predictor ?? 2;
+  const tiled = params.tiled ?? true;
+  const tileWidth = tiled ? (params.tileWidth ?? 256) : width;
+  const tileLength = tiled ? (params.tileLength ?? 256) : (params.rowsPerStrip ?? height);
+  const noDataValue =
+    params.noDataValue !== undefined ? params.noDataValue : SOILGRIDS_DEFAULT_NODATA;
+  const bytesPerSample = bitsPerSample / 8;
+
+  const allocHeight = Math.max(height, tileLength);
+  const allocWidth = Math.max(width, tileWidth);
+  const rawRaster = Buffer.alloc(allocWidth * allocHeight * bytesPerSample);
+  for (let r = 0; r < allocHeight; r++) {
+    let prevVal = 0;
+    for (let c = 0; c < allocWidth; c++) {
+      const actualVal =
+        r < height && c < width ? params.grid[r][c] : (noDataValue ?? 0);
+      const encodedVal = predictor === 2 && c > 0 ? actualVal - prevVal : actualVal;
+      prevVal = actualVal;
+      const offset = (r * allocWidth + c) * bytesPerSample;
+      if (bitsPerSample === 16) {
+        const wrapped16 = ((encodedVal & 0xffff) << 16) >> 16;
+        rawRaster.writeInt16LE(wrapped16, offset);
+      } else {
+        rawRaster.writeUInt8(encodedVal & 0xff, offset);
+      }
+    }
+  }
+
+  const compressedBlock =
+    compression === 8 ? zlib.deflateSync(rawRaster) : rawRaster;
+
+  const scaleX = params.scaleX ?? 0.00225;
+  const scaleY = params.scaleY ?? 0.00225;
+  const originLon = params.originLon ?? 0;
+  const originLat = params.originLat ?? 0;
+
+  const scaleBuf = Buffer.alloc(24);
+  scaleBuf.writeDoubleLE(scaleX, 0);
+  scaleBuf.writeDoubleLE(scaleY, 8);
+  scaleBuf.writeDoubleLE(0, 16);
+
+  const tiepointBuf = Buffer.alloc(48);
+  tiepointBuf.writeDoubleLE(0, 0);
+  tiepointBuf.writeDoubleLE(0, 8);
+  tiepointBuf.writeDoubleLE(0, 16);
+  tiepointBuf.writeDoubleLE(originLon, 24);
+  tiepointBuf.writeDoubleLE(originLat, 32);
+  tiepointBuf.writeDoubleLE(0, 40);
+
+  const noDataStrBuf =
+    noDataValue !== null ? Buffer.from(`${noDataValue}\0`, "ascii") : null;
+
+  interface IfdEntrySpec {
+    tag: number;
+    type: number;
+    count: number;
+    valueOrPayload: number | Buffer;
+  }
+
+  const entries: IfdEntrySpec[] = [
+    { tag: 256, type: 3, count: 1, valueOrPayload: width },
+    { tag: 257, type: 3, count: 1, valueOrPayload: height },
+    { tag: 258, type: 3, count: 1, valueOrPayload: bitsPerSample },
+    { tag: 259, type: 3, count: 1, valueOrPayload: compression },
+    { tag: 262, type: 3, count: 1, valueOrPayload: 1 },
+    { tag: 277, type: 3, count: 1, valueOrPayload: samplesPerPixel },
+    { tag: 317, type: 3, count: 1, valueOrPayload: predictor },
+    { tag: 339, type: 3, count: 1, valueOrPayload: sampleFormat },
+    { tag: 33550, type: 12, count: 3, valueOrPayload: scaleBuf },
+    { tag: 33922, type: 12, count: 6, valueOrPayload: tiepointBuf },
+  ];
+
+  if (tiled) {
+    entries.push(
+      { tag: 322, type: 3, count: 1, valueOrPayload: tileWidth },
+      { tag: 323, type: 3, count: 1, valueOrPayload: tileLength },
+      { tag: 324, type: 4, count: 1, valueOrPayload: 0 },
+      { tag: 325, type: 4, count: 1, valueOrPayload: compressedBlock.length }
+    );
+  } else {
+    entries.push(
+      { tag: 273, type: 4, count: 1, valueOrPayload: 0 },
+      { tag: 278, type: 3, count: 1, valueOrPayload: params.rowsPerStrip ?? height },
+      { tag: 279, type: 4, count: 1, valueOrPayload: compressedBlock.length }
+    );
+  }
+
+  if (noDataStrBuf) {
+    entries.push({
+      tag: 42113,
+      type: 2,
+      count: noDataStrBuf.length,
+      valueOrPayload: noDataStrBuf,
+    });
+  }
+
+  entries.sort((a, b) => a.tag - b.tag);
+
+  const ifdOffset = 8;
+  const ifdSize = 2 + entries.length * 12 + 4;
+  let cursor = ifdOffset + ifdSize;
+
+  const entryValueFields: number[] = [];
+  const externalBuffers: Buffer[] = [];
+
+  for (const e of entries) {
+    if (typeof e.valueOrPayload === "number") {
+      entryValueFields.push(e.valueOrPayload);
+    } else if (e.valueOrPayload.length <= 4) {
+      const inline = Buffer.alloc(4);
+      e.valueOrPayload.copy(inline);
+      entryValueFields.push(inline.readUInt32LE(0));
+    } else {
+      entryValueFields.push(cursor);
+      externalBuffers.push(e.valueOrPayload);
+      cursor += e.valueOrPayload.length;
+    }
+  }
+
+  const rasterDataOffset = cursor;
+  const totalLength = rasterDataOffset + compressedBlock.length;
+  const out = Buffer.alloc(totalLength);
+
+  out.write("II", 0, "ascii");
+  out.writeUInt16LE(42, 2);
+  out.writeUInt32LE(ifdOffset, 4);
+
+  out.writeUInt16LE(entries.length, ifdOffset);
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const base = ifdOffset + 2 + i * 12;
+    out.writeUInt16LE(e.tag, base);
+    out.writeUInt16LE(e.type, base + 2);
+    out.writeUInt32LE(e.count, base + 4);
+    const valField =
+      e.tag === 324 || e.tag === 273 ? rasterDataOffset : entryValueFields[i];
+    if (e.type === 3 && e.count === 1 && typeof e.valueOrPayload === "number") {
+      out.writeUInt16LE(valField, base + 8);
+      out.writeUInt16LE(0, base + 10);
+    } else {
+      out.writeUInt32LE(valField, base + 8);
+    }
+  }
+  out.writeUInt32LE(0, ifdOffset + 2 + entries.length * 12);
+
+  let extOffset = ifdOffset + ifdSize;
+  for (const ext of externalBuffers) {
+    ext.copy(out, extOffset);
+    extOffset += ext.length;
+  }
+
+  compressedBlock.copy(out, rasterDataOffset);
+  return out;
+}
+
+test("GeoTIFF decoder: decodes tiled 16-bit signed Deflate (Compression=8) + horizontal differencing (Predictor=2), NoData=-32768, dimensions, and coordinate alignment", () => {
+  const sampleGrid = [
+    [-32768, 210, 225, 240, -32768],
+    [195, 205, 218, 232, 245],
+    [190, 200, 215, 228, 242],
+    [185, 198, 212, 224, 238],
+    [-32768, 192, 208, 220, -32768],
+  ];
+
+  const originLon = 1.444375;
+  const originLat = 48.455625;
+  const scaleX = 0.00225;
+  const scaleY = 0.00225;
+
+  const buf = encodeSyntheticSoilGridsGeoTiff({
+    grid: sampleGrid,
+    bitsPerSample: 16,
+    sampleFormat: 2,
+    compression: 8,
+    predictor: 2,
+    tiled: true,
+    tileWidth: 256,
+    tileLength: 256,
+    noDataValue: -32768,
+    originLon,
+    originLat,
+    scaleX,
+    scaleY,
+  });
+
+  const decoded = decodeSoilGridsGeoTiff(buf);
+  assert.equal(decoded.width, 5);
+  assert.equal(decoded.height, 5);
+  assert.equal(decoded.bitsPerSample, 16);
+  assert.equal(decoded.sampleFormat, 2);
+  assert.equal(decoded.compression, 8);
+  assert.equal(decoded.predictor, 2);
+  assert.equal(decoded.noDataValue, -32768);
+  assert.deepEqual(decoded.grid, sampleGrid);
+
+  // Verify GeoTIFF ModelPixelScaleTag (33550) & ModelTiepointTag (33922) coordinate alignment
+  assert.ok(decoded.pixelScale);
+  assert.ok(decoded.tiepoint);
+  const centerCoords = getPixelCenterCoordinates(decoded, 2, 2, {
+    lonMin: originLon,
+    latMin: originLat - 5 * scaleY,
+    lonMax: originLon + 5 * scaleX,
+    latMax: originLat,
+  });
+  // Center of pixel (2, 2) = origin + 2.5 * 0.00225 = origin + 0.005625
+  assert.ok(Math.abs(centerCoords.lon - 1.45) < 1e-6);
+  assert.ok(Math.abs(centerCoords.lat - 48.45) < 1e-6);
+});
+
+test("GeoTIFF decoder: decodes strip-based 8-bit unsigned (GEOTIFF_BYTE) uncompressed (Compression=1, Predictor=1) WRB raster", () => {
+  const wrbGrid = [
+    [18, 18, 18, 6, 6],
+    [18, 18, 18, 6, 6],
+    [18, 18, 18, 18, 6],
+    [18, 18, 18, 18, 18],
+    [255, 18, 18, 18, 255],
+  ];
+
+  const buf = encodeSyntheticSoilGridsGeoTiff({
+    grid: wrbGrid,
+    bitsPerSample: 8,
+    sampleFormat: 1,
+    compression: 1,
+    predictor: 1,
+    tiled: false,
+    noDataValue: 255,
+  });
+
+  const decoded = decodeSoilGridsGeoTiff(buf);
+  assert.equal(decoded.width, 5);
+  assert.equal(decoded.height, 5);
+  assert.equal(decoded.bitsPerSample, 8);
+  assert.equal(decoded.sampleFormat, 1);
+  assert.equal(decoded.compression, 1);
+  assert.equal(decoded.predictor, 1);
+  assert.equal(decoded.noDataValue, 255);
+  assert.deepEqual(decoded.grid, wrbGrid);
+  assert.equal(WRB_SOIL_GROUPS[decoded.grid[2][2]], "Luvisols");
+});
+
+test("Proper unit conversions for sand, silt, clay, SOC, derived OM, pH, bulk density, coarse fragments, and AWC", () => {
+  // Sand, silt, clay: g/kg ÷ 10 -> %
+  assert.equal(convertRawSoilGridsValue(345, "sand", 1), 34.5);
+  assert.equal(convertRawSoilGridsValue(412, "silt", 1), 41.2);
+  assert.equal(convertRawSoilGridsValue(243, "clay", 1), 24.3);
+
+  // SOC: dg/kg ÷ 100 -> % weight (e.g., 185 dg/kg = 18.5 g/kg = 1.85% SOC)
+  const socPct = convertRawSoilGridsValue(185, "soc", 2);
+  assert.equal(socPct, 1.85);
+  // Derived OM via Van Bemmelen factor (1.724): 1.85 * 1.724 = 3.1894 -> 3.19%
+  const omPct = Number((socPct * VAN_BEMMELEN_OM_FACTOR).toFixed(2));
+  assert.equal(omPct, 3.19);
+
+  // pH (H2O): pH×10 ÷ 10 -> pH
+  assert.equal(convertRawSoilGridsValue(68, "phh2o", 1), 6.8);
+
+  // Bulk density (bdod): cg/cm³ ÷ 100 -> g/cm³
+  assert.equal(convertRawSoilGridsValue(138, "bdod", 2), 1.38);
+
+  // Coarse fragments (cfvo): cm³/dm³ ÷ 10 -> %
+  assert.equal(convertRawSoilGridsValue(85, "cfvo", 1), 8.5);
+
+  // Volumetric water content at 33 kPa and 1500 kPa: 0.1 vol% ÷ 1000 -> cm/cm
+  assert.equal(convertRawSoilGridsValue(310, "wv0033", 3), 0.31);
+  assert.equal(convertRawSoilGridsValue(145, "wv1500", 3), 0.145);
+});
+
+test("Correct 0–30 cm thickness-weighted depth aggregation across 0–5 cm (5 cm), 5–15 cm (10 cm), and 15–30 cm (15 cm)", () => {
+  // Weights: 5/30, 10/30, 15/30
+  // Clay: 20% (0-5cm), 26% (5-15cm), 32% (15-30cm)
+  // Expected = (20*5 + 26*10 + 32*15) / 30 = (100 + 260 + 480) / 30 = 840 / 30 = 28.0%
+  const fullWeighted = computeDepthWeighted0_30cm(
+    [
+      { depthId: "0-5cm", thicknessCm: 5, value: 20 },
+      { depthId: "5-15cm", thicknessCm: 10, value: 26 },
+      { depthId: "15-30cm", thicknessCm: 15, value: 32 },
+    ],
+    1
+  );
+  assert.equal(fullWeighted.value, 28.0);
+  assert.equal(fullWeighted.coveragePct, 100);
+  assert.equal(fullWeighted.coveredDepthCm, 30);
+
+  // Partial coverage: missing 15–30 cm layer must be excluded (not treated as zero)
+  // Expected = (20*5 + 26*10) / 15 = 360 / 15 = 24.0%, coverage = 50%
+  const partialWeighted = computeDepthWeighted0_30cm(
+    [
+      { depthId: "0-5cm", thicknessCm: 5, value: 20 },
+      { depthId: "5-15cm", thicknessCm: 10, value: 26 },
+      { depthId: "15-30cm", thicknessCm: 15, value: null },
+    ],
+    1
+  );
+  assert.equal(partialWeighted.value, 24.0);
+  assert.equal(partialWeighted.coveragePct, 50);
+  assert.equal(partialWeighted.coveredDepthCm, 15);
+});
+
+test("NoData (-32768) handling: enforces strict ≤ 250 m neighbor distance limit, discloses high-latitude neighbors (≤ 125 m), and rejects pixels > 250 m", () => {
+  assert.equal(MAX_NEIGHBOR_DISTANCE_METERS, 250);
+
+  const lat = 48.45;
+  const lon = 1.45;
+  const scale = 0.00225;
+  const originLon = lon - 2.5 * scale;
+  const originLat = lat + 2.5 * scale;
+  const bbox = {
+    lonMin: originLon,
+    latMin: lat - 2.5 * scale,
+    lonMax: lon + 2.5 * scale,
+    latMax: originLat,
+  };
+
+  // Case A: Center pixel (2,2) is masked (-32768), right neighbor (2,3) ~166 m away is valid (240)
+  const maskedCenterGrid = [
+    [-32768, -32768, -32768, -32768, -32768],
+    [-32768, -32768, -32768, -32768, -32768],
+    [-32768, -32768, -32768, 240, -32768],
+    [-32768, -32768, -32768, -32768, -32768],
+    [-32768, -32768, -32768, -32768, -32768],
+  ];
+  const decodedMasked = decodeSoilGridsGeoTiff(
+    encodeSyntheticSoilGridsGeoTiff({
+      grid: maskedCenterGrid,
+      originLon,
+      originLat,
+      scaleX: scale,
+      scaleY: scale,
+    })
+  );
+
+  const selected = selectBestPixelFromGrid(decodedMasked, lat, lon, bbox, (raw) =>
+    isRawSoilGridsValueValid(raw, SOILGRIDS_PROPERTIES.clay, decodedMasked.noDataValue)
+  );
+  assert.ok(selected, "Should select the valid neighbor pixel within ≤ 250 m");
+  assert.equal(selected.row, 2);
+  assert.equal(selected.col, 3);
+  assert.equal(selected.rawValue, 240);
+  assert.equal(selected.usedNeighborPixel, true);
+  assert.ok(selected.distanceMeters > 0 && selected.distanceMeters <= 250);
+
+  // Case B: High-latitude neighbor (lat = 62.0°N) where east neighbor (2,3) is ~117 m (≤ 125 m)
+  // Must STILL set usedNeighborPixel = true so UI disclosure is never suppressed
+  const hiLat = 62.0;
+  const hiLon = 25.0;
+  const hiOriginLon = hiLon - 2.5 * scale;
+  const hiOriginLat = hiLat + 2.5 * scale;
+  const hiBbox = {
+    lonMin: hiOriginLon,
+    latMin: hiLat - 2.5 * scale,
+    lonMax: hiLon + 2.5 * scale,
+    latMax: hiOriginLat,
+  };
+  const decodedHiLat = decodeSoilGridsGeoTiff(
+    encodeSyntheticSoilGridsGeoTiff({
+      grid: maskedCenterGrid,
+      originLon: hiOriginLon,
+      originLat: hiOriginLat,
+      scaleX: scale,
+      scaleY: scale,
+    })
+  );
+  const selectedHiLat = selectBestPixelFromGrid(decodedHiLat, hiLat, hiLon, hiBbox, (raw) =>
+    isRawSoilGridsValueValid(raw, SOILGRIDS_PROPERTIES.clay, decodedHiLat.noDataValue)
+  );
+  assert.ok(selectedHiLat, "High-latitude neighbor within ≤ 250 m must be selected");
+  assert.equal(selectedHiLat.usedNeighborPixel, true, "usedNeighborPixel must be true even when distance ≤ 125 m");
+  assert.ok(selectedHiLat.distanceMeters <= 125);
+
+  // Case C: Valid pixels exist ONLY beyond 250 m (diagonal (1,1) ~296 m and corners (0,0)/(4,4) ~592 m)
+  // Must return null so caller falls back to regional reference profile
+  const beyond250mGrid = [
+    [250, -32768, -32768, -32768, 250],
+    [-32768, 240, -32768, 240, -32768],
+    [-32768, -32768, -32768, -32768, -32768],
+    [-32768, 240, -32768, 240, -32768],
+    [250, -32768, -32768, -32768, 250],
+  ];
+  const decodedBeyond250m = decodeSoilGridsGeoTiff(
+    encodeSyntheticSoilGridsGeoTiff({
+      grid: beyond250mGrid,
+      originLon,
+      originLat,
+      scaleX: scale,
+      scaleY: scale,
+    })
+  );
+  const rejectedBeyond250m = selectBestPixelFromGrid(decodedBeyond250m, lat, lon, bbox, (raw) =>
+    isRawSoilGridsValueValid(raw, SOILGRIDS_PROPERTIES.clay, decodedBeyond250m.noDataValue)
+  );
+  assert.equal(
+    rejectedBeyond250m,
+    null,
+    "Must reject valid pixels > 250 m away and return null for regional fallback"
+  );
+
+  // Case D: All pixels in the 5×5 window are NoData (-32768)
+  const allNoDataGrid = Array.from({ length: 5 }, () => Array(5).fill(SOILGRIDS_DEFAULT_NODATA));
+  const decodedAllNoData = decodeSoilGridsGeoTiff(
+    encodeSyntheticSoilGridsGeoTiff({
+      grid: allNoDataGrid,
+      originLon,
+      originLat,
+      scaleX: scale,
+      scaleY: scale,
+    })
+  );
+  const noneSelected = selectBestPixelFromGrid(decodedAllNoData, lat, lon, bbox, (raw) =>
+    isRawSoilGridsValueValid(raw, SOILGRIDS_PROPERTIES.clay, decodedAllNoData.noDataValue)
+  );
+  assert.equal(noneSelected, null, "Must return null when all pixels are NoData");
+});
+
+/**
+ * Helper to create a deterministic mock WCS `fetchFn` that serves encoded GeoTIFFs
+ * for a given set of coverage values at `(lat, lon)`.
+ */
+function createMockSoilGridsFetch(
+  coverageValues: Record<string, number>,
+  options?: { maskCenterPixel?: boolean }
+): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const u = new URL(urlStr);
+    const coverage = u.searchParams.get("COVERAGE") ?? "";
+    const format = u.searchParams.get("FORMAT") ?? "GEOTIFF_INT16";
+    const bboxParts = (u.searchParams.get("BBOX") ?? "0,0,0.01125,0.01125").split(",").map(Number);
+    const [lonMin, , , latMax] = bboxParts;
+
+    if (!(coverage in coverageValues)) {
+      return new Response("Coverage not available", { status: 404 });
+    }
+
+    const val = coverageValues[coverage];
+    const isByte = format === "GEOTIFF_BYTE";
+    const noData = isByte ? 255 : -32768;
+
+    const grid = Array.from({ length: 5 }, (_, r) =>
+      Array.from({ length: 5 }, (__, c) => {
+        if (options?.maskCenterPixel && r === 2 && c === 2) {
+          return noData;
+        }
+        return val;
+      })
+    );
+
+    const tiffBuf = encodeSyntheticSoilGridsGeoTiff({
+      grid,
+      bitsPerSample: isByte ? 8 : 16,
+      sampleFormat: isByte ? 1 : 2,
+      compression: 8,
+      predictor: 2,
+      tiled: true,
+      noDataValue: noData,
+      originLon: lonMin,
+      originLat: latMax,
+      scaleX: 0.00225,
+      scaleY: 0.00225,
+    });
+
+    return new Response(new Uint8Array(tiffBuf), {
+      status: 200,
+      headers: { "Content-Type": "image/tiff" },
+    });
+  }) as typeof fetch;
+}
+
+test("Successful SoilGrids WCS response parsing, normalization, missing-attribute non-fabrication, and strict layer-specific uncertainty labeling", async () => {
+  clearSoilGridsCacheForTests();
+  const lat = 48.447;
+  const lon = 1.489;
+
+  // Simulate Beauce (France) silt loam Luvisol across 0–5, 5–15, 15–30 cm
+  // Notice we intentionally omit wv0033/wv1500 here to verify AWC is NOT fabricated when water retention is absent
+  const mockCoverages: Record<string, number> = {
+    "sand_0-5cm_Q0.5": 180,
+    "sand_5-15cm_Q0.5": 170,
+    "sand_15-30cm_Q0.5": 160,
+    "silt_0-5cm_Q0.5": 580,
+    "silt_5-15cm_Q0.5": 570,
+    "silt_15-30cm_Q0.5": 560,
+    "clay_0-5cm_Q0.5": 240,
+    "clay_5-15cm_Q0.5": 260,
+    "clay_15-30cm_Q0.5": 280,
+    "soc_0-5cm_Q0.5": 210, // 2.10% SOC
+    "soc_5-15cm_Q0.5": 165, // 1.65% SOC
+    "soc_15-30cm_Q0.5": 120, // 1.20% SOC
+    "phh2o_0-5cm_Q0.5": 69,
+    "phh2o_5-15cm_Q0.5": 70,
+    "phh2o_15-30cm_Q0.5": 71,
+    "bdod_0-5cm_Q0.5": 132,
+    "bdod_5-15cm_Q0.5": 138,
+    "bdod_15-30cm_Q0.5": 144,
+    "cfvo_0-5cm_Q0.5": 40,
+    "cfvo_5-15cm_Q0.5": 50,
+    "cfvo_15-30cm_Q0.5": 60,
+    // 0-5cm Q0.05 and Q0.95 uncertainty quantiles
+    "sand_0-5cm_Q0.05": 90,
+    "sand_0-5cm_Q0.95": 290,
+    "silt_0-5cm_Q0.05": 440,
+    "silt_0-5cm_Q0.95": 690,
+    "clay_0-5cm_Q0.05": 160,
+    "clay_0-5cm_Q0.95": 330,
+    "soc_0-5cm_Q0.05": 125,
+    "soc_0-5cm_Q0.95": 340,
+    "phh2o_0-5cm_Q0.05": 61,
+    "phh2o_0-5cm_Q0.95": 76,
+    MostProbable: 18, // Luvisols
+  };
+
+  const profile = await fetchSoilGridsWcsProfile(lat, lon, {
+    fetchFn: createMockSoilGridsFetch(mockCoverages),
+    bypassCache: true,
+  });
+
+  assert.ok(profile, "Profile must be returned");
+  assert.equal(profile.dataTier, "soilgrids_wcs_250m");
+  assert.equal(profile.wrbSoilGroup, "Luvisols");
+  assert.equal(profile.horizonsDetailed.length, 3);
+
+  // Verify 0–30 cm depth-weighted calculations:
+  // Sand: (18*5 + 17*10 + 16*15)/30 = (90 + 170 + 240)/30 = 500/30 = 16.7%
+  assert.equal(profile.aggregated.depth0_30cm.sand, 16.7);
+  // Silt: (58*5 + 57*10 + 56*15)/30 = (290 + 570 + 840)/30 = 1700/30 = 56.7%
+  assert.equal(profile.aggregated.depth0_30cm.silt, 56.7);
+  // Clay: (24*5 + 26*10 + 28*15)/30 = (120 + 260 + 420)/30 = 800/30 = 26.7%
+  assert.equal(profile.aggregated.depth0_30cm.clay, 26.7);
+  // SOC: (2.10*5 + 1.65*10 + 1.20*15)/30 = (10.5 + 16.5 + 18.0)/30 = 45/30 = 1.50% SOC
+  assert.equal(profile.aggregated.depth0_30cm.organicCarbonPct, 1.5);
+  // Derived OM: 1.50 * 1.724 = 2.586 -> 2.59%
+  assert.equal(profile.aggregated.depth0_30cm.om, 2.59);
+  // pH: (6.9*5 + 7.0*10 + 7.1*15)/30 = (34.5 + 70 + 106.5)/30 = 211/30 = 7.0
+  assert.equal(profile.aggregated.depth0_30cm.ph, 7.0);
+  // Bulk density: (1.32*5 + 1.38*10 + 1.44*15)/30 = (6.6 + 13.8 + 21.6)/30 = 42/30 = 1.40 g/cm³
+  assert.equal(profile.aggregated.depth0_30cm.bulkDensityGcm3, 1.4);
+  // Coarse fragments: (4*5 + 5*10 + 6*15)/30 = (20 + 50 + 90)/30 = 160/30 = 5.3%
+  assert.equal(profile.aggregated.depth0_30cm.coarseFragmentsPct, 5.3);
+
+  // Requirement 7: Missing attributes (drainage, slope, unavailable water retention AWC) are NEVER fabricated
+  assert.equal(profile.aggregated.drainage, null, "Drainage must remain null, never fabricated");
+  assert.equal(profile.aggregated.slope, null, "Slope must remain null, never fabricated");
+  assert.equal(
+    profile.aggregated.depth0_30cm.awc,
+    null,
+    "AWC must remain null when wv0033/wv1500 water retention is unavailable, never fabricated"
+  );
+
+  // Requirement 8: Layer-specific uncertainty (0–5 cm) is NEVER mislabeled as full 0–30 cm uncertainty
+  assert.equal(
+    profile.uncertainty,
+    undefined,
+    "Top-level 0–30 cm uncertainty must be undefined on SoilGrids profiles"
+  );
+  assert.ok(profile.layerUncertainty, "Layer-specific 0–5 cm uncertainty must be present");
+  assert.equal(profile.layerUncertainty.depthInterval, "0-5cm");
+  assert.deepEqual(profile.layerUncertainty.properties.clay, {
+    q05: 16,
+    q50: 24,
+    q95: 33,
+    unit: "%",
+  });
+  assert.ok(
+    profile.propertySources.om.includes("Van Bemmelen factor (OM = SOC × 1.724)"),
+    "OM provenance must explicitly disclose derivation from SOC"
+  );
+});
+
+test("Two different international coordinates in the same region receive genuinely different soil profiles when source pixels differ", async () => {
+  clearSoilGridsCacheForTests();
+  // Coordinate A: Sandy loam pixel in Cerrado, Brazil
+  const sandyCoverages: Record<string, number> = {
+    "sand_0-5cm_Q0.5": 680,
+    "sand_5-15cm_Q0.5": 660,
+    "sand_15-30cm_Q0.5": 640,
+    "silt_0-5cm_Q0.5": 120,
+    "silt_5-15cm_Q0.5": 120,
+    "silt_15-30cm_Q0.5": 120,
+    "clay_0-5cm_Q0.5": 200,
+    "clay_5-15cm_Q0.5": 220,
+    "clay_15-30cm_Q0.5": 240,
+    "soc_0-5cm_Q0.5": 110,
+    "soc_5-15cm_Q0.5": 95,
+    "soc_15-30cm_Q0.5": 80,
+    "phh2o_0-5cm_Q0.5": 51,
+    "phh2o_5-15cm_Q0.5": 52,
+    "phh2o_15-30cm_Q0.5": 53,
+    "wv0033_0-5cm_Q0.5": 210,
+    "wv0033_5-15cm_Q0.5": 215,
+    "wv0033_15-30cm_Q0.5": 220,
+    "wv1500_0-5cm_Q0.5": 110,
+    "wv1500_5-15cm_Q0.5": 115,
+    "wv1500_15-30cm_Q0.5": 120,
+    MostProbable: 10, // Ferralsols
+  };
+
+  // Coordinate B: Clayey pixel 30 km away in Cerrado, Brazil
+  const clayeyCoverages: Record<string, number> = {
+    "sand_0-5cm_Q0.5": 260,
+    "sand_5-15cm_Q0.5": 240,
+    "sand_15-30cm_Q0.5": 220,
+    "silt_0-5cm_Q0.5": 180,
+    "silt_5-15cm_Q0.5": 180,
+    "silt_15-30cm_Q0.5": 180,
+    "clay_0-5cm_Q0.5": 560,
+    "clay_5-15cm_Q0.5": 580,
+    "clay_15-30cm_Q0.5": 600,
+    "soc_0-5cm_Q0.5": 240,
+    "soc_5-15cm_Q0.5": 200,
+    "soc_15-30cm_Q0.5": 170,
+    "phh2o_0-5cm_Q0.5": 56,
+    "phh2o_5-15cm_Q0.5": 57,
+    "phh2o_15-30cm_Q0.5": 58,
+    "wv0033_0-5cm_Q0.5": 350,
+    "wv0033_5-15cm_Q0.5": 355,
+    "wv0033_15-30cm_Q0.5": 360,
+    "wv1500_0-5cm_Q0.5": 210,
+    "wv1500_5-15cm_Q0.5": 215,
+    "wv1500_15-30cm_Q0.5": 220,
+    MostProbable: 10, // Ferralsols
+  };
+
+  const profileA = await fetchSoilGridsWcsProfile(-12.54, -55.72, {
+    fetchFn: createMockSoilGridsFetch(sandyCoverages),
+    bypassCache: true,
+  });
+  const profileB = await fetchSoilGridsWcsProfile(-12.81, -55.95, {
+    fetchFn: createMockSoilGridsFetch(clayeyCoverages),
+    bypassCache: true,
+  });
+
+  assert.ok(profileA && profileB);
+  assert.notEqual(profileA.aggregated.depth0_30cm.clay, profileB.aggregated.depth0_30cm.clay);
+  assert.notEqual(profileA.aggregated.depth0_30cm.sand, profileB.aggregated.depth0_30cm.sand);
+  assert.notEqual(profileA.aggregated.depth0_30cm.om, profileB.aggregated.depth0_30cm.om);
+  assert.notEqual(profileA.aggregated.depth0_30cm.ph, profileB.aggregated.depth0_30cm.ph);
+  assert.notEqual(profileA.aggregated.depth0_30cm.awc, profileB.aggregated.depth0_30cm.awc);
+  assert.equal(profileA.aggregated.depth0_30cm.awc, 0.1);
+  assert.equal(profileB.aggregated.depth0_30cm.awc, 0.14);
+});
+
+test("Fallback to macro-regional reference profile when WCS fails, times out, or encounters all-NoData", async () => {
+  clearSoilGridsCacheForTests();
+  const lat = 52.23;
+  const lon = 21.01;
+
+  // Simulate WCS timeout / network failure
+  const failingFetch: typeof fetch = (async () => {
+    throw new Error("Simulated WCS timeout");
+  }) as typeof fetch;
+
+  const wcsResult = await fetchSoilGridsWcsProfile(lat, lon, {
+    fetchFn: failingFetch,
+    bypassCache: true,
+  });
+  assert.equal(wcsResult, null, "WCS client must return null on network failure/timeout");
+
+  // Verify regional fallback resolves cleanly when WCS returns null
+  const fallback = resolveGlobalSoilFallback(lat, lon);
+  assert.ok(fallback.aggregated.depth0_30cm.clay !== null);
+  assert.ok(fallback.source.includes("HWSD v2.2"));
+});
+
+test("U.S. coordinates continue to be routed to USDA NRCS SSURGO and all 6 features consume normalized SoilGrids SoilData without error", async () => {
+  // Verify U.S. detection remains intact for CONUS, Alaska, Hawaii, and Puerto Rico
+  const iowaGeo = resolveGeographicContext(42.03, -93.62);
+  assert.equal(iowaGeo.countryCodeIso2, "US");
+
+  const franceGeo = resolveGeographicContext(48.45, 1.49);
+  assert.equal(franceGeo.countryCodeIso2, "FR");
+
+  // Build normalized SoilGrids SoilData and run through all 6 features
+  const mockCoverages: Record<string, number> = {
+    "sand_0-5cm_Q0.5": 240,
+    "sand_5-15cm_Q0.5": 230,
+    "sand_15-30cm_Q0.5": 220,
+    "silt_0-5cm_Q0.5": 500,
+    "silt_5-15cm_Q0.5": 500,
+    "silt_15-30cm_Q0.5": 500,
+    "clay_0-5cm_Q0.5": 260,
+    "clay_5-15cm_Q0.5": 270,
+    "clay_15-30cm_Q0.5": 280,
+    "soc_0-5cm_Q0.5": 180,
+    "soc_5-15cm_Q0.5": 150,
+    "soc_15-30cm_Q0.5": 130,
+    "phh2o_0-5cm_Q0.5": 67,
+    "phh2o_5-15cm_Q0.5": 68,
+    "phh2o_15-30cm_Q0.5": 69,
+    "bdod_0-5cm_Q0.5": 135,
+    "bdod_5-15cm_Q0.5": 140,
+    "bdod_15-30cm_Q0.5": 145,
+    "cfvo_0-5cm_Q0.5": 30,
+    "cfvo_5-15cm_Q0.5": 40,
+    "cfvo_15-30cm_Q0.5": 50,
+    "wv0033_0-5cm_Q0.5": 320,
+    "wv0033_5-15cm_Q0.5": 320,
+    "wv0033_15-30cm_Q0.5": 320,
+    "wv1500_0-5cm_Q0.5": 150,
+    "wv1500_5-15cm_Q0.5": 150,
+    "wv1500_15-30cm_Q0.5": 150,
+    MostProbable: 18,
+  };
+
+  const sgProfile = await fetchSoilGridsWcsProfile(48.45, 1.49, {
+    fetchFn: createMockSoilGridsFetch(mockCoverages),
+    bypassCache: true,
+  });
+  assert.ok(sgProfile);
+
+  const soilData: SoilData = {
+    aggregated: sgProfile.aggregated,
+    dataCoverage: sgProfile.dataCoverage,
+    totalComponentPercent: sgProfile.totalComponentPercent,
+    source: sgProfile.source,
+    limitations: sgProfile.limitations,
+  };
+
+  const climate = makeClimate({
+    avgAnnualTemp: 11.4,
+    avgAnnualPrecip: 645,
+    monthlyTemp: [3.8, 4.5, 7.6, 10.4, 14.1, 17.4, 19.6, 19.4, 15.9, 11.8, 7.1, 4.3],
+    monthlyPrecip: [52, 44, 48, 51, 62, 54, 56, 51, 50, 61, 58, 58],
+  });
+
+  // Feature 1 & 2: Agro-Classifier & Evidence Profile
+  const classification = classifyAgGroup(climate, soilData);
+  assert.ok(classification.group !== "unknown");
+  const evidence = buildUnifiedFieldEvidenceProfile(48.45, 1.49, climate, soilData);
+  assert.ok(evidence.activeProviders.length > 0);
+  assert.ok(
+    evidence.activeProviders.some((p) => p.id === "isric_soilgrids_wcs"),
+    "Evidence profile must include ISRIC SoilGrids v2.0 WCS provider"
+  );
+
+  // Feature 3: Crop Rotation Lab validation, scoring, and prompt generation
+  const reqCheck = GenerationRequestSchema.safeParse({
+    fieldId: "intl_fr_1",
+    fieldName: "Beauce Arable Field",
+    lat: 48.45,
+    lon: 1.49,
+    climate,
+    soil: soilData,
+    priorities: DEFAULT_PRIORITIES,
+    regionTag: franceGeo.regionTag,
+  });
+  assert.ok(reqCheck.success, "GenerationRequestSchema must accept normalized SoilGrids SoilData");
+
+  const validStrat = makeValidStrategy("fr_plan_1", "Beauce 3-Year Plan");
+  const scoreRes = scoreStrategy(
+    validStrat,
+    climate,
+    soilData,
+    DEFAULT_PRIORITIES,
+    franceGeo.regionTag ?? undefined
+  );
+  assert.ok(Number.isFinite(scoreRes.overallScore));
+
+  // Feature 4: What-If Climate Simulator
+  const whatIfRes = evaluateWhatIfScenario({
+    baselineClimate: climate,
+    soil: soilData,
+    priorities: DEFAULT_PRIORITIES,
+    strategies: [validStrat],
+    scenario: { tempDeltaC: 1.5, precipMode: "percent", precipDeltaPct: -10, precipDeltaMm: 0 },
+  });
+  assert.ok(whatIfRes.scenarioClassification);
+
+  // Feature 5: Field Calendar
+  const calendarRes = buildFieldCalendar({
+    strategy: validStrat,
+    climate,
+    lat: 48.45,
+    lon: 1.49,
+  });
+  assert.equal(calendarRes.years.length, 3);
+
+  // Feature 6: Historical Climate Analogues
+  const climateWithArchive: ClimateData = {
+    ...climate,
+    periods: {
+      startYear: 2006,
+      endYear: 2025,
+      baselineStart: 2006,
+      baselineEnd: 2020,
+      recentStart: 2021,
+      recentEnd: 2025,
+    },
+    historicalYears: Array.from({ length: 20 }, (_, idx) => ({
+      year: 2006 + idx,
+      avgTemp: 11.0 + (idx % 3) * 0.4,
+      totalPrecip: 620 + (idx % 4) * 25,
+      avgSolar: 13.5,
+      monthlyTemp: [3.8, 4.5, 7.6, 10.4, 14.1, 17.4, 19.6, 19.4, 15.9, 11.8, 7.1, 4.3],
+      monthlyPrecip: [52, 44, 48, 51, 62, 54, 56, 51, 50, 61, 58, 58],
+      monthlySolar: Array(12).fill(13.5),
+      springPrecipMm: 161,
+      growingSeasonPrecipMm: 223,
+      summerDrySpellDays: 7 + (idx % 3),
+      summerHeatDays: 3 + (idx % 2),
+      daysWithData: 365,
+    })),
+  };
+  const analoguesRes = computeClimateAnalogues({
+    climate: climateWithArchive,
+    mode: "recent_window",
+    topN: 5,
+  });
+  assert.equal(analoguesRes.status, "ready");
+  assert.ok(analoguesRes.matches.length > 0);
+});
+
+test("Adversarial guard (F-1 & F-4): never combines properties, depth layers, quantiles, or WRB from different geographic pixels, and rejects partial-depth core profiles", async () => {
+  clearSoilGridsCacheForTests();
+  const lat = 48.45;
+  const lon = 1.49;
+
+  const baseCoverages: Record<string, number> = {
+    "sand_0-5cm_Q0.5": 200,
+    "sand_5-15cm_Q0.5": 200,
+    "sand_15-30cm_Q0.5": 200,
+    "silt_0-5cm_Q0.5": 540,
+    "silt_5-15cm_Q0.5": 540,
+    "silt_15-30cm_Q0.5": 540,
+    "clay_0-5cm_Q0.5": 260,
+    "clay_5-15cm_Q0.5": 260,
+    "clay_15-30cm_Q0.5": 260,
+    "soc_0-5cm_Q0.5": 180,
+    "soc_5-15cm_Q0.5": 160,
+    "soc_15-30cm_Q0.5": 140,
+    "phh2o_0-5cm_Q0.5": 68,
+    "phh2o_5-15cm_Q0.5": 69,
+    "phh2o_15-30cm_Q0.5": 70,
+    "bdod_0-5cm_Q0.5": 135,
+    "bdod_5-15cm_Q0.5": 140,
+    "bdod_15-30cm_Q0.5": 145,
+    "cfvo_0-5cm_Q0.5": 20,
+    "cfvo_5-15cm_Q0.5": 25,
+    "cfvo_15-30cm_Q0.5": 30,
+    "wv0033_0-5cm_Q0.5": 310,
+    "wv0033_5-15cm_Q0.5": 310,
+    "wv0033_15-30cm_Q0.5": 310,
+    "wv1500_0-5cm_Q0.5": 150,
+    "wv1500_5-15cm_Q0.5": 150,
+    "wv1500_15-30cm_Q0.5": 150,
+    "sand_0-5cm_Q0.05": 110,
+    "sand_0-5cm_Q0.95": 310,
+    MostProbable: 18,
+  };
+
+  // Case 1: Center pixel (2,2) is valid in canary (`clay_0-5cm_Q0.5`), but `sand_15-30cm_Q0.5` is NoData (-32768)
+  // ONLY at (2,2) while neighbor (2,3) has valid `sand_15-30cm_Q0.5 = 450`.
+  // Adapter must NOT pull `sand_15-30cm_Q0.5` from (2,3), and because a core depth layer is missing at (2,2),
+  // must return `null` so `/api/soil` falls back cleanly to the regional reference profile.
+  const chimericCoreFetch: typeof fetch = (async (input: RequestInfo | URL) => {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const u = new URL(urlStr);
+    const coverage = u.searchParams.get("COVERAGE") ?? "";
+    const format = u.searchParams.get("FORMAT") ?? "GEOTIFF_INT16";
+    const [lonMin, , , latMax] = (u.searchParams.get("BBOX") ?? "0,0,0.01125,0.01125").split(",").map(Number);
+    const isByte = format === "GEOTIFF_BYTE";
+    const noData = isByte ? 255 : -32768;
+    const val = baseCoverages[coverage] ?? noData;
+
+    const grid = Array.from({ length: 5 }, (_, r) =>
+      Array.from({ length: 5 }, (__, c) => {
+        if (coverage === "sand_15-30cm_Q0.5" && r === 2 && c === 2) {
+          return -32768; // Masked at selected pixel (2,2)
+        }
+        if (coverage === "sand_15-30cm_Q0.5" && r === 2 && c === 3) {
+          return 450; // Valid at neighbor (2,3) — must NEVER be mixed into (2,2)
+        }
+        return val;
+      })
+    );
+
+    const tiffBuf = encodeSyntheticSoilGridsGeoTiff({
+      grid,
+      bitsPerSample: isByte ? 8 : 16,
+      sampleFormat: isByte ? 1 : 2,
+      noDataValue: noData,
+      originLon: lonMin,
+      originLat: latMax,
+      scaleX: 0.00225,
+      scaleY: 0.00225,
+    });
+    return new Response(new Uint8Array(tiffBuf), { status: 200, headers: { "Content-Type": "image/tiff" } });
+  }) as typeof fetch;
+
+  const rejectedChimericCore = await fetchSoilGridsWcsProfile(lat, lon, {
+    fetchFn: chimericCoreFetch,
+    bypassCache: true,
+  });
+  assert.equal(
+    rejectedChimericCore,
+    null,
+    "Must never substitute a missing core layer from a neighboring pixel or accept a partial <30 cm core profile"
+  );
+
+  // Case 2: Optional layers (`wrb_MostProbable`, `wv0033`, `sand_0-5cm_Q0.05`) are NoData at (2,2)
+  // while valid at neighbor (2,3). Core properties are complete at (2,2).
+  // Profile must succeed using (2,2) core properties, while `wrbSoilGroup`, `awc`, and `sand` uncertainty
+  // remain `undefined`/`null` rather than silently pulling from (2,3).
+  const chimericOptionalFetch: typeof fetch = (async (input: RequestInfo | URL) => {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const u = new URL(urlStr);
+    const coverage = u.searchParams.get("COVERAGE") ?? "";
+    const format = u.searchParams.get("FORMAT") ?? "GEOTIFF_INT16";
+    const [lonMin, , , latMax] = (u.searchParams.get("BBOX") ?? "0,0,0.01125,0.01125").split(",").map(Number);
+    const isByte = format === "GEOTIFF_BYTE";
+    const noData = isByte ? 255 : -32768;
+    const val = baseCoverages[coverage] ?? noData;
+
+    const grid = Array.from({ length: 5 }, (_, r) =>
+      Array.from({ length: 5 }, (__, c) => {
+        if (
+          (coverage === "MostProbable" ||
+            coverage.startsWith("wv0033_") ||
+            coverage === "sand_0-5cm_Q0.05") &&
+          r === 2 &&
+          c === 2
+        ) {
+          return noData;
+        }
+        return val;
+      })
+    );
+
+    const tiffBuf = encodeSyntheticSoilGridsGeoTiff({
+      grid,
+      bitsPerSample: isByte ? 8 : 16,
+      sampleFormat: isByte ? 1 : 2,
+      noDataValue: noData,
+      originLon: lonMin,
+      originLat: latMax,
+      scaleX: 0.00225,
+      scaleY: 0.00225,
+    });
+    return new Response(new Uint8Array(tiffBuf), { status: 200, headers: { "Content-Type": "image/tiff" } });
+  }) as typeof fetch;
+
+  const singlePixelProfile = await fetchSoilGridsWcsProfile(lat, lon, {
+    fetchFn: chimericOptionalFetch,
+    bypassCache: true,
+  });
+  assert.ok(singlePixelProfile, "Profile with complete core layers at (2,2) must succeed");
+  assert.equal(
+    singlePixelProfile.wrbSoilGroup,
+    undefined,
+    "wrbSoilGroup must NOT be pulled from neighbor (2,3) when (2,2) is NoData"
+  );
+  assert.equal(
+    singlePixelProfile.aggregated.depth0_30cm.awc,
+    null,
+    "AWC must NOT pull wv0033 from neighbor (2,3) when (2,2) is NoData"
+  );
+  assert.equal(
+    singlePixelProfile.layerUncertainty?.properties.sand,
+    undefined,
+    "0–5 cm sand uncertainty must NOT pull Q0.05 from neighbor (2,3) when (2,2) is NoData"
+  );
+});
+
+test("Adversarial guard (F-3, F-6, F-7): preserves valid 0 observations on confirmed soil pixels, enforces GeoTIFF format guards, and separates evidence cache keys", async () => {
+  // 1. Valid 0 observations (Q0.05 = 0 for sand/silt/clay/soc and cfvo = 0) are preserved on confirmed soil pixels
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.sand, -32768, true), true);
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.silt, -32768, true), true);
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.clay, -32768, true), true);
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.soc, -32768, true), true);
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.cfvo, -32768, true), true);
+  // Step 1 canary check (`soilPixelConfirmed = false`) still requires raw > 0 so all-zero corrupted rasters are rejected
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.clay, -32768, false), false);
+  // pH and bulk density are never 0 even on confirmed soil pixels
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.phh2o, -32768, true), false);
+  assert.equal(isRawSoilGridsValueValid(0, SOILGRIDS_PROPERTIES.bdod, -32768, true), false);
+
+  const zeroBoundsCoverages: Record<string, number> = {
+    "sand_0-5cm_Q0.5": 820,
+    "sand_5-15cm_Q0.5": 820,
+    "sand_15-30cm_Q0.5": 820,
+    "silt_0-5cm_Q0.5": 100,
+    "silt_5-15cm_Q0.5": 100,
+    "silt_15-30cm_Q0.5": 100,
+    "clay_0-5cm_Q0.5": 80,
+    "clay_5-15cm_Q0.5": 80,
+    "clay_15-30cm_Q0.5": 80,
+    "soc_0-5cm_Q0.5": 40,
+    "soc_5-15cm_Q0.5": 35,
+    "soc_15-30cm_Q0.5": 30,
+    "phh2o_0-5cm_Q0.5": 62,
+    "phh2o_5-15cm_Q0.5": 62,
+    "phh2o_15-30cm_Q0.5": 62,
+    "cfvo_0-5cm_Q0.5": 0,
+    "cfvo_5-15cm_Q0.5": 0,
+    "cfvo_15-30cm_Q0.5": 0,
+    // Valid 0 lower prediction bounds (Q0.05 = 0)
+    "clay_0-5cm_Q0.05": 0,
+    "clay_0-5cm_Q0.95": 180,
+    "soc_0-5cm_Q0.05": 0,
+    "soc_0-5cm_Q0.95": 120,
+  };
+  const zeroProfile = await fetchSoilGridsWcsProfile(51.12, 10.45, {
+    fetchFn: createMockSoilGridsFetch(zeroBoundsCoverages),
+    bypassCache: true,
+  });
+  assert.ok(zeroProfile);
+  assert.equal(zeroProfile.aggregated.depth0_30cm.coarseFragmentsPct, 0);
+  assert.deepEqual(zeroProfile.layerUncertainty?.properties.clay, {
+    q05: 0,
+    q50: 8,
+    q95: 18,
+    unit: "%",
+  });
+  assert.deepEqual(zeroProfile.layerUncertainty?.properties.soc, {
+    q05: 0,
+    q50: 0.4,
+    q95: 1.2,
+    unit: "% SOC",
+  });
+
+  // 2. GeoTIFF decoder format guards reject unsupported SamplesPerPixel, Predictor, SampleFormat, and multi-tile/multi-strip rasters
+  const smallGrid = Array.from({ length: 5 }, () => Array(5).fill(200));
+  assert.throws(
+    () => decodeSoilGridsGeoTiff(encodeSyntheticSoilGridsGeoTiff({ grid: smallGrid, samplesPerPixel: 3 })),
+    /Unsupported SamplesPerPixel/
+  );
+  assert.throws(
+    () => decodeSoilGridsGeoTiff(encodeSyntheticSoilGridsGeoTiff({ grid: smallGrid, predictor: 3 })),
+    /Unsupported TIFF Predictor/
+  );
+  assert.throws(
+    () => decodeSoilGridsGeoTiff(encodeSyntheticSoilGridsGeoTiff({ grid: smallGrid, sampleFormat: 3 })),
+    /Unsupported TIFF SampleFormat/
+  );
+  assert.throws(
+    () => decodeSoilGridsGeoTiff(encodeSyntheticSoilGridsGeoTiff({ grid: smallGrid, tiled: true, tileWidth: 2, tileLength: 2 })),
+    /Unsupported multi-tile GeoTIFF layout/
+  );
+  assert.throws(
+    () => decodeSoilGridsGeoTiff(encodeSyntheticSoilGridsGeoTiff({ grid: smallGrid, tiled: false, rowsPerStrip: 2 })),
+    /Unsupported multi-strip GeoTIFF layout/
+  );
+
+  // 3. Evidence profile provider attribution distinguishes regional fallback from live SoilGrids WCS
+  const climate = makeClimate();
+  const fallbackSoilData: SoilData = {
+    aggregated: resolveGlobalSoilFallback(48.45, 1.49).aggregated,
+    dataCoverage: resolveGlobalSoilFallback(48.45, 1.49).dataCoverage,
+    totalComponentPercent: 100,
+    source: resolveGlobalSoilFallback(48.45, 1.49).source,
+    limitations: resolveGlobalSoilFallback(48.45, 1.49).limitations,
+  };
+  const fallbackEvidence = buildUnifiedFieldEvidenceProfile(48.45, 1.49, climate, fallbackSoilData);
+  assert.ok(
+    fallbackEvidence.activeProviders.some((p) => p.id === "fao_hwsd_v22"),
+    "Regional fallback evidence profile must include fao_hwsd_v22"
+  );
+  assert.ok(
+    !fallbackEvidence.activeProviders.some((p) => p.id === "isric_soilgrids_wcs"),
+    "Regional fallback evidence profile must NOT claim live isric_soilgrids_wcs was used"
+  );
+
+  const liveWcsSoilData: SoilData = {
+    aggregated: zeroProfile.aggregated,
+    dataCoverage: zeroProfile.dataCoverage,
+    totalComponentPercent: 100,
+    source: zeroProfile.source,
+    limitations: zeroProfile.limitations,
+  };
+  const liveWcsEvidence = buildUnifiedFieldEvidenceProfile(48.45, 1.49, climate, liveWcsSoilData);
+  assert.ok(
+    liveWcsEvidence.activeProviders.some((p) => p.id === "isric_soilgrids_wcs"),
+    "Live SoilGrids WCS evidence profile at same coordinate must not collide with cached fallback profile and must include isric_soilgrids_wcs"
+  );
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────

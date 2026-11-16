@@ -6,8 +6,13 @@ import {
   resolveGlobalSoilFallback,
   type SoilPropertyUncertainty,
 } from "@/lib/global-data-providers";
+import {
+  fetchSoilGridsWcsProfile,
+  type SoilGridsLayerUncertainty,
+} from "@/lib/soilgrids-wcs";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const FALLBACK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes when falling back after transient WCS error
 const SDA_TIMEOUT_MS = 20000; // 20 seconds per query
 
 interface ComponentHorizon {
@@ -65,6 +70,7 @@ interface SoilResponse {
     lonWasNormalized?: boolean;
     originalLon?: number;
   };
+  dataTier?: "usda_ssurgo" | "soilgrids_wcs_250m" | "regional_reference_fallback";
   source: string;
   coverage: string;
   wrbSoilGroup?: string;
@@ -76,6 +82,7 @@ interface SoilResponse {
   components: SoilComponent[];
   aggregated: AggregatedProperties & {
     depth0_30cm: AggregatedProperties["depth0_30cm"] & {
+      organicCarbonPct?: number | null;
       bulkDensityGcm3?: number | null;
       coarseFragmentsPct?: number | null;
     };
@@ -89,6 +96,14 @@ interface SoilResponse {
       ph?: SoilPropertyUncertainty;
       awc?: SoilPropertyUncertainty;
     };
+  };
+  layerUncertainty?: SoilGridsLayerUncertainty;
+  pixelResolution?: {
+    gridSizeMeters: number;
+    usedNeighborPixel: boolean;
+    neighborDistanceMeters: number;
+    extractedLat: number;
+    extractedLon: number;
   };
   propertySources?: Record<string, string>;
   dataCoverage: DataCoverage;
@@ -295,16 +310,18 @@ export async function GET(request: NextRequest) {
       : {}),
   };
 
-  const cacheKey = `${lat.toFixed(2)}_${lon.toFixed(2)}`;
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    return NextResponse.json({ ...cached, location: locationMeta, cached: true });
-  }
-
   const geo = resolveGeographicContext(lat, lon);
   const isInsideUS =
     geo.countryCodeIso2 === "US" ||
     (lat >= 17.5 && lat <= 71.5 && lon >= -179.9 && lon <= -64.5);
+
+  const cacheKey = isInsideUS
+    ? `${lat.toFixed(2)}_${lon.toFixed(2)}`
+    : `${lat.toFixed(4)}_${lon.toFixed(4)}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    return NextResponse.json({ ...cached, location: locationMeta, cached: true });
+  }
 
   function buildGlobalFallbackResponse(reasonNote?: string): SoilResponse {
     const fb = resolveGlobalSoilFallback(lat, lon);
@@ -313,6 +330,7 @@ export async function GET(request: NextRequest) {
       : fb.limitations;
     return {
       location: locationMeta,
+      dataTier: "regional_reference_fallback",
       source: fb.source,
       coverage: fb.coverage,
       wrbSoilGroup: fb.wrbSoilGroup,
@@ -329,10 +347,37 @@ export async function GET(request: NextRequest) {
   }
 
   if (!isInsideUS) {
+    const sgProfile = await fetchSoilGridsWcsProfile(lat, lon);
+    if (sgProfile) {
+      const response: SoilResponse = {
+        location: locationMeta,
+        dataTier: "soilgrids_wcs_250m",
+        source: sgProfile.source,
+        coverage: sgProfile.coverage,
+        wrbSoilGroup: sgProfile.wrbSoilGroup,
+        mapUnit: sgProfile.mapUnit,
+        totalComponentPercent: sgProfile.totalComponentPercent,
+        components: sgProfile.components,
+        aggregated: sgProfile.aggregated,
+        uncertainty: undefined,
+        layerUncertainty: sgProfile.layerUncertainty,
+        pixelResolution: sgProfile.pixelResolution,
+        propertySources: sgProfile.propertySources,
+        dataCoverage: sgProfile.dataCoverage,
+        limitations: sgProfile.limitations,
+      };
+      cache.set(cacheKey, response);
+      return NextResponse.json(response, {
+        headers: {
+          "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=3600",
+        },
+      });
+    }
+
     const response = buildGlobalFallbackResponse(
-      `Location (${geo.countryName} — ${geo.admin1Name}) is outside USDA SSURGO (US-only) survey coverage. Displaying a macro-regional 0–30 cm topsoil reference estimate compiled from published FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries (not a coordinate-specific spatial extraction).`
+      `Location (${geo.countryName} — ${geo.admin1Name}) is outside USDA SSURGO (US-only) survey coverage and live ISRIC SoilGrids v2.0 WCS extraction was unavailable or masked at this coordinate (no valid 250 m soil pixel within ≤ 250 m). Displaying a macro-regional 0–30 cm topsoil reference estimate compiled from published FAO HWSD v2.2 & ISRIC SoilGrids v2.0 regional summaries (not a coordinate-specific spatial extraction).`
     );
-    cache.set(cacheKey, response);
+    cache.set(cacheKey, response, { ttl: FALLBACK_CACHE_TTL_MS });
     return NextResponse.json(response);
   }
 
@@ -505,6 +550,7 @@ export async function GET(request: NextRequest) {
 
     const response: SoilResponse = {
       location: locationMeta,
+      dataTier: "usda_ssurgo",
       source:
         "USDA NRCS Soil Survey Geographic Database (SSURGO). https://sdmdataaccess.sc.egov.usda.gov",
       coverage: "United States (USDA SSURGO primary survey).",

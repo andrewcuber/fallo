@@ -48,8 +48,10 @@ interface SoilComponent {
 
 interface SoilData {
   location: { lat: number; lon: number };
+  dataTier?: "usda_ssurgo" | "soilgrids_wcs_250m" | "regional_reference_fallback";
   source: string;
   coverage: string;
+  wrbSoilGroup?: string;
   mapUnit: { mukey: string; name: string } | null;
   totalComponentPercent: number;
   components: SoilComponent[];
@@ -61,10 +63,32 @@ interface SoilData {
       om: number | null;
       ph: number | null;
       awc: number | null;
+      organicCarbonPct?: number | null;
+      bulkDensityGcm3?: number | null;
+      coarseFragmentsPct?: number | null;
     };
     drainage: string | null;
     slope: number | null;
   };
+  layerUncertainty?: {
+    depthInterval: string;
+    depthLabel: string;
+    note: string;
+    properties: Partial<
+      Record<
+        "sand" | "silt" | "clay" | "soc" | "om" | "ph",
+        { q05: number; q50: number; q95: number; unit: string }
+      >
+    >;
+  };
+  pixelResolution?: {
+    gridSizeMeters: number;
+    usedNeighborPixel: boolean;
+    neighborDistanceMeters: number;
+    extractedLat: number;
+    extractedLon: number;
+  };
+  propertySources?: Record<string, string>;
   dataCoverage: {
     depth0_30cm: {
       sand: number | null;
@@ -195,7 +219,16 @@ export default function SoilPage() {
   const awc = depth0_30cm?.awc ?? null;
   const hasTexture = sand !== null || silt !== null || clay !== null;
 
-  const isSsurgoSurvey = data?.source.toUpperCase().includes("SSURGO") ?? false;
+  const isSsurgoSurvey =
+    data?.dataTier === "usda_ssurgo" ||
+    (data?.source.toUpperCase().includes("SSURGO") ?? false);
+  const isSoilGridsWcs =
+    !isSsurgoSurvey &&
+    (data?.dataTier === "soilgrids_wcs_250m" ||
+      (data?.source.includes("maps.isric.org") ?? false));
+  const socPct = depth0_30cm?.organicCarbonPct ?? null;
+  const bulkDensity = depth0_30cm?.bulkDensityGcm3 ?? null;
+  const coarseFragments = depth0_30cm?.coarseFragmentsPct ?? null;
 
   return (
     <div className="space-y-8">
@@ -208,13 +241,21 @@ export default function SoilPage() {
           {data
             ? isSsurgoSurvey
               ? `Topsoil properties (upper 30 cm) for ${field.name}, including texture, organic matter, water-holding capacity, pH, and drainage.`
+              : isSoilGridsWcs
+              ? `Coordinate-specific modeled topsoil estimates (upper 30 cm, ~250 m resolution) for ${field.name} from ISRIC SoilGrids v2.0 (0–5, 5–15, and 15–30 cm layers).`
               : `Regional topsoil estimate (upper 30 cm) for ${field.name} — representative properties for this agroecological zone.`
             : `Soil texture, drainage, and properties for ${field.name}`}
         </p>
         <p className="text-xs text-muted-foreground">
           Coordinates: {field.lat.toFixed(4)}, {field.lon.toFixed(4)}
           {data?.mapUnit &&
-            ` · ${isSsurgoSurvey ? "Map unit" : "Regional reference soil group"}: ${data.mapUnit.name}`}
+            ` · ${
+              isSsurgoSurvey
+                ? "Map unit"
+                : isSoilGridsWcs
+                ? "Modeled soil unit (~250 m)"
+                : "Regional reference soil group"
+            }: ${data.mapUnit.name}`}
         </p>
       </div>
 
@@ -250,14 +291,35 @@ export default function SoilPage() {
       {/* Data */}
       {data && !loading && (
         <>
-          {!isSsurgoSurvey && (
+          {isSoilGridsWcs && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50/70 px-4 py-3 text-xs text-blue-950 space-y-1.5">
+              <p className="font-semibold flex items-center gap-1.5">
+                <Database className="h-4 w-4 text-blue-700 shrink-0" />
+                ISRIC SoilGrids v2.0 — Modeled Coordinate Estimate (~250 m Resolution)
+              </p>
+              <p className="leading-relaxed text-blue-900/90">
+                Values are depth-weighted 0–30 cm predictions extracted from a single 250 m pixel across the 0–5 cm, 5–15 cm, and 15–30 cm layers via ISRIC&apos;s OGC Web Coverage Service. These are global machine-learning estimates (~250 m grid) intended for regional and screening context—not field soil measurements or a substitute for laboratory soil testing.
+                {data.pixelResolution?.usedNeighborPixel &&
+                  ` Because the exact coordinate fell on a masked pixel (e.g., road, building, or surface water), values were retrieved from the nearest unmasked pixel ~${data.pixelResolution.neighborDistanceMeters} m away (≤ 250 m limit).`}
+              </p>
+              <p className="leading-relaxed text-blue-900/80">
+                <strong>Source vs. derived values:</strong> Sand, silt, clay, soil organic carbon
+                {socPct !== null ? ` (SOC ${fmt(socPct, 2)}%)` : ""}, pH
+                {bulkDensity !== null ? `, bulk density (${fmt(bulkDensity, 2)} g/cm³)` : ""}
+                {coarseFragments !== null ? `, and coarse fragments (${fmt(coarseFragments, 1)}%)` : ""}{" "}
+                are direct SoilGrids predictions. Organic matter ({fmt(om, 2)}%) is a derived estimate from SOC (SOC × 1.724), and AWC is computed from 33/1500 kPa water-retention layers where valid. Drainage class and slope are not published by SoilGrids and are not fabricated.
+              </p>
+            </div>
+          )}
+
+          {!isSsurgoSurvey && !isSoilGridsWcs && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-900 space-y-1">
               <p className="font-semibold flex items-center gap-1.5">
                 <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
-                Regional Topsoil Estimate
+                Regional Topsoil Estimate (Fallback Reference Profile)
               </p>
               <p className="leading-relaxed text-amber-900/90">
-                These values represent typical 0–30 cm topsoil properties for this agroecological region rather than a field-specific survey at your exact coordinates. On-site soil testing is recommended before making fertilizer or lime decisions.
+                Live coordinate-specific soil extraction was unavailable for this location. These values represent typical 0–30 cm topsoil properties for this agroecological region rather than a field-specific survey at your exact coordinates. On-site soil testing is recommended before making fertilizer or lime decisions.
               </p>
             </div>
           )}
@@ -350,11 +412,17 @@ export default function SoilPage() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base font-semibold text-foreground">
-                {isSsurgoSurvey ? "Component Composition" : "Regional Reference Soil Group"}
+                {isSsurgoSurvey
+                  ? "Component Composition"
+                  : isSoilGridsWcs
+                  ? "ISRIC SoilGrids v2.0 Grid Profile (~250 m)"
+                  : "Regional Reference Soil Group"}
               </CardTitle>
               <CardDescription className="text-xs">
                 {isSsurgoSurvey
                   ? "Named soil components in the map unit. Percentages reflect the share of each component within the map unit polygon."
+                  : isSoilGridsWcs
+                  ? "Modeled 250 m raster profile extracted across the three standard SoilGrids topsoil depth intervals (0–5 cm, 5–15 cm, and 15–30 cm)."
                   : "Polygon map-unit component records are only available for USDA SSURGO surveyed fields in the United States."}
               </CardDescription>
             </CardHeader>
@@ -546,6 +614,37 @@ export default function SoilPage() {
                 <strong className="text-foreground">Coverage &amp; methodology:</strong>{" "}
                 {data.coverage}
               </p>
+              {data.layerUncertainty && (
+                <div className="space-y-1">
+                  <p className="font-medium text-foreground">
+                    Layer-Specific Prediction Uncertainty ({data.layerUncertainty.depthLabel}):
+                  </p>
+                  <p className="text-muted-foreground">{data.layerUncertainty.note}</p>
+                  <ul className="list-disc list-inside space-y-0.5 text-muted-foreground">
+                    {Object.entries(data.layerUncertainty.properties).map(([key, u]) =>
+                      u ? (
+                        <li key={key}>
+                          <span className="uppercase font-medium text-foreground/80">{key}:</span>{" "}
+                          median {u.q50} {u.unit} (90% prediction interval Q0.05–Q0.95: {u.q05}–{u.q95}{" "}
+                          {u.unit})
+                        </li>
+                      ) : null
+                    )}
+                  </ul>
+                </div>
+              )}
+              {data.propertySources && Object.keys(data.propertySources).length > 0 && (
+                <div className="space-y-1">
+                  <p className="font-medium text-foreground">Property Provenance &amp; Conversions:</p>
+                  <ul className="list-disc list-inside space-y-0.5 text-muted-foreground">
+                    {Object.entries(data.propertySources).map(([prop, desc]) => (
+                      <li key={prop}>
+                        <span className="font-medium text-foreground/80">{prop}:</span> {desc}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {data.limitations.length > 0 && (
                 <ul className="list-disc list-inside space-y-1 text-muted-foreground">
                   {data.limitations.map((l, i) => (

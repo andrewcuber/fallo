@@ -130,17 +130,17 @@ export const GLOBAL_DATA_PROVIDERS: Record<DataProviderId, DataProviderDescripto
   },
   isric_soilgrids_wcs: {
     id: "isric_soilgrids_wcs",
-    name: "ISRIC SoilGrids v2.0 (250m Global Soil Information — Regional Reference)",
-    officialUrl: "https://docs.isric.org/globaldata/soilgrids/",
-    geographicCoverage: "Global land surface",
-    spatialResolution: "Macro-regional reference summaries derived from 250 m SoilGrids v2.0 literature",
-    temporalResolution: "Static digital soil mapping reference baseline (v2.0)",
+    name: "ISRIC SoilGrids v2.0 (250 m Global Digital Soil Mapping via OGC WCS)",
+    officialUrl: "https://docs.isric.org/globaldata/soilgrids/wcs.html",
+    geographicCoverage: "Global land surface (-56°S to 84°N)",
+    spatialResolution: "~250 m grid (0–5 cm, 5–15 cm, and 15–30 cm layers weighted to 0–30 cm)",
+    temporalResolution: "Static digital soil mapping baseline (v2.0)",
     accessMethod:
-      "Curated macro-regional 0–30 cm topsoil reference profiles with indicative regional variability ranges (Q0.05–Q0.95); not a live coordinate-level WCS/WebDAV raster query",
-    integrationStatus: "fallback_and_harmonized_reference",
-    licenseAndAttribution: "CC BY 4.0 (ISRIC — World Soil Information)",
+      "Live server-side OGC Web Coverage Service (WCS) GeoTIFF queries (https://maps.isric.org/) with 24h Next.js Data Cache / LRU cache and regional reference fallback",
+    integrationStatus: "live_api_integrated",
+    licenseAndAttribution: "CC BY 4.0 (ISRIC — World Soil Information; Poggio et al., 2021)",
     uncertaintyAndLimitations:
-      "ISRIC's public SoilGrids v2.0 REST API is paused. Outside the US, fallo provides representative regional topsoil estimates rather than coordinate-specific raster extractions or field laboratory measurements.",
+      "Coordinate-specific ~250 m machine-learning soil predictions (not field measurements or lab tests; ISRIC notes SoilGrids is designed for regional/screening context rather than farm-scale management without on-site testing). Masked pixels only use an adjacent unmasked pixel within ≤ 250 m; organic matter is estimated from Soil Organic Carbon (SOC × 1.724), AWC is computed where valid 33/1500 kPa retention predictions exist, and categorical drainage/slope are not fabricated.",
   },
   fao_hwsd_v22: {
     id: "fao_hwsd_v22",
@@ -958,7 +958,19 @@ export function buildUnifiedFieldEvidenceProfile(
   const norm = normalizeCoordinates(latInput, lonInput);
   const lat = norm.valid ? norm.lat : latInput;
   const lon = norm.valid ? norm.lon : lonInput;
-  const cacheKey = `${lat.toFixed(3)}_${lon.toFixed(3)}_${climate.fullRecord.avgAnnualTemp ?? "na"}_${existingSoil ? "ssurgo" : "nosoil"}`;
+  const srcLower = existingSoil?.source.toLowerCase() ?? "";
+  const isSsurgoSoil = Boolean(existingSoil && srcLower.includes("ssurgo"));
+  const isLiveSoilGridsWcs = Boolean(
+    existingSoil && srcLower.includes("soilgrids") && !srcLower.includes("hwsd")
+  );
+  const soilKey = !existingSoil
+    ? "nosoil"
+    : isSsurgoSoil
+      ? "ssurgo"
+      : isLiveSoilGridsWcs
+        ? "soilgrids_wcs"
+        : "regional_fallback";
+  const cacheKey = `${lat.toFixed(4)}_${lon.toFixed(4)}_${climate.fullRecord.avgAnnualTemp ?? "na"}_${soilKey}`;
 
   const cached = evidenceCache.get(cacheKey);
   if (cached) return cached;
@@ -983,10 +995,12 @@ export function buildUnifiedFieldEvidenceProfile(
   if (gaezIndicators.chirpsDomainApplicable) {
     providerIds.push("ucsb_chirps_v3");
   }
-  if (existingSoil && existingSoil.source.toLowerCase().includes("ssurgo")) {
+  if (isSsurgoSoil) {
     providerIds.push("usda_ssurgo");
-  } else if (soilFallback) {
-    providerIds.push("fao_hwsd_v22", "isric_soilgrids_wcs");
+  } else if (isLiveSoilGridsWcs) {
+    providerIds.push("isric_soilgrids_wcs");
+  } else {
+    providerIds.push("fao_hwsd_v22");
   }
 
   const profile: UnifiedFieldEvidenceProfile = {
