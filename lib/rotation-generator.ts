@@ -1486,6 +1486,8 @@ export async function generateRotations(
       agGroup: classification.group,
       regionTag: effectiveRegionTag,
       availableCropIds: availableCrops,
+      climate: normalizedContext.climate,
+      hemisphere: geo.hemisphere === "equatorial" ? "tropical" : geo.hemisphere,
     };
 
     const acceptedResults: StrategyResult[] = [];

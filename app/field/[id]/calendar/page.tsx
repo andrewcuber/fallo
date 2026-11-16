@@ -757,6 +757,34 @@ function SeasonCalendarDetailCard({
           ))}
         </div>
       )}
+
+      {/* Agronomic Compatibility, Overlap, Termination, Nitrogen & Winter Survival Advisories */}
+      {season.agronomicAdvisories.length > 0 && (
+        <div className="space-y-1.5 pt-0.5">
+          {season.agronomicAdvisories.map((adv, i) => (
+            <div
+              key={`${adv.category}-${i}`}
+              className={`rounded border px-2.5 py-1.5 text-[11px] ${
+                adv.severity === "warning"
+                  ? "bg-accent-red/5 border-accent-red/25 text-foreground"
+                  : "bg-emerald-50/70 border-emerald-200/80 text-emerald-950"
+              }`}
+            >
+              <p className="font-semibold flex items-center gap-1.5">
+                {adv.severity === "warning" ? (
+                  <AlertTriangle className="h-3.5 w-3.5 text-accent-red shrink-0" />
+                ) : (
+                  <Info className="h-3.5 w-3.5 text-emerald-700 shrink-0" />
+                )}
+                <span>{adv.title}</span>
+              </p>
+              <p className="text-muted-foreground mt-0.5 leading-relaxed">
+                {adv.detail}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

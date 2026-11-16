@@ -20,6 +20,10 @@ import {
   validateProposal,
   isStrategyStructurallyValid,
   formatCompatibilityRulesForPrompt,
+  evaluateCropOverlapAndTermination,
+  evaluateSeasonalVarietyAlignment,
+  evaluateNitrogenAndBarleyCompatibility,
+  evaluateCoverCropWinterSuitability,
 } from "@/lib/rotation-validator";
 import {
   generateRotations,
@@ -89,6 +93,7 @@ import {
   resolveScoredStrategyById,
   rankStrategyResults,
   scoreStrategy,
+  cropLibrary,
 } from "@/lib/rotation-scoring";
 import {
   applyFieldRotationsUpdate,
@@ -2931,6 +2936,465 @@ test("Field-specific planning objectives adapt across 3 contrasting field contex
   });
   assert.equal(waterHeavyObjectives[0].archetype, "water_resilience");
   assert.ok(waterHeavyObjectives[0].emphasisTag.includes("Top Farmer Priority"));
+});
+
+section("Agronomic Consistency: Overlap, Seasonal Varieties, Termination, Nitrogen & Winter Survival");
+
+test("Spring Barley (Mar–Jul) + Hairy Vetch (Sep–May) test case flags March–May overlap, May termination conflict, concurrent N unavailability, and conditional malting barley advisory without universal thresholds", () => {
+  const testStrategy = makeValidStrategy("barley_vetch_conflict", "Barley + Hairy Vetch Test Case");
+  // Year 1: Spring Barley (March–July) + Hairy Vetch (September–May) overlapping March–May
+  testStrategy.years[0].seasons = [
+    {
+      season: "Spring–Summer",
+      crop: "spring_barley",
+      activity: "Plant spring barley March; harvest July",
+      months: [3, 4, 5, 6, 7],
+    },
+    {
+      season: "Fall–Spring Overwinter",
+      crop: "hairy_vetch",
+      activity: "Overwinter hairy vetch September–May",
+      months: [9, 10, 11, 12, 1, 2, 3, 4, 5],
+    },
+  ];
+  // Year 2: Soybean (Fabaceae) — remove crimson_clover so Fabaceae appears in <=2 years
+  testStrategy.years[1].seasons = [
+    {
+      season: "Summer",
+      crop: "soybean",
+      activity: "Plant soybean",
+      months: [5, 6, 7, 8, 9],
+    },
+  ];
+  // Year 3: Corn + Forage Radish
+  testStrategy.years[2].seasons = [
+    {
+      season: "Summer",
+      crop: "field_corn",
+      activity: "Plant corn",
+      months: [4, 5, 6, 7, 8],
+    },
+    {
+      season: "Fall",
+      crop: "forage_radish",
+      activity: "Plant radish",
+      months: [8, 9, 10],
+    },
+  ];
+
+  // Verify Hairy Vetch catalog note has no mandatory 3,500 lb DM/acre requirement
+  const vetchCreditNote = cropLibrary.hairy_vetch.nitrogenBehavior.residualNcredit?.note ?? "";
+  assert.ok(!vetchCreditNote.includes("3,500") && !vetchCreditNote.includes("3500"));
+  assert.ok(vetchCreditNote.includes("upper-range potential"));
+  assert.ok(vetchCreditNote.includes("establishment") && vetchCreditNote.includes("stand vigor"));
+
+  // 1. Overlap & Termination evaluation
+  const overlapFindings = evaluateCropOverlapAndTermination(testStrategy, "northern");
+  const y1Findings = overlapFindings.filter((f) => f.year === 1);
+  assert.equal(y1Findings.length, 1);
+  const y1Conflict = y1Findings[0];
+  assert.equal(y1Conflict.year, 1);
+  assert.equal(y1Conflict.cashCropId, "spring_barley");
+  assert.equal(y1Conflict.coverCropId, "hairy_vetch");
+  assert.deepEqual(y1Conflict.sharedMonths, [3, 4, 5]);
+  assert.deepEqual(y1Conflict.sharedMonthNames, ["Mar", "Apr", "May"]);
+  assert.equal(y1Conflict.coverTerminationMonth, 5);
+  assert.equal(y1Conflict.classification, "incompatible_overlap");
+  assert.equal(y1Conflict.conflictsWithSensitiveStage, true);
+  assert.ok(y1Conflict.conflictingStageLabels.some((lbl) => lbl.includes("Heading Grain Fill")));
+  assert.ok(y1Conflict.message.includes("climbing/vining legume"));
+  assert.ok(y1Conflict.message.includes("May"));
+
+  // 2. Nitrogen & Conditional Malting Barley evaluation
+  const nFindings = evaluateNitrogenAndBarleyCompatibility(testStrategy, "northern");
+  assert.ok(
+    nFindings.some(
+      (f) =>
+        f.kind === "concurrent_overlap_n_unavailable" &&
+        f.legumeCropId === "hairy_vetch" &&
+        f.targetCashCropId === "spring_barley" &&
+        f.message.includes("post-termination credit mineralized for a subsequent crop") &&
+        f.message.includes("NOT available to concurrently growing")
+    )
+  );
+  const maltFinding = nFindings.find((f) => f.kind === "malting_barley_excess_n_risk")!;
+  assert.ok(maltFinding);
+  assert.ok(maltFinding.message.includes("If this barley is grown for malting"));
+  assert.ok(maltFinding.message.includes("maltster, buyer, barley class, and contract"));
+  assert.ok(!maltFinding.message.includes("11.5–12.5%"));
+  assert.ok(!maltFinding.message.toLowerCase().includes("feed barley can utilize"));
+
+  // 3. Proposal validator surfaces warnings
+  const valResult = validateProposal(testStrategy, {
+    agGroup: "temperate_humid",
+    regionTag: "us_midwest",
+    availableCropIds: ["spring_barley", "hairy_vetch", "soybean", "field_corn", "forage_radish"],
+    climate: makeClimate(),
+    hemisphere: "northern",
+  });
+  assert.equal(valResult.valid, true);
+  assert.ok(valResult.warnings.some((w) => w.includes("Mar–Apr–May") && w.includes("Hairy Vetch")));
+  assert.ok(valResult.warnings.some((w) => w.includes("NOT available to concurrently growing")));
+  assert.ok(
+    valResult.warnings.some(
+      (w) =>
+        w.includes("If this barley is grown for malting") &&
+        w.includes("maltster, buyer, barley class, and contract") &&
+        !w.includes("11.5–12.5%")
+    )
+  );
+
+  // 4. Scoring engine (scoreNitrogen) qualifies N credit, removes full concurrent-overlap N credit,
+  // and does NOT apply an automatic malting-related score penalty to non-overlapping feed/seasonal barley
+  const scoredConcurrent = scoreStrategy(testStrategy, makeClimate(), makeSoil(), DEFAULT_PRIORITIES);
+  const nScoreConcurrent = scoredConcurrent.factorScores.nitrogenContribution;
+  assert.ok(
+    nScoreConcurrent.positiveContributors.some((p) =>
+      p.includes("conditional ~80–100 lb N/acre upper-range potential")
+    )
+  );
+  assert.ok(
+    nScoreConcurrent.negativeContributors.some((n) =>
+      n.includes("NOT assigned or available to concurrently growing")
+    )
+  );
+  assert.ok(
+    nScoreConcurrent.negativeContributors.some(
+      (n) =>
+        n.includes("If grown for malting") &&
+        n.includes("maltster, buyer, barley class, and contract") &&
+        !n.includes("11.5–12.5%")
+    )
+  );
+
+  // Compare non-overlapping hairy_vetch (Sep–Feb) -> spring_barley (Mar–Jul) vs. no-vetch baseline:
+  // Non-overlapping barley receives the full +15 vetch credit with NO automatic -6 malting score penalty!
+  const nonOverlappingBarleyStrat = makeValidStrategy("barley_after_vetch", "Barley After Vetch");
+  nonOverlappingBarleyStrat.years[0].seasons = [
+    {
+      season: "Overwinter",
+      crop: "hairy_vetch",
+      activity: "Overwinter vetch terminated before barley",
+      months: [9, 10, 11, 12, 1, 2],
+    },
+    {
+      season: "Spring–Summer",
+      crop: "spring_barley",
+      activity: "Plant spring barley March–July",
+      months: [3, 4, 5, 6, 7],
+    },
+  ];
+  nonOverlappingBarleyStrat.years[1].seasons = testStrategy.years[1].seasons;
+  nonOverlappingBarleyStrat.years[2].seasons = testStrategy.years[2].seasons;
+
+  const noVetchBarleyStrat = makeValidStrategy("barley_no_vetch", "Barley Without Vetch");
+  noVetchBarleyStrat.years[0].seasons = [
+    {
+      season: "Spring–Summer",
+      crop: "spring_barley",
+      activity: "Plant spring barley March–July",
+      months: [3, 4, 5, 6, 7],
+    },
+  ];
+  noVetchBarleyStrat.years[1].seasons = testStrategy.years[1].seasons;
+  noVetchBarleyStrat.years[2].seasons = testStrategy.years[2].seasons;
+
+  const scoredAfterVetch = scoreStrategy(nonOverlappingBarleyStrat, makeClimate(), makeSoil(), DEFAULT_PRIORITIES);
+  const scoredNoVetch = scoreStrategy(noVetchBarleyStrat, makeClimate(), makeSoil(), DEFAULT_PRIORITIES);
+  assert.equal(
+    scoredAfterVetch.factorScores.nitrogenContribution.score! -
+      scoredNoVetch.factorScores.nitrogenContribution.score!,
+    15,
+    "Non-overlapping spring_barley following hairy_vetch must receive the full +15 legume N credit without an automatic malting penalty"
+  );
+  assert.equal(
+    nScoreConcurrent.score!,
+    scoredNoVetch.factorScores.nitrogenContribution.score!,
+    "Concurrently overlapping hairy_vetch (Mar–May) must not assign net N credit to concurrently growing spring_barley"
+  );
+
+  // 5. Field Calendar surfaces overlap, termination, conditional malting N, and winter-climate advisories
+  const calendar = buildFieldCalendar({
+    strategy: testStrategy,
+    climate: makeClimate(),
+    lat: 41.5,
+    lon: -93.6,
+  });
+  const y1Seasons = calendar.years[0].seasons;
+  const barleySeason = y1Seasons.find((s) => s.cropId === "spring_barley")!;
+  const vetchSeason = y1Seasons.find((s) => s.cropId === "hairy_vetch")!;
+
+  assert.ok(
+    barleySeason.agronomicAdvisories.some(
+      (a) => a.severity === "warning" && (a.category === "overlap" || a.category === "termination")
+    )
+  );
+  assert.ok(
+    barleySeason.agronomicAdvisories.some(
+      (a) =>
+        a.severity === "warning" &&
+        a.category === "nitrogen" &&
+        a.title.includes("Conditional malting barley")
+    )
+  );
+  assert.ok(
+    vetchSeason.nitrogenSummary.includes("for subsequent crop after termination") &&
+      vetchSeason.nitrogenSummary.includes("not available to concurrently overlapping spring crop")
+  );
+  assert.ok(
+    vetchSeason.agronomicAdvisories.some((a) => a.category === "winter_survival")
+  );
+});
+
+test("Same-month transitions are classified as conditional_transition (dependent on intra-month order & management) while relay interseeding is compatible_interseeding", () => {
+  const transitionStrat = makeValidStrategy("conditional_transitions", "Conditional Transition & Relay Plan");
+  // Year 1: Hairy vetch ending in April (month 4) as Field Corn starts in April (month 4) -> conditional_transition
+  transitionStrat.years[0].seasons = [
+    {
+      season: "Overwinter–Spring",
+      crop: "hairy_vetch",
+      activity: "Overwinter hairy vetch; terminate April before corn",
+      months: [9, 10, 11, 12, 1, 2, 3, 4],
+    },
+    {
+      season: "Spring–Summer",
+      crop: "field_corn",
+      activity: "Plant corn in April after vetch termination",
+      months: [4, 5, 6, 7, 8],
+    },
+  ];
+  // Year 2: Soybean [5, 6, 7, 8, 9, 10] with late-season overseeding of cereal_rye in [9, 10, 11, 12] (2-month tail relay)
+  transitionStrat.years[1].seasons = [
+    {
+      season: "Summer",
+      crop: "soybean",
+      activity: "Grow soybean May–October",
+      months: [5, 6, 7, 8, 9, 10],
+    },
+    {
+      season: "Fall Relay",
+      crop: "cereal_rye",
+      activity: "Aerial overseed cereal rye at soybean leaf drop",
+      months: [9, 10, 11, 12],
+    },
+  ];
+  // Year 3: Crimson clover ending in May (month 5) as Grain Sorghum starts in May (month 5) -> conditional_transition without universal 10–14 day rule
+  transitionStrat.years[2].seasons = [
+    {
+      season: "Overwinter–Spring",
+      crop: "crimson_clover",
+      activity: "Crimson clover terminated May",
+      months: [10, 11, 12, 1, 2, 3, 4, 5],
+    },
+    {
+      season: "Summer",
+      crop: "grain_sorghum",
+      activity: "Plant sorghum in May",
+      months: [5, 6, 7, 8, 9],
+    },
+  ];
+
+  const findings = evaluateCropOverlapAndTermination(transitionStrat, "northern");
+  const y1Finding = findings.find((f) => f.year === 1)!;
+  const y2Finding = findings.find((f) => f.year === 2)!;
+  const y3Finding = findings.find((f) => f.year === 3)!;
+
+  assert.equal(y1Finding.classification, "conditional_transition");
+  assert.equal(y1Finding.conflictsWithSensitiveStage, false);
+  assert.ok(y1Finding.message.includes("monthly resolution"));
+  assert.ok(y1Finding.message.includes("10–14 days"));
+  assert.ok(y1Finding.message.includes("planting-green"));
+
+  assert.equal(y2Finding.classification, "compatible_interseeding");
+  assert.equal(y2Finding.conflictsWithSensitiveStage, false);
+
+  assert.equal(y3Finding.classification, "conditional_transition");
+  assert.ok(y3Finding.message.includes("monthly resolution"));
+  assert.ok(!y3Finding.message.includes("10–14 days"));
+});
+
+test("Spring vs. Winter varieties flag cold-winter mismatches, allow autumn-sown spring-habit crops in mild-winter systems, and filter (NH Spring)/(SH Autumn) calendar strings", () => {
+  assert.ok(cropLibrary.spring_barley);
+  assert.ok(cropLibrary.winter_barley);
+  assert.ok(cropLibrary.winter_canola);
+  assert.ok(cropLibrary.spring_canola);
+
+  // 1. Cold-winter context (us_midwest / continental): autumn-sown spring_barley and spring-sown winter_canola are flagged
+  const mismatchStrat = makeValidStrategy("variety_mismatch", "Variety Mismatch Plan");
+  mismatchStrat.years[0].seasons = [
+    {
+      season: "Fall–Spring",
+      crop: "spring_barley",
+      activity: "Wrongly autumn-sown spring barley in cold winter",
+      months: [10, 11, 12, 1, 2, 3, 4, 5],
+    },
+  ];
+  mismatchStrat.years[1].seasons = [
+    {
+      season: "Spring–Summer",
+      crop: "winter_canola",
+      activity: "Wrongly spring-sown winter canola without winter vernalization",
+      months: [4, 5, 6, 7, 8],
+    },
+  ];
+
+  const coldWinterMismatches = evaluateSeasonalVarietyAlignment(
+    mismatchStrat,
+    "northern",
+    { agGroup: "continental", regionTag: "us_midwest" }
+  );
+  assert.equal(coldWinterMismatches.length, 2);
+  assert.equal(coldWinterMismatches[0].cropId, "spring_barley");
+  assert.equal(coldWinterMismatches[0].recommendedAlternativeCropId, "winter_barley");
+  assert.equal(coldWinterMismatches[1].cropId, "winter_canola");
+  assert.equal(coldWinterMismatches[1].recommendedAlternativeCropId, "spring_canola");
+
+  // 2. Mild-winter contexts (MENA, South Asian Rabi, Mediterranean, Australian winter-rainfall):
+  // Autumn/winter-sown spring_wheat, spring_barley, and spring_canola are NOT falsely flagged
+  const rabiAndMedStrat = makeValidStrategy("mild_winter_spring_habit", "Mild Winter Spring-Habit Plan");
+  rabiAndMedStrat.years[0].seasons = [
+    {
+      season: "Rabi / Winter",
+      crop: "spring_wheat",
+      activity: "November-sown spring bread wheat in Rabi / MENA",
+      months: [11, 12, 1, 2, 3, 4],
+    },
+  ];
+  rabiAndMedStrat.years[1].seasons = [
+    {
+      season: "Winter",
+      crop: "spring_barley",
+      activity: "November-sown spring-habit barley in Mediterranean/MENA",
+      months: [11, 12, 1, 2, 3, 4],
+    },
+  ];
+
+  const menaFindings = evaluateSeasonalVarietyAlignment(
+    rabiAndMedStrat,
+    "northern",
+    { agGroup: "arid", regionTag: "mena_mediterranean_arid" }
+  );
+  assert.equal(menaFindings.length, 0);
+
+  const rabiFindings = evaluateSeasonalVarietyAlignment(
+    rabiAndMedStrat,
+    "northern",
+    { agGroup: "tropical_monsoon", regionTag: "south_asia_indo_gangetic" }
+  );
+  assert.equal(rabiFindings.length, 0);
+
+  const ausStrat = makeValidStrategy("aus_winter_rainfall", "Australian Winter Rainfall Plan");
+  ausStrat.years[0].seasons = [
+    {
+      season: "Autumn–Spring",
+      crop: "spring_canola",
+      activity: "May-sown spring-habit canola in Southern Australia",
+      months: [5, 6, 7, 8, 9, 10, 11],
+    },
+  ];
+  const ausFindings = evaluateSeasonalVarietyAlignment(
+    ausStrat,
+    "southern",
+    { agGroup: "temperate_mediterranean", regionTag: "australia_southern_wheatbelt" }
+  );
+  assert.equal(ausFindings.length, 0);
+
+  // 3. Verify selectHemisphereWindowText() recognizes (NH Spring), (NH Autumn), (SH Spring), (SH Autumn)
+  const nhSpringBarleyText = selectHemisphereWindowText(
+    cropLibrary.spring_barley.growingWindow.planting,
+    "northern",
+    "March",
+    "planting"
+  );
+  assert.ok(nhSpringBarleyText.includes("(NH Spring)"));
+  assert.ok(!nhSpringBarleyText.includes("(SH Spring)"));
+
+  const shSpringBarleyText = selectHemisphereWindowText(
+    cropLibrary.spring_barley.growingWindow.planting,
+    "southern",
+    "August",
+    "planting"
+  );
+  assert.ok(shSpringBarleyText.includes("(SH Spring)"));
+  assert.ok(!shSpringBarleyText.includes("(NH Spring)"));
+
+  const nhWinterBarleyText = selectHemisphereWindowText(
+    cropLibrary.winter_barley.growingWindow.planting,
+    "northern",
+    "October",
+    "planting"
+  );
+  assert.ok(nhWinterBarleyText.includes("(NH Autumn)"));
+  assert.ok(!nhWinterBarleyText.includes("(SH Autumn)"));
+
+  const shWinterBarleyText = selectHemisphereWindowText(
+    cropLibrary.winter_barley.growingWindow.planting,
+    "southern",
+    "April",
+    "planting"
+  );
+  assert.ok(shWinterBarleyText.includes("(SH Autumn)"));
+  assert.ok(!shWinterBarleyText.includes("(NH Autumn)"));
+});
+
+test("Cover-crop winter suitability flags winter-kill species scheduled through spring and notes monthly mean limitations without fixed 10–15°C offsets or inferred daily lows", () => {
+  const coldClimate = makeClimate({
+    avgAnnualTemp: 7.5,
+    monthlyTemp: [-7.2, -5.0, 2.0, 9.0, 15.0, 20.5, 23.0, 21.8, 16.5, 10.0, 2.5, -4.5],
+  });
+
+  const winterTestStrat = makeValidStrategy("winter_kill_test", "Winter Survival Test Plan");
+  winterTestStrat.years[0].seasons = [
+    {
+      season: "Summer",
+      crop: "field_corn",
+      activity: "Corn",
+      months: [5, 6, 7, 8, 9],
+    },
+    {
+      season: "Overwinter–Spring",
+      crop: "forage_radish",
+      activity: "Radish mistakenly scheduled through May across freezing winter",
+      months: [9, 10, 11, 12, 1, 2, 3, 4, 5],
+    },
+  ];
+  winterTestStrat.years[1].seasons = [
+    {
+      season: "Summer",
+      crop: "soybean",
+      activity: "Soybean",
+      months: [5, 6, 7, 8, 9],
+    },
+    {
+      season: "Overwinter",
+      crop: "crimson_clover",
+      activity: "Clover in severe winter",
+      months: [9, 10, 11, 12, 1, 2, 3, 4],
+    },
+  ];
+
+  const winterFindings = evaluateCoverCropWinterSuitability({
+    proposal: winterTestStrat,
+    climate: coldClimate,
+    hemisphere: "northern",
+  });
+
+  const radishFinding = winterFindings.find((f) => f.cropId === "forage_radish")!;
+  assert.equal(radishFinding.severity, "warning");
+  assert.ok(radishFinding.message.includes("winter-kills"));
+  assert.ok(
+    radishFinding.monthlyMeanLimitationNote.includes(
+      "monthly mean temperatures, which cannot establish daily minimum freeze extremes"
+    )
+  );
+  assert.ok(!radishFinding.message.includes("10–15"));
+  assert.ok(!radishFinding.message.includes("-6 °C"));
+  assert.ok(!radishFinding.message.includes("implying episodic daily lows"));
+
+  const cloverFinding = winterFindings.find((f) => f.cropId === "crimson_clover")!;
+  assert.equal(cloverFinding.severity, "warning");
+  assert.ok(cloverFinding.message.includes("-7.2 °C"));
+  assert.ok(!cloverFinding.message.includes("10–15"));
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────

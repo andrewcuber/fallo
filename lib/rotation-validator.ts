@@ -12,8 +12,28 @@
  *   we downgrade confidence but do not silently assume safety.
  */
 
-import { type Crop, type RotationStrategy, cropLibrary } from "@/lib/rotation-scoring";
+import {
+  type Crop,
+  type ClimateData,
+  type RotationStrategy,
+  cropLibrary,
+} from "@/lib/rotation-scoring";
 import { type AgGroup } from "@/lib/agro-classifier";
+
+const MONTH_SHORT_NAMES = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
 
 export interface ProposalValidationResult {
   valid: boolean;
@@ -37,6 +57,72 @@ export interface ValidationContext {
   regionTag: string | null;
   /** Available crops after group filter (for reference) */
   availableCropIds: string[];
+  /** Optional field climate profile for winter cover-crop survival & planting-window checks */
+  climate?: ClimateData | null;
+  /** Optional hemisphere context (defaults to "northern") */
+  hemisphere?: "northern" | "southern" | "tropical";
+}
+
+export type CashCoverOverlapClassification =
+  | "conditional_transition"
+  | "compatible_interseeding"
+  | "incompatible_overlap";
+
+export interface CashCoverOverlapFinding {
+  year: number;
+  cashCropId: string;
+  cashCropName: string;
+  coverCropId: string;
+  coverCropName: string;
+  sharedMonths: number[];
+  sharedMonthNames: string[];
+  coverTerminationMonth: number;
+  coverTerminationMonthName: string;
+  classification: CashCoverOverlapClassification;
+  conflictsWithSensitiveStage: boolean;
+  conflictingStageLabels: string[];
+  title: string;
+  message: string;
+  source: string;
+}
+
+export interface SeasonalVarietyFinding {
+  year: number;
+  cropId: string;
+  cropName: string;
+  months: number[];
+  recommendedAlternativeCropId: string;
+  recommendedAlternativeName: string;
+  message: string;
+  source: string;
+}
+
+export interface NitrogenBarleyFinding {
+  year: number;
+  legumeCropId: string;
+  legumeCropName: string;
+  targetCashCropId: string;
+  targetCashCropName: string;
+  kind:
+    | "concurrent_overlap_n_unavailable"
+    | "malting_barley_excess_n_risk"
+    | "short_window_reduced_n";
+  message: string;
+  source: string;
+}
+
+export interface CoverWinterSuitabilityFinding {
+  year: number;
+  cropId: string;
+  cropName: string;
+  months: number[];
+  coldestWinterMonthC: number | null;
+  plantingMonthC: number | null;
+  severity: "warning" | "info";
+  title: string;
+  message: string;
+  monthlyMeanLimitationNote: string;
+  source: string;
 }
 
 /**
@@ -69,9 +155,718 @@ export const ROTATION_COMPATIBILITY_RULES = {
       "Avoid planting soft_red_winter_wheat in the year immediately following field_corn or grain_sorghum due to shared Fusarium head blight inoculum in residue (flagged as a Fusarium warning).",
       "Avoid planting soybean in more than 1 year of the 3-year rotation to limit soybean cyst nematode (SCN) pressure (flagged as an SCN warning).",
       "Include at least 3 distinct botanical families across the 3-year rotation when the available crop catalog permits (fewer than 3 families is flagged as a low-diversity warning).",
+      "Terminate overwintering cover crops (especially viny hairy_vetch and tall cereal_rye) prior to or at cash-crop planting; do not leave winter covers overlapping spring cash crops across multiple active-growth months or terminating during cash-crop reproductive stages (flagged as a cover-crop overlap/termination warning).",
+      "Match seasonal crop varieties to their regional and climatic growing schedule: use spring_barley, spring_wheat, or spring_canola for spring-sown schedules (or documented mild-winter autumn/winter sowing in Mediterranean, MENA, South Asian Rabi, and Australian winter-rainfall systems), and use winter_barley, soft_red_winter_wheat, or winter_canola for cold-winter vernalizing overwinter schedules.",
+      "When barley (spring_barley / winter_barley) is grown for malting, avoid pairing immediately after or overlapping high-nitrogen legume covers (hairy_vetch, alfalfa_annual_forage), as excess or late-mineralizing legume N increases the risk of exceeding maltster/buyer grain protein specifications and lodging.",
     ],
   },
 } as const;
+
+const COMPATIBLE_RELAY_COVER_CROPS = new Set([
+  "crimson_clover",
+  "cereal_rye",
+  "forage_radish",
+  "winter_oat",
+  "sunn_hemp",
+  "lablab_bean",
+  "cowpea",
+  "stylo_cover",
+  "mucuna_velvet_bean",
+]);
+
+const COMPATIBLE_RELAY_CASH_CROPS = new Set([
+  "field_corn",
+  "soybean",
+  "grain_sorghum",
+  "sorghum_tropical",
+  "pearl_millet_grain",
+  "sesame",
+  "cassava",
+  "maize_tropical",
+]);
+
+const SMALL_GRAIN_CASH_CROPS = new Set([
+  "spring_barley",
+  "winter_barley",
+  "spring_wheat",
+  "soft_red_winter_wheat",
+]);
+
+const MILD_WINTER_AUTUMN_SOWN_SPRING_HABIT_GROUPS = new Set<AgGroup>([
+  "temperate_mediterranean",
+  "subtropical_humid",
+  "arid",
+  "tropical_monsoon",
+  "tropical_savanna",
+  "tropical_subhumid",
+  "tropical_humid",
+]);
+
+const MILD_WINTER_AUTUMN_SOWN_SPRING_HABIT_REGIONS = new Set<string>([
+  "mena_mediterranean_arid",
+  "south_asia_indo_gangetic",
+  "australia_southern_wheatbelt",
+  "us_southwest",
+  "east_asia_china_subtropical",
+  "sa_pampas_cerrado",
+  "ssa_east_southern_humid",
+]);
+
+function humanizeStageKey(key: string): string {
+  return key
+    .replace(/([A-Z])/g, " $1")
+    .replace(/_/g, " ")
+    .replace(/^\w/, (c) => c.toUpperCase())
+    .trim();
+}
+
+function getSensitiveStageOverlap(
+  crop: Crop | undefined,
+  scheduledCashMonths: number[],
+  testMonths: number[],
+  hemisphere: "northern" | "southern" | "tropical" = "northern"
+): string[] {
+  if (!crop?.sensitivePeriods || testMonths.length === 0) return [];
+  const labels: string[] = [];
+  for (const [stageKey, sp] of Object.entries(crop.sensitivePeriods)) {
+    const docMonths =
+      hemisphere === "southern" &&
+      !sp.months.some((m) => scheduledCashMonths.includes(m))
+        ? sp.months.map((m) => ((m + 5) % 12) + 1)
+        : sp.months;
+    const activeStageMonths = docMonths.filter((m) =>
+      scheduledCashMonths.includes(m)
+    );
+    const conflicting = activeStageMonths.filter((m) => testMonths.includes(m));
+    if (conflicting.length > 0) {
+      const mNames = conflicting.map((m) => MONTH_SHORT_NAMES[m - 1]).join("–");
+      labels.push(`${humanizeStageKey(stageKey)} (${mNames})`);
+    }
+  }
+  return labels;
+}
+
+/**
+ * Evaluate cash-crop and cover-crop overlaps and cover-crop termination timing
+ * across a 3-year rotation strategy.
+ *
+ * Distinguishes:
+ * - "conditional_transition": 1-month planting/termination or harvest/seeding boundary transition
+ *   where month-level resolution cannot verify intra-month event order, so compatibility is
+ *   conditional on actual termination-before-planting sequence and management.
+ * - "compatible_interseeding": Intentional late-season overseeding/relay cropping into maturing
+ *   cash crops or spring frost-seeding clover into small grains where cover termination does not
+ *   occur inside active cash-crop growth or sensitive reproductive stages.
+ * - "incompatible_overlap": Multi-month competitive overlap during cash-crop establishment/growth
+ *   (e.g., hairy_vetch Sep–May overlapping spring_barley Mar–Jul across March–May) or cover-crop
+ *   termination occurring inside cash-crop active growth / sensitive stages.
+ */
+export function evaluateCropOverlapAndTermination(
+  proposal: RotationStrategy,
+  hemisphere: "northern" | "southern" | "tropical" = "northern"
+): CashCoverOverlapFinding[] {
+  const findings: CashCoverOverlapFinding[] = [];
+
+  for (const yr of proposal.years) {
+    const cashSeasons = yr.seasons.filter(
+      (s) => cropLibrary[s.crop]?.type === "cash"
+    );
+    const coverSeasons = yr.seasons.filter(
+      (s) =>
+        cropLibrary[s.crop]?.type === "cover" && s.crop !== "winter_fallow"
+    );
+
+    for (const cashSea of cashSeasons) {
+      const cashCrop = cropLibrary[cashSea.crop];
+      const cashMonths = cashSea.months.filter((m) => m >= 1 && m <= 12);
+      if (!cashCrop || cashMonths.length === 0) continue;
+
+      const cashPlantMonth = cashMonths[0];
+      const cashHarvestMonth = cashMonths[cashMonths.length - 1];
+      const cashInteriorMonths =
+        cashMonths.length > 2 ? cashMonths.slice(1, -1) : [];
+
+      for (const coverSea of coverSeasons) {
+        const coverCrop = cropLibrary[coverSea.crop];
+        const coverMonths = coverSea.months.filter((m) => m >= 1 && m <= 12);
+        if (!coverCrop || coverMonths.length === 0) continue;
+
+        const sharedMonths = cashMonths.filter((m) => coverMonths.includes(m));
+        if (sharedMonths.length === 0) continue;
+
+        const sharedMonthNames = sharedMonths.map(
+          (m) => MONTH_SHORT_NAMES[m - 1]
+        );
+        const coverPlantMonth = coverMonths[0];
+        const coverTerminationMonth = coverMonths[coverMonths.length - 1];
+        const coverTerminationMonthName =
+          MONTH_SHORT_NAMES[coverTerminationMonth - 1];
+
+        const conflictingStageLabels = getSensitiveStageOverlap(
+          cashCrop,
+          cashMonths,
+          sharedMonths,
+          hemisphere
+        );
+        const terminationHitsSensitiveStage =
+          getSensitiveStageOverlap(
+            cashCrop,
+            cashMonths,
+            [coverTerminationMonth],
+            hemisphere
+          ).length > 0;
+        const terminationInsideCashGrowth =
+          cashInteriorMonths.includes(coverTerminationMonth) ||
+          (sharedMonths.length >= 2 &&
+            cashMonths.includes(coverTerminationMonth) &&
+            coverTerminationMonth !== cashPlantMonth);
+
+        const conflictsWithSensitiveStage =
+          conflictingStageLabels.length > 0 || terminationHitsSensitiveStage;
+
+        // 1. Check 1-month boundary transition (termination-to-planting or harvest-to-seeding)
+        // Because the calendar only has monthly resolution, compatibility is conditional on actual
+        // intra-month event order and management rather than automatically guaranteed.
+        const isSingleMonthTerminateThenPlant =
+          sharedMonths.length === 1 &&
+          sharedMonths[0] === coverTerminationMonth &&
+          sharedMonths[0] === cashPlantMonth &&
+          !terminationHitsSensitiveStage;
+
+        const isSingleMonthHarvestThenSeed =
+          sharedMonths.length === 1 &&
+          sharedMonths[0] === cashHarvestMonth &&
+          sharedMonths[0] === coverPlantMonth;
+
+        if (isSingleMonthTerminateThenPlant || isSingleMonthHarvestThenSeed) {
+          const isHairyVetchToSummerCash =
+            isSingleMonthTerminateThenPlant && coverCrop.id === "hairy_vetch";
+          const transitionMessage = isSingleMonthTerminateThenPlant
+            ? isHairyVetchToSummerCash
+              ? `Because the schedule has monthly resolution, compatibility in ${sharedMonthNames[0]} depends on actual intra-month event order and management: ${coverCrop.commonName} termination must precede ${cashCrop.commonName} planting (for example, USDA NRCS guidance recommends approximately 10–14 days between hairy vetch termination and summer cash-crop planting to reduce soil moisture depletion, pest carryover, and seedling interference, unless using specialized planting-green practices). If ${cashCrop.commonName} is planted before ${coverCrop.commonName} is terminated within ${sharedMonthNames[0]}, competitive overlap still occurs.`
+              : `Because the schedule has monthly resolution, compatibility in ${sharedMonthNames[0]} depends on actual intra-month event order and management: ${coverCrop.commonName} termination must precede ${cashCrop.commonName} planting (or use appropriate planting-green residue and moisture management). If ${cashCrop.commonName} is planted before ${coverCrop.commonName} is terminated within ${sharedMonthNames[0]}, competitive overlap still occurs.`
+            : `Because the schedule has monthly resolution, compatibility in ${sharedMonthNames[0]} depends on actual intra-month event order and management: ${coverCrop.commonName} should be seeded after ${cashCrop.commonName} harvest or via intentional late-season overseeding at crop senescence.`;
+
+          findings.push({
+            year: yr.year,
+            cashCropId: cashCrop.id,
+            cashCropName: cashCrop.commonName,
+            coverCropId: coverCrop.id,
+            coverCropName: coverCrop.commonName,
+            sharedMonths,
+            sharedMonthNames,
+            coverTerminationMonth,
+            coverTerminationMonthName,
+            classification: "conditional_transition",
+            conflictsWithSensitiveStage: false,
+            conflictingStageLabels: [],
+            title: isSingleMonthTerminateThenPlant
+              ? `Conditional ${sharedMonthNames[0]} cover-termination to cash-planting transition (month-level resolution)`
+              : `Conditional ${sharedMonthNames[0]} harvest-to-cover seeding transition (month-level resolution)`,
+            message: transitionMessage,
+            source: "USDA NRCS / SARE Managing Cover Crops Profitably",
+          });
+          continue;
+        }
+
+        // 2. Check intentional, agronomically compatible interseeding / relay cropping
+        const cashTailTwoMonths = cashMonths.slice(-2);
+        const isLateSeasonRelayOverseed =
+          sharedMonths.length <= 2 &&
+          sharedMonths.every((m) => cashTailTwoMonths.includes(m)) &&
+          cashTailTwoMonths.includes(coverPlantMonth) &&
+          !cashMonths.includes(coverTerminationMonth) &&
+          COMPATIBLE_RELAY_COVER_CROPS.has(coverCrop.id) &&
+          COMPATIBLE_RELAY_CASH_CROPS.has(cashCrop.id);
+
+        const isFrostSeededCloverIntoSmallGrain =
+          coverCrop.id === "crimson_clover" &&
+          SMALL_GRAIN_CASH_CROPS.has(cashCrop.id) &&
+          !cashInteriorMonths.includes(coverTerminationMonth) &&
+          !terminationHitsSensitiveStage &&
+          coverTerminationMonth !== cashHarvestMonth;
+
+        if (isLateSeasonRelayOverseed || isFrostSeededCloverIntoSmallGrain) {
+          findings.push({
+            year: yr.year,
+            cashCropId: cashCrop.id,
+            cashCropName: cashCrop.commonName,
+            coverCropId: coverCrop.id,
+            coverCropName: coverCrop.commonName,
+            sharedMonths,
+            sharedMonthNames,
+            coverTerminationMonth,
+            coverTerminationMonthName,
+            classification: "compatible_interseeding",
+            conflictsWithSensitiveStage: false,
+            conflictingStageLabels,
+            title: isFrostSeededCloverIntoSmallGrain
+              ? `Compatible underseeding / frost-seeding (${sharedMonthNames.join("–")})`
+              : `Compatible late-season relay / overseeding (${sharedMonthNames.join("–")})`,
+            message: isFrostSeededCloverIntoSmallGrain
+              ? `${coverCrop.commonName} can be frost-seeded or underseeded into ${cashCrop.commonName} (${sharedMonthNames.join("–")}) as a low-stature understory legume that continues growing after grain harvest.`
+              : `${coverCrop.commonName} overlaps ${cashCrop.commonName} during ${sharedMonthNames.join("–")} via late-season overseeding/relay intercropping at canopy senescence and continues growing after cash-crop harvest.`,
+            source: "SARE Managing Cover Crops Profitably / State Extension Relay Interseeding Guidelines",
+          });
+          continue;
+        }
+
+        // 3. Otherwise, flag as incompatible scheduling overlap & termination conflict
+        const isVinyVetchInSmallGrain =
+          coverCrop.id === "hairy_vetch" &&
+          SMALL_GRAIN_CASH_CROPS.has(cashCrop.id);
+        const isRyeInSmallGrain =
+          coverCrop.id === "cereal_rye" &&
+          SMALL_GRAIN_CASH_CROPS.has(cashCrop.id);
+
+        const conflictReasons: string[] = [];
+        if (isVinyVetchInSmallGrain) {
+          conflictReasons.push(
+            `${coverCrop.commonName} is a vigorous climbing/vining legume whose tendrils twine around ${cashCrop.commonName} stems during ${sharedMonthNames.join("–")}, causing severe lodging, light competition, and grain harvest contamination rather than a compatible interseeding`
+          );
+        } else if (isRyeInSmallGrain) {
+          conflictReasons.push(
+            `${coverCrop.commonName} competes directly with ${cashCrop.commonName} in the same Poaceae cereal canopy during ${sharedMonthNames.join("–")} and can contaminate harvested grain`
+          );
+        } else {
+          conflictReasons.push(
+            `${coverCrop.commonName} and ${cashCrop.commonName} overlap for ${sharedMonths.length} month(s) (${sharedMonthNames.join("–")}) during active cash-crop establishment and vegetative growth without a compatible relay/interseeding window`
+          );
+        }
+
+        if (terminationInsideCashGrowth || conflictsWithSensitiveStage) {
+          const stageDetail =
+            conflictingStageLabels.length > 0
+              ? ` (overlapping critical ${conflictingStageLabels.join(", ")})`
+              : "";
+          conflictReasons.push(
+            `${coverCrop.commonName} termination is scheduled in ${coverTerminationMonthName} inside ${cashCrop.commonName}'s active growing season${stageDetail}, where mechanical or herbicide termination would damage the standing cash crop`
+          );
+        }
+
+        findings.push({
+          year: yr.year,
+          cashCropId: cashCrop.id,
+          cashCropName: cashCrop.commonName,
+          coverCropId: coverCrop.id,
+          coverCropName: coverCrop.commonName,
+          sharedMonths,
+          sharedMonthNames,
+          coverTerminationMonth,
+          coverTerminationMonthName,
+          classification: "incompatible_overlap",
+          conflictsWithSensitiveStage,
+          conflictingStageLabels,
+          title: `Year ${yr.year} scheduling & termination conflict: ${coverCrop.commonName} overlaps ${cashCrop.commonName} (${sharedMonthNames.join("–")})`,
+          message: `Year ${yr.year}: ${conflictReasons.join("; ")}. Terminate ${coverCrop.commonName} before planting ${cashCrop.commonName}, or pair overwintered ${coverCrop.commonName} with a warm-season crop planted after ${coverTerminationMonthName} cover termination.`,
+          source: "USDA NRCS Cover Crop Termination Guidelines; SARE Managing Cover Crops Profitably",
+        });
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Determine whether a crop's documented regional planting windows and the field's
+ * geographic/agroecological context support autumn/winter sowing of a spring-habit variety
+ * (e.g., Mediterranean, MENA, South Asian Rabi, Australian winter-rainfall, or low-elevation US Southwest).
+ */
+function supportsMildWinterAutumnSowingOfSpringHabit(
+  crop: Crop,
+  options?: {
+    agGroup?: AgGroup;
+    regionTag?: string | null;
+  }
+): boolean {
+  const plantingText = `${crop.growingWindow.planting ?? ""} ${crop.growingWindow.description ?? ""}`;
+  const cropDocumentsMildWinterWindow =
+    /mena|south asia|rabi|australia|mediterranean|mild-winter|winter-rainfall|november|december|may \(australia\)/i.test(
+      plantingText
+    );
+  if (!cropDocumentsMildWinterWindow) return false;
+
+  const agGroup = options?.agGroup;
+  const regionTag = options?.regionTag;
+
+  if (regionTag && MILD_WINTER_AUTUMN_SOWN_SPRING_HABIT_REGIONS.has(regionTag)) {
+    return true;
+  }
+  if (agGroup && MILD_WINTER_AUTUMN_SOWN_SPRING_HABIT_GROUPS.has(agGroup)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Check whether spring-habit vs. winter-vernalizing crop varieties match their scheduled
+ * seasonal months, accounting for documented regional planting windows and mild-winter
+ * agroecological contexts (Mediterranean, MENA, South Asian Rabi, Australian winter-rainfall, etc.).
+ */
+export function evaluateSeasonalVarietyAlignment(
+  proposal: RotationStrategy,
+  hemisphere: "northern" | "southern" | "tropical" = "northern",
+  options?: {
+    agGroup?: AgGroup;
+    regionTag?: string | null;
+  }
+): SeasonalVarietyFinding[] {
+  const findings: SeasonalVarietyFinding[] = [];
+  if (hemisphere === "tropical") return findings;
+
+  const winterMonths = hemisphere === "southern" ? [6, 7, 8] : [12, 1, 2];
+  const autumnMonths = hemisphere === "southern" ? [3, 4, 5] : [9, 10, 11];
+  const springMonths = hemisphere === "southern" ? [9, 10, 11] : [3, 4, 5];
+  const lateSummerMonths = hemisphere === "southern" ? [1, 2, 3] : [7, 8, 9];
+
+  const springToWinterMap: Record<string, { id: string; name: string }> = {
+    spring_barley: {
+      id: "winter_barley",
+      name: cropLibrary.winter_barley?.commonName ?? "Winter Barley (Feed & Malt)",
+    },
+    spring_wheat: {
+      id: "soft_red_winter_wheat",
+      name:
+        cropLibrary.soft_red_winter_wheat?.commonName ?? "Soft Red Winter Wheat",
+    },
+    spring_canola: {
+      id: "winter_canola",
+      name:
+        cropLibrary.winter_canola?.commonName ?? "Winter Rapeseed / Canola",
+    },
+  };
+
+  const winterToSpringMap: Record<string, { id: string; name: string }> = {
+    winter_barley: {
+      id: "spring_barley",
+      name: cropLibrary.spring_barley?.commonName ?? "Spring Barley (Feed & Malt)",
+    },
+    winter_canola: {
+      id: "spring_canola",
+      name:
+        cropLibrary.spring_canola?.commonName ?? "Spring Canola / Rapeseed",
+    },
+    soft_red_winter_wheat: {
+      id: "spring_wheat",
+      name: cropLibrary.spring_wheat?.commonName ?? "Hard Red Spring Wheat",
+    },
+  };
+
+  for (const yr of proposal.years) {
+    for (const sea of yr.seasons) {
+      const crop = cropLibrary[sea.crop];
+      const months = sea.months.filter((m) => m >= 1 && m <= 12);
+      if (!crop || months.length === 0) continue;
+
+      const firstMonth = months[0];
+      const lastMonth = months[months.length - 1];
+      const spansWinter = months.some((m) => winterMonths.includes(m));
+      const plantedInAutumn = autumnMonths.includes(firstMonth);
+      const plantedInSpring = springMonths.includes(firstMonth);
+      const harvestedInLateSummer = lateSummerMonths.includes(lastMonth);
+
+      // Case 1: Spring variety scheduled as autumn-sown overwintering crop
+      // Only flag when the field's regional/agroecological context and documented crop windows
+      // do not support mild-winter autumn/winter sowing of spring-habit cultivars.
+      if (
+        springToWinterMap[crop.id] &&
+        (plantedInAutumn || (spansWinter && months.length >= 6)) &&
+        !supportsMildWinterAutumnSowingOfSpringHabit(crop, options)
+      ) {
+        const alt = springToWinterMap[crop.id];
+        const mRange = `${MONTH_SHORT_NAMES[firstMonth - 1]}–${MONTH_SHORT_NAMES[lastMonth - 1]}`;
+        findings.push({
+          year: yr.year,
+          cropId: crop.id,
+          cropName: crop.commonName,
+          months,
+          recommendedAlternativeCropId: alt.id,
+          recommendedAlternativeName: alt.name,
+          message: `Year ${yr.year}: ${crop.commonName} (${crop.id}) is a spring-habit non-vernalizing variety scheduled across an overwintering window (${mRange}) in a cold-winter context. Where winter freezes require cold-hardy overwintering cultivars, use ${alt.name} (${alt.id}) for autumn-planted schedules.`,
+          source: "University of Minnesota / NDSU Extension Small Grain & Canola Variety Guides",
+        });
+      }
+
+      // Case 2: Winter vernalizing variety scheduled strictly as a spring-planted summer crop
+      if (winterToSpringMap[crop.id]) {
+        const isStrictSpringSummerSchedule =
+          crop.id === "soft_red_winter_wheat"
+            ? plantedInSpring && harvestedInLateSummer && !spansWinter
+            : plantedInSpring && !spansWinter;
+        if (isStrictSpringSummerSchedule) {
+          const alt = winterToSpringMap[crop.id];
+          const mRange = `${MONTH_SHORT_NAMES[firstMonth - 1]}–${MONTH_SHORT_NAMES[lastMonth - 1]}`;
+          findings.push({
+            year: yr.year,
+            cropId: crop.id,
+            cropName: crop.commonName,
+            months,
+            recommendedAlternativeCropId: alt.id,
+            recommendedAlternativeName: alt.name,
+            message: `Year ${yr.year}: ${crop.commonName} (${crop.id}) is an autumn-sown cultivar requiring cold winter vernalization, but is scheduled strictly in spring–summer (${mRange}) without overwintering months. Use ${alt.name} (${alt.id}) for spring-sown schedules.`,
+            source: "USDA ARS / State Extension Winter vs. Spring Small Grain & Canola Guidelines",
+          });
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Evaluate legume nitrogen credit qualifications, distinguishing post-termination N
+ * mineralized for a subsequent crop from concurrent overlap with an active cash crop,
+ * and checking conditional malting barley excess-nitrogen / grain protein risk.
+ */
+export function evaluateNitrogenAndBarleyCompatibility(
+  proposal: RotationStrategy,
+  hemisphere: "northern" | "southern" | "tropical" = "northern"
+): NitrogenBarleyFinding[] {
+  const findings: NitrogenBarleyFinding[] = [];
+  const overlapFindings = evaluateCropOverlapAndTermination(proposal, hemisphere);
+
+  for (let yIdx = 0; yIdx < proposal.years.length; yIdx++) {
+    const yr = proposal.years[yIdx];
+    const prevYr = yIdx > 0 ? proposal.years[yIdx - 1] : null;
+
+    // 1. Check concurrent incompatible overlap between legume cover crop and cash crop
+    for (const ov of overlapFindings.filter((f) => f.year === yr.year)) {
+      const coverCrop = cropLibrary[ov.coverCropId];
+      const credit = coverCrop?.nitrogenBehavior.residualNcredit?.value;
+      if (
+        ov.classification === "incompatible_overlap" &&
+        coverCrop?.family === "Fabaceae" &&
+        credit
+      ) {
+        findings.push({
+          year: yr.year,
+          legumeCropId: coverCrop.id,
+          legumeCropName: coverCrop.commonName,
+          targetCashCropId: ov.cashCropId,
+          targetCashCropName: ov.cashCropName,
+          kind: "concurrent_overlap_n_unavailable",
+          message: `Year ${yr.year}: ${coverCrop.commonName}'s estimated residual nitrogen credit (${credit}) is a post-termination credit mineralized for a subsequent crop—it is NOT available to concurrently growing ${ov.cashCropName} during their ${ov.sharedMonthNames.join("–")} overlap, when living ${coverCrop.commonName} competes for water, light, and nutrients.`,
+          source: "SARE Managing Cover Crops Profitably; Penn State Extension Cover Crop Nitrogen Mineralization",
+        });
+      }
+    }
+
+    // 2. Check short-duration legume cover (< 4 months) reducing potential N fixation
+    for (const sea of yr.seasons) {
+      const crop = cropLibrary[sea.crop];
+      const credit = crop?.nitrogenBehavior.residualNcredit?.value;
+      if (
+        crop?.type === "cover" &&
+        crop.family === "Fabaceae" &&
+        credit &&
+        sea.months.length > 0 &&
+        sea.months.length <= 3
+      ) {
+        const cashInYear = yr.seasons.find(
+          (s) => cropLibrary[s.crop]?.type === "cash"
+        );
+        findings.push({
+          year: yr.year,
+          legumeCropId: crop.id,
+          legumeCropName: crop.commonName,
+          targetCashCropId: cashInYear?.crop ?? crop.id,
+          targetCashCropName:
+            cropLibrary[cashInYear?.crop ?? ""]?.commonName ?? "subsequent cash crop",
+          kind: "short_window_reduced_n",
+          message: `Year ${yr.year}: ${crop.commonName} is scheduled for only ${sea.months.length} month(s); upper-range nitrogen estimates (${credit}) depend on establishment, stand vigor, biomass accumulation, termination timing, and subsequent mineralization, so actual available N from a short window will be substantially lower.`,
+          source: "SARE Managing Cover Crops Profitably",
+        });
+      }
+    }
+
+    // 3. Conditional malting barley advisory when spring_barley / winter_barley is paired with or follows high-N legume (hairy_vetch / alfalfa_annual_forage)
+    const barleySeasons = yr.seasons.filter(
+      (s) => s.crop === "spring_barley" || s.crop === "winter_barley"
+    );
+    if (barleySeasons.length > 0) {
+      const sameYearHighNLegume = yr.seasons.find(
+        (s) => s.crop === "hairy_vetch" || s.crop === "alfalfa_annual_forage"
+      );
+      const prevYearHighNLegume = prevYr?.seasons.find(
+        (s) => s.crop === "hairy_vetch" || s.crop === "alfalfa_annual_forage"
+      );
+      const highNLegumeSeason = sameYearHighNLegume ?? prevYearHighNLegume;
+      if (highNLegumeSeason) {
+        const legumeCrop = cropLibrary[highNLegumeSeason.crop];
+        const barleyCrop = cropLibrary[barleySeasons[0].crop];
+        const credit =
+          legumeCrop?.nitrogenBehavior.residualNcredit?.value ??
+          "80–100 lb N/acre (conditional upper-range potential)";
+        if (legumeCrop && barleyCrop) {
+          findings.push({
+            year: yr.year,
+            legumeCropId: legumeCrop.id,
+            legumeCropName: legumeCrop.commonName,
+            targetCashCropId: barleyCrop.id,
+            targetCashCropName: barleyCrop.commonName,
+            kind: "malting_barley_excess_n_risk",
+            message: `Year ${yr.year}: ${barleyCrop.commonName} is paired with or follows ${legumeCrop.commonName} (${credit}). If this barley is grown for malting, acceptable grain protein specifications depend on the maltster, buyer, barley class, and contract, and excess or late-mineralizing legume nitrogen increases the risk of exceeding buyer protein specifications and lodging.`,
+            source: "University of Nevada Extension; NDSU Malting Barley Production Guide",
+          });
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Evaluate winter survival and autumn planting temperature suitability for overwintering
+ * cover crops against the field's climate profile.
+ *
+ * Explicitly notes that monthly mean temperatures cannot establish daily freeze extremes
+ * or guarantee winter survival.
+ */
+export function evaluateCoverCropWinterSuitability(params: {
+  proposal: RotationStrategy;
+  climate: ClimateData | null | undefined;
+  hemisphere?: "northern" | "southern" | "tropical";
+}): CoverWinterSuitabilityFinding[] {
+  const { proposal, climate, hemisphere = "northern" } = params;
+  const findings: CoverWinterSuitabilityFinding[] = [];
+  if (hemisphere === "tropical") return findings;
+
+  const winterMonths = hemisphere === "southern" ? [6, 7, 8] : [12, 1, 2];
+  const lateSpringMonths = hemisphere === "southern" ? [10, 11] : [4, 5];
+  const lateAutumnMonths = hemisphere === "southern" ? [5, 6] : [11, 12];
+
+  const monthlyMeanLimitationNote =
+    "Field climate profiles provide monthly mean temperatures, which cannot establish daily minimum freeze extremes, freeze duration, or snow-cover insulation needed to confirm winter survival (USDA NRCS / SARE).";
+
+  const winterKillCoverIds = new Set([
+    "forage_radish",
+    "winter_oat",
+    "yellow_mustard_cover",
+  ]);
+
+  for (const yr of proposal.years) {
+    for (const sea of yr.seasons) {
+      const crop = cropLibrary[sea.crop];
+      const months = sea.months.filter((m) => m >= 1 && m <= 12);
+      if (!crop || crop.type !== "cover" || crop.id === "winter_fallow" || months.length === 0) {
+        continue;
+      }
+
+      const spansWinter = months.some((m) => winterMonths.includes(m));
+      if (!spansWinter) continue;
+
+      const firstMonth = months[0];
+      const continuesIntoLateSpring = months.some((m) =>
+        lateSpringMonths.includes(m)
+      );
+
+      const scheduledWinterMonths = months.filter((m) =>
+        winterMonths.includes(m)
+      );
+      const winterTemps =
+        climate?.fullRecord.monthlyTemp
+          ? scheduledWinterMonths
+              .map((m) => climate.fullRecord.monthlyTemp[m - 1])
+              .filter((t): t is number => t !== null && t !== undefined)
+          : [];
+      const coldestWinterMonthC =
+        winterTemps.length > 0 ? Math.min(...winterTemps) : null;
+      const plantingMonthC =
+        climate?.fullRecord.monthlyTemp?.[firstMonth - 1] ?? null;
+
+      // 1. Winter-kill cover crops (radish, winter oat, mustard) scheduled across cold winter into late spring
+      if (
+        winterKillCoverIds.has(crop.id) &&
+        continuesIntoLateSpring &&
+        (coldestWinterMonthC === null || coldestWinterMonthC < 3)
+      ) {
+        const tempDesc =
+          coldestWinterMonthC !== null
+            ? ` (coldest winter month mean ${coldestWinterMonthC.toFixed(1)} °C)`
+            : "";
+        findings.push({
+          year: yr.year,
+          cropId: crop.id,
+          cropName: crop.commonName,
+          months,
+          coldestWinterMonthC,
+          plantingMonthC,
+          severity: "warning",
+          title: `Year ${yr.year} winterkill risk: ${crop.commonName} scheduled through spring`,
+          message: `Year ${yr.year}: ${crop.commonName} is cold-sensitive and commonly winter-kills in freezing winters${tempDesc}, so it may not survive as living cover into ${lateSpringMonths.map((m) => MONTH_SHORT_NAMES[m - 1]).join("–")}. ${monthlyMeanLimitationNote}`,
+          monthlyMeanLimitationNote,
+          source: "SARE Managing Cover Crops Profitably; Midwest Cover Crops Council",
+        });
+        continue;
+      }
+
+      // 2. Crimson clover cold-winter or late-planting vulnerability
+      if (
+        crop.id === "crimson_clover" &&
+        ((coldestWinterMonthC !== null && coldestWinterMonthC < -1) ||
+          lateAutumnMonths.includes(firstMonth))
+      ) {
+        findings.push({
+          year: yr.year,
+          cropId: crop.id,
+          cropName: crop.commonName,
+          months,
+          coldestWinterMonthC,
+          plantingMonthC,
+          severity: "warning",
+          title: `Year ${yr.year} winter survival & establishment risk: ${crop.commonName}`,
+          message: `Year ${yr.year}: ${crop.commonName} is moderately winter-hardy (USDA Zones 6–9)${coldestWinterMonthC !== null ? ` and faces elevated winterkill risk where coldest winter month mean is ${coldestWinterMonthC.toFixed(1)} °C` : ""}${lateAutumnMonths.includes(firstMonth) ? ` when seeded late in ${MONTH_SHORT_NAMES[firstMonth - 1]}` : ""}. ${monthlyMeanLimitationNote}`,
+          monthlyMeanLimitationNote,
+          source: "USDA NRCS Plant Guide — Crimson Clover; SARE Managing Cover Crops Profitably",
+        });
+        continue;
+      }
+
+      // 3. Hairy vetch severe winter cold or late autumn establishment warning
+      if (
+        crop.id === "hairy_vetch" &&
+        ((coldestWinterMonthC !== null && coldestWinterMonthC < -4) ||
+          lateAutumnMonths.includes(firstMonth) ||
+          (plantingMonthC !== null && plantingMonthC < 7))
+      ) {
+        findings.push({
+          year: yr.year,
+          cropId: crop.id,
+          cropName: crop.commonName,
+          months,
+          coldestWinterMonthC,
+          plantingMonthC,
+          severity: "warning",
+          title: `Year ${yr.year} winter hardiness & autumn establishment check: ${crop.commonName}`,
+          message: `Year ${yr.year}: ${crop.commonName} requires timely autumn establishment before freeze to survive winter and build biomass toward its conditional 80–100 lb N/acre upper-range potential${lateAutumnMonths.includes(firstMonth) ? ` (scheduled ${MONTH_SHORT_NAMES[firstMonth - 1]} planting is late for autumn rosette growth)` : ""}${coldestWinterMonthC !== null ? ` with coldest winter month mean ${coldestWinterMonthC.toFixed(1)} °C` : ""}. ${monthlyMeanLimitationNote}`,
+          monthlyMeanLimitationNote,
+          source: "USDA ARS / SARE Managing Cover Crops Profitably — Hairy Vetch",
+        });
+        continue;
+      }
+
+      // 4. General informational note on overwintering cover crops regarding monthly mean temperature limits
+      findings.push({
+        year: yr.year,
+        cropId: crop.id,
+        cropName: crop.commonName,
+        months,
+        coldestWinterMonthC,
+        plantingMonthC,
+        severity: "info",
+        title: `Year ${yr.year} overwintering climate note: ${crop.commonName}`,
+        message: `${crop.commonName} overwinters${coldestWinterMonthC !== null ? ` (coldest monthly mean ${coldestWinterMonthC.toFixed(1)} °C)` : ""}. ${monthlyMeanLimitationNote}`,
+        monthlyMeanLimitationNote,
+        source: "USDA NRCS / SARE Managing Cover Crops Profitably",
+      });
+    }
+  }
+
+  return findings;
+}
 
 /**
  * Render the authoritative compatibility rules for inclusion in an AI system prompt.
@@ -396,6 +1191,110 @@ export function validateProposal(
       severity: "info",
       message: "Soybean appears at most once in the rotation.",
     });
+  }
+
+  // ── 10. Cash-crop / cover-crop overlap & cover termination timing ──
+  const hemisphere = ctx.hemisphere ?? "northern";
+  const overlapFindings = evaluateCropOverlapAndTermination(proposal, hemisphere);
+  const incompatibleOverlaps = overlapFindings.filter(
+    (f) => f.classification === "incompatible_overlap"
+  );
+  if (incompatibleOverlaps.length > 0) {
+    for (const conflict of incompatibleOverlaps) {
+      warnings.push(conflict.message);
+      checks.push({
+        name: `Year ${conflict.year} cover-crop overlap & termination (${conflict.coverCropId} / ${conflict.cashCropId})`,
+        passed: false,
+        severity: "warning",
+        message: conflict.message,
+      });
+    }
+  } else {
+    const compatibleNotes = overlapFindings.map(
+      (f) =>
+        `Year ${f.year}: ${f.coverCropName} + ${f.cashCropName} (${f.sharedMonthNames.join("–")} — ${f.classification.replace("_", " ")})`
+    );
+    checks.push({
+      name: "Cover-crop overlap & termination timing",
+      passed: true,
+      severity: "info",
+      message:
+        compatibleNotes.length > 0
+          ? `Compatible cash/cover transitions or interseeding: ${compatibleNotes.join("; ")}.`
+          : "No conflicting cash-crop / cover-crop overlaps or late terminations detected.",
+    });
+  }
+
+  // ── 11. Spring vs. winter seasonal variety alignment ──
+  const seasonalVarietyFindings = evaluateSeasonalVarietyAlignment(
+    proposal,
+    hemisphere,
+    { agGroup: ctx.agGroup, regionTag: ctx.regionTag }
+  );
+  if (seasonalVarietyFindings.length > 0) {
+    for (const vf of seasonalVarietyFindings) {
+      warnings.push(vf.message);
+      checks.push({
+        name: `Year ${vf.year} seasonal variety mismatch (${vf.cropId})`,
+        passed: false,
+        severity: "warning",
+        message: vf.message,
+      });
+    }
+  } else {
+    checks.push({
+      name: "Seasonal variety schedule alignment",
+      passed: true,
+      severity: "info",
+      message: "Spring and winter crop varieties match their scheduled seasonal windows.",
+    });
+  }
+
+  // ── 12. Legume nitrogen availability & malting barley quality compatibility ──
+  const nitrogenBarleyFindings = evaluateNitrogenAndBarleyCompatibility(
+    proposal,
+    hemisphere
+  );
+  for (const nf of nitrogenBarleyFindings) {
+    if (
+      nf.kind === "concurrent_overlap_n_unavailable" ||
+      nf.kind === "malting_barley_excess_n_risk"
+    ) {
+      warnings.push(nf.message);
+      checks.push({
+        name: `Year ${nf.year} nitrogen management (${nf.legumeCropId} / ${nf.targetCashCropId})`,
+        passed: false,
+        severity: "warning",
+        message: nf.message,
+      });
+    }
+  }
+
+  // ── 13. Overwintering cover-crop climate suitability & monthly-mean caveat ──
+  if (ctx.climate) {
+    const winterSuitabilityFindings = evaluateCoverCropWinterSuitability({
+      proposal,
+      climate: ctx.climate,
+      hemisphere,
+    });
+    for (const wf of winterSuitabilityFindings) {
+      if (wf.severity === "warning") {
+        warnings.push(wf.message);
+        checks.push({
+          name: `Year ${wf.year} cover-crop winter suitability (${wf.cropId})`,
+          passed: false,
+          severity: "warning",
+          message: wf.message,
+        });
+      } else {
+        checks.push({
+          name: `Year ${wf.year} overwintering climate note (${wf.cropId})`,
+          passed: true,
+          severity: "info",
+          message: wf.message,
+        });
+      }
+    }
   }
 
   const valid = errors.length === 0;

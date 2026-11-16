@@ -20,6 +20,13 @@ import {
   type Crop,
   cropLibrary,
 } from "@/lib/rotation-scoring";
+import {
+  evaluateCropOverlapAndTermination,
+  evaluateSeasonalVarietyAlignment,
+  evaluateNitrogenAndBarleyCompatibility,
+  evaluateCoverCropWinterSuitability,
+} from "@/lib/rotation-validator";
+import { classifyAgGroup } from "@/lib/agro-classifier";
 import { resolveGeographicContext } from "@/lib/region";
 import { formatEnumLabel, formatCropName } from "@/lib/what-if-simulator";
 
@@ -112,6 +119,21 @@ export interface CalendarSeasonEntry {
   droughtTolerance: string;
   nitrogenSummary: string;
   residueSummary: string;
+  /** Agronomic advisories covering overlap/interseeding, termination timing, seasonal variety, N availability, and winter survival */
+  agronomicAdvisories: CalendarAgronomicAdvisory[];
+}
+
+export interface CalendarAgronomicAdvisory {
+  severity: "warning" | "info";
+  category:
+    | "overlap"
+    | "termination"
+    | "variety_season"
+    | "nitrogen"
+    | "winter_survival";
+  title: string;
+  detail: string;
+  source: string;
 }
 
 export interface CalendarMonthCell {
@@ -141,6 +163,7 @@ export interface CalendarYearSchedule {
   cashCropNames: string[];
   coverCropNames: string[];
   yearSummary: string;
+  yearAdvisories: CalendarAgronomicAdvisory[];
 }
 
 export interface FieldCalendarModel {
@@ -189,10 +212,14 @@ export function selectHemisphereWindowText(
   const clauses = rawWindow.split("/").map((c) => c.trim());
   if (clauses.length > 1) {
     if (hemisphere === "southern") {
-      const shClause = clauses.find((c) => c.includes("(SH)") || /southern/i.test(c));
+      const shClause = clauses.find(
+        (c) => /\(SH\b/i.test(c) || /southern|australia/i.test(c)
+      );
       if (shClause) return `${shClause} (schedule: ${fallbackMonthName})`;
     } else if (hemisphere === "northern") {
-      const nhClause = clauses.find((c) => c.includes("(NH)") || /northern/i.test(c));
+      const nhClause = clauses.find(
+        (c) => /\(NH\b/i.test(c) || /northern/i.test(c)
+      );
       if (nhClause) return `${nhClause} (schedule: ${fallbackMonthName})`;
     } else if (hemisphere === "tropical") {
       const tropClause = clauses.find((c) => /tropic|rainy|monsoon/i.test(c));
@@ -331,7 +358,29 @@ export function buildFieldCalendar(params: {
   const familiesSet = new Set<string>();
   let totalCoveredMonths = 0;
 
+  const overlapFindings = evaluateCropOverlapAndTermination(strategy, hemisphere);
+  const agGroup = climate ? classifyAgGroup(climate, null).group : undefined;
+  const seasonalVarietyFindings = evaluateSeasonalVarietyAlignment(
+    strategy,
+    hemisphere,
+    { agGroup, regionTag: geo.regionTag }
+  );
+  const nitrogenBarleyFindings = evaluateNitrogenAndBarleyCompatibility(
+    strategy,
+    hemisphere
+  );
+  const winterSuitabilityFindings = evaluateCoverCropWinterSuitability({
+    proposal: strategy,
+    climate,
+    hemisphere,
+  });
+
   const years: CalendarYearSchedule[] = strategy.years.map((yr) => {
+    const yrOverlaps = overlapFindings.filter((f) => f.year === yr.year);
+    const yrVarieties = seasonalVarietyFindings.filter((f) => f.year === yr.year);
+    const yrNitrogen = nitrogenBarleyFindings.filter((f) => f.year === yr.year);
+    const yrWinter = winterSuitabilityFindings.filter((f) => f.year === yr.year);
+
     const seasons: CalendarSeasonEntry[] = yr.seasons.map((s, idx) => {
       const crop = cropLibrary[s.crop];
       const isFallow = s.crop === "winter_fallow" || !crop;
@@ -417,11 +466,82 @@ export function buildFieldCalendar(params: {
 
       const seasonClimate = summarizeSeasonClimate(scheduledMonths, climate, crop);
 
+      const agronomicAdvisories: CalendarAgronomicAdvisory[] = [];
+
+      // Attach overlap and termination advisories relevant to this crop season
+      for (const ov of yrOverlaps) {
+        if (ov.cashCropId === s.crop || ov.coverCropId === s.crop) {
+          agronomicAdvisories.push({
+            severity:
+              ov.classification === "incompatible_overlap" ? "warning" : "info",
+            category:
+              ov.classification === "incompatible_overlap" &&
+              ov.conflictsWithSensitiveStage
+                ? "termination"
+                : "overlap",
+            title: ov.title,
+            detail: ov.message,
+            source: ov.source,
+          });
+        }
+      }
+
+      // Attach seasonal variety advisories
+      for (const vf of yrVarieties) {
+        if (vf.cropId === s.crop) {
+          agronomicAdvisories.push({
+            severity: "warning",
+            category: "variety_season",
+            title: `Seasonal variety mismatch: ${vf.cropName}`,
+            detail: vf.message,
+            source: vf.source,
+          });
+        }
+      }
+
+      // Attach nitrogen & malting barley advisories
+      for (const nf of yrNitrogen) {
+        if (nf.legumeCropId === s.crop || nf.targetCashCropId === s.crop) {
+          agronomicAdvisories.push({
+            severity: "warning",
+            category: "nitrogen",
+            title:
+              nf.kind === "malting_barley_excess_n_risk"
+                ? `Conditional malting barley protein & lodging advisory (${nf.legumeCropName} → ${nf.targetCashCropName})`
+                : nf.kind === "concurrent_overlap_n_unavailable"
+                  ? `Post-termination N credit not available during concurrent ${nf.legumeCropName} overlap`
+                  : `Reduced N accumulation window (${nf.legumeCropName})`,
+            detail: nf.message,
+            source: nf.source,
+          });
+        }
+      }
+
+      // Attach winter cover-crop climate suitability & monthly-mean caveat advisories
+      for (const wf of yrWinter) {
+        if (wf.cropId === s.crop) {
+          agronomicAdvisories.push({
+            severity: wf.severity,
+            category: "winter_survival",
+            title: wf.title,
+            detail: wf.message,
+            source: wf.source,
+          });
+        }
+      }
+
       const nCredit = crop?.nitrogenBehavior.residualNcredit?.value;
+      const hasConcurrentOverlapConflict = yrNitrogen.some(
+        (nf) =>
+          nf.kind === "concurrent_overlap_n_unavailable" &&
+          nf.legumeCropId === s.crop
+      );
       const nitrogenSummary = isFallow
         ? "No living root nitrogen uptake during fallow"
         : nCredit
-          ? `Fixes N (est. residual credit: ${nCredit})`
+          ? cropType === "cover"
+            ? `Fixes N (est. ${nCredit} for subsequent crop after termination; depends on establishment, stand vigor, biomass, termination & mineralization${hasConcurrentOverlapConflict ? " — not available to concurrently overlapping spring crop" : ""})`
+            : `Fixes N (est. residual credit: ${nCredit})`
           : `N demand: ${formatEnumLabel(crop?.nitrogenBehavior.demand ?? "moderate")}`;
 
       const residueSummary = isFallow
@@ -461,8 +581,20 @@ export function buildFieldCalendar(params: {
         droughtTolerance: formatEnumLabel(crop?.droughtTolerance ?? "moderate"),
         nitrogenSummary,
         residueSummary,
+        agronomicAdvisories,
       };
     });
+
+    const yearAdvisories: CalendarAgronomicAdvisory[] = [];
+    const seenYearAdvisoryTitles = new Set<string>();
+    for (const sea of seasons) {
+      for (const adv of sea.agronomicAdvisories) {
+        if (!seenYearAdvisoryTitles.has(adv.title)) {
+          seenYearAdvisoryTitles.add(adv.title);
+          yearAdvisories.push(adv);
+        }
+      }
+    }
 
     // Build 12 monthly cells for this rotation year
     const months: CalendarMonthCell[] = CALENDAR_MONTH_NAMES.map((mShort, idx) => {
@@ -523,6 +655,7 @@ export function buildFieldCalendar(params: {
       cashCropNames,
       coverCropNames,
       yearSummary,
+      yearAdvisories,
     };
   });
 
