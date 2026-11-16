@@ -23,6 +23,8 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Minus,
+  Database,
+  Info,
 } from "lucide-react";
 import {
   LineChart,
@@ -248,6 +250,22 @@ export default function ClimatePage() {
       {/* Data */}
       {data && !loading && (
         <>
+          {/* Compact Regional Context Warning */}
+          <div className="flex items-start gap-2 rounded-lg border border-border/80 bg-muted/30 px-3.5 py-2.5 text-xs text-muted-foreground">
+            <Info className="h-4 w-4 text-electric shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p>
+                <strong className="text-foreground">Regional climate context (~55 km grid):</strong>{" "}
+                Values represent satellite and meteorological reanalysis averages across the surrounding region, not direct on-farm weather gauge measurements. Local topography, frost pockets, and isolated storms may differ.
+              </p>
+              {data.warnings.length > 0 && (
+                <p className="text-amber-800 font-medium">
+                  {data.warnings.join(" · ")}
+                </p>
+              )}
+            </div>
+          </div>
+
           {/* Metric Cards */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryCard
@@ -494,36 +512,48 @@ export default function ClimatePage() {
             </CardContent>
           </Card>
 
-          {/* Subtle Expandable Source & Data Details */}
+          {/* Data Sources & Methodology */}
           <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
             <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
-              <span>Data source, spatial resolution &amp; record details</span>
+              <span className="flex items-center gap-2">
+                <Database className="h-3.5 w-3.5 text-muted-foreground" />
+                Data Sources &amp; Methodology
+              </span>
               <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
                 ▼
               </span>
             </summary>
             <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
               <p>
-                <strong className="text-foreground">Data source:</strong> {data.source}
+                <strong className="text-foreground">Live Climate Data:</strong>{" "}
+                <a
+                  href="https://power.larc.nasa.gov/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-electric hover:underline"
+                >
+                  {data.source}
+                </a>{" "}
+                ({data.spatialResolution}, daily record {data.periods.startYear}–{data.periods.endYear}).
+                Parameters queried: daily mean temperature (<code>T2M</code>), daily maximum/minimum temperature, bias-corrected precipitation (<code>PRECTOTCORR</code>), and all-sky surface shortwave downward irradiance (<code>ALLSKY_SFC_SW_DWN</code>).
               </p>
               <p>
-                <strong className="text-foreground">Spatial resolution &amp; scope:</strong>{" "}
-                {data.spatialResolution} Daily values are satellite and reanalysis products,
-                not direct on-farm weather station measurements.
+                <strong className="text-foreground">Derived Calculations:</strong>{" "}
+                Full-record means ({data.periods.startYear}–{data.periods.endYear}) are compared against the historical baseline window ({data.periods.baselineStart}–{data.periods.baselineEnd}) and the recent 5-year window ({data.periods.recentStart}–{data.periods.recentEnd}). Inter-annual precipitation variability is computed as the coefficient of variation (<code>CV = σ / μ × 100%</code>) across complete calendar years.
               </p>
               <p>
-                <strong className="text-foreground">Record completeness:</strong>{" "}
-                Valid data days — temperature {fmtInt(data.dataQuality.validDays["t2m"])} /{" "}
-                {data.dataQuality.totalDays}, precipitation{" "}
+                <strong className="text-foreground">Record Coverage &amp; Limitations:</strong>{" "}
+                Valid daily observations — temperature {fmtInt(data.dataQuality.validDays["t2m"])} /{" "}
+                {data.dataQuality.totalDays} days, precipitation{" "}
                 {fmtInt(data.dataQuality.validDays["precip"])} /{" "}
-                {data.dataQuality.totalDays}, solar{" "}
+                {data.dataQuality.totalDays} days, solar radiation{" "}
                 {fmtInt(data.dataQuality.validDays["solar"])} /{" "}
-                {data.dataQuality.totalDays}.{" "}
+                {data.dataQuality.totalDays} days. Grid-cell values (~55 km) smooth out field-level microclimates and convective rainfall extremes.{" "}
                 <Link
                   href="/data-sources"
                   className="text-electric hover:underline font-medium"
                 >
-                  Learn more about data sources →
+                  View complete data sources catalog →
                 </Link>
               </p>
               {data.warnings.length > 0 && (

@@ -469,6 +469,14 @@ export default function ClimateAnaloguesPage() {
                   </p>
                 </div>
 
+                <div className="flex items-start gap-2 rounded-lg border border-border/80 bg-muted/30 px-3.5 py-2 text-xs text-muted-foreground">
+                  <Info className="h-4 w-4 text-electric shrink-0 mt-0.5" />
+                  <p>
+                    <strong className="text-foreground">Historical analogue context:</strong>{" "}
+                    Matches rank real past years from this field&apos;s ~55 km regional climate archive ({analoguesResult.archivePeriodLabel}) by seasonal temperature, rainfall, and stress similarity—they do not predict upcoming weather or replicate sub-monthly storm timing.
+                  </p>
+                </div>
+
                 <div className="grid gap-4 lg:grid-cols-3">
                   {analoguesResult.matches.map((match) => {
                     const isInspected = activeMatch?.year === match.year;
@@ -725,32 +733,43 @@ export default function ClimateAnaloguesPage() {
             </>
           )}
 
-          {/* 4. Subtle Expandable Methodology & Data Details */}
+          {/* 4. Data Sources & Methodology */}
           <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
             <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
               <span className="flex items-center gap-2">
                 <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
-                Similarity methodology &amp; data details
+                Data Sources &amp; Methodology
               </span>
               <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
                 ▼
               </span>
             </summary>
             <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
-              <p>{analoguesResult.methodologySummary}</p>
-              <p className="text-[11px] flex items-center gap-1.5 pt-1">
-                <Info className="h-3.5 w-3.5 text-electric shrink-0" />
-                <span>
-                  Source: <strong className="text-foreground">{analoguesResult.source}</strong>{" "}
-                  ({analoguesResult.spatialResolution}). Only years with ≥300 valid
-                  daily observations are included in the candidate archive.{" "}
-                  <Link
-                    href="/data-sources"
-                    className="text-electric hover:underline font-medium"
-                  >
-                    Learn more about data sources →
-                  </Link>
-                </span>
+              <p>
+                <strong className="text-foreground">Historical Climate Archive (Live):</strong>{" "}
+                <a
+                  href="https://power.larc.nasa.gov/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-electric hover:underline"
+                >
+                  {analoguesResult.source}
+                </a>{" "}
+                ({analoguesResult.spatialResolution}, archive period {analoguesResult.archivePeriodLabel} with {analoguesResult.totalValidArchiveYears} complete years having ≥300 valid daily observations).
+              </p>
+              <p>
+                <strong className="text-foreground">Similarity Engine (Derived Calculations):</strong>{" "}
+                {analoguesResult.methodologySummary}
+              </p>
+              <p>
+                <strong className="text-foreground">Limitations:</strong>{" "}
+                Analogue rankings reflect regional grid-cell averages (~55 km) and seasonal/monthly totals rather than local hail, wind, or farm-gauge extremes.{" "}
+                <Link
+                  href="/data-sources"
+                  className="text-electric hover:underline font-medium"
+                >
+                  View complete data sources catalog →
+                </Link>
               </p>
             </div>
           </details>

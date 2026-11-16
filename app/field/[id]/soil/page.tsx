@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Database,
   MapPin,
+  Info,
 } from "lucide-react";
 
 interface SoilHorizon {
@@ -161,6 +162,22 @@ function TextureBar({
   );
 }
 
+function formatSoilDisplayName(
+  rawName: string,
+  isSoilGridsWcs: boolean,
+  wrbGroup?: string
+): string {
+  if (isSoilGridsWcs) {
+    const wrb =
+      wrbGroup ||
+      (rawName.includes("—") ? rawName.split("—")[1]?.trim() : undefined);
+    return wrb
+      ? `Modeled soil grid cell — ${wrb}`
+      : "Modeled soil grid cell (~250 m)";
+  }
+  return rawName;
+}
+
 export default function SoilPage() {
   const params = useParams();
   const router = useRouter();
@@ -238,13 +255,7 @@ export default function SoilPage() {
           Soil Profile
         </h2>
         <p className="text-muted-foreground max-w-2xl">
-          {data
-            ? isSsurgoSurvey
-              ? `Topsoil properties (upper 30 cm) for ${field.name}, including texture, organic matter, water-holding capacity, pH, and drainage.`
-              : isSoilGridsWcs
-              ? `Coordinate-specific modeled topsoil estimates (upper 30 cm, ~250 m resolution) for ${field.name} from ISRIC SoilGrids v2.0 (0–5, 5–15, and 15–30 cm layers).`
-              : `Regional topsoil estimate (upper 30 cm) for ${field.name} — representative properties for this agroecological zone.`
-            : `Soil texture, drainage, and properties for ${field.name}`}
+          Topsoil properties (0–30 cm) for {field.name} — texture, organic matter, pH, water-holding capacity, drainage, and slope.
         </p>
         <p className="text-xs text-muted-foreground">
           Coordinates: {field.lat.toFixed(4)}, {field.lon.toFixed(4)}
@@ -253,9 +264,13 @@ export default function SoilPage() {
               isSsurgoSurvey
                 ? "Map unit"
                 : isSoilGridsWcs
-                ? "Modeled soil unit (~250 m)"
-                : "Regional reference soil group"
-            }: ${data.mapUnit.name}`}
+                ? "Soil unit"
+                : "Reference soil group"
+            }: ${formatSoilDisplayName(
+              data.mapUnit.name,
+              isSoilGridsWcs,
+              data.wrbSoilGroup
+            )}`}
         </p>
       </div>
 
@@ -291,35 +306,35 @@ export default function SoilPage() {
       {/* Data */}
       {data && !loading && (
         <>
-          {isSoilGridsWcs && (
-            <div className="rounded-lg border border-blue-200 bg-blue-50/70 px-4 py-3 text-xs text-blue-950 space-y-1.5">
-              <p className="font-semibold flex items-center gap-1.5">
-                <Database className="h-4 w-4 text-blue-700 shrink-0" />
-                ISRIC SoilGrids v2.0 — Modeled Coordinate Estimate (~250 m Resolution)
-              </p>
-              <p className="leading-relaxed text-blue-900/90">
-                Values are depth-weighted 0–30 cm predictions extracted from a single 250 m pixel across the 0–5 cm, 5–15 cm, and 15–30 cm layers via ISRIC&apos;s OGC Web Coverage Service. These are global machine-learning estimates (~250 m grid) intended for regional and screening context—not field soil measurements or a substitute for laboratory soil testing.
-                {data.pixelResolution?.usedNeighborPixel &&
-                  ` Because the exact coordinate fell on a masked pixel (e.g., road, building, or surface water), values were retrieved from the nearest unmasked pixel ~${data.pixelResolution.neighborDistanceMeters} m away (≤ 250 m limit).`}
-              </p>
-              <p className="leading-relaxed text-blue-900/80">
-                <strong>Source vs. derived values:</strong> Sand, silt, clay, soil organic carbon
-                {socPct !== null ? ` (SOC ${fmt(socPct, 2)}%)` : ""}, pH
-                {bulkDensity !== null ? `, bulk density (${fmt(bulkDensity, 2)} g/cm³)` : ""}
-                {coarseFragments !== null ? `, and coarse fragments (${fmt(coarseFragments, 1)}%)` : ""}{" "}
-                are direct SoilGrids predictions. Organic matter ({fmt(om, 2)}%) is a derived estimate from SOC (SOC × 1.724), and AWC is computed from 33/1500 kPa water-retention layers where valid. Drainage class and slope are not published by SoilGrids and are not fabricated.
+          {/* Compact Farmer Warning Near Results */}
+          {isSoilGridsWcs ? (
+            <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50/70 px-3.5 py-2.5 text-xs text-blue-950">
+              <Info className="h-4 w-4 text-blue-700 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                <strong>Modeled topsoil estimate (~250 m grid):</strong>{" "}
+                Values are machine-learning predictions for 0–30 cm topsoil (with organic matter derived from SOC × 1.724), not on-site soil test measurements. Field-scale soil properties vary over short distances—verify with laboratory soil sampling before making lime, fertilizer, or drainage decisions.
+                {data.pixelResolution?.usedNeighborPixel && (
+                  <>
+                    {" "}
+                    <strong>Neighbor pixel note:</strong> The exact coordinate fell on a masked pixel (water/built-up); values come from the nearest unmasked pixel ~{data.pixelResolution.neighborDistanceMeters} m away (≤ 250 m limit).
+                  </>
+                )}
               </p>
             </div>
-          )}
-
-          {!isSsurgoSurvey && !isSoilGridsWcs && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-900 space-y-1">
-              <p className="font-semibold flex items-center gap-1.5">
-                <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
-                Regional Topsoil Estimate (Fallback Reference Profile)
+          ) : !isSsurgoSurvey ? (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 text-xs text-amber-900">
+              <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                <strong>Regional topsoil reference estimate:</strong>{" "}
+                Coordinate-specific soil data was unavailable for this location. Values represent typical 0–30 cm topsoil properties for this agroecological zone—verify with on-site soil sampling before making fertilizer or lime decisions.
               </p>
-              <p className="leading-relaxed text-amber-900/90">
-                Live coordinate-specific soil extraction was unavailable for this location. These values represent typical 0–30 cm topsoil properties for this agroecological region rather than a field-specific survey at your exact coordinates. On-site soil testing is recommended before making fertilizer or lime decisions.
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 rounded-lg border border-border/80 bg-muted/30 px-3.5 py-2.5 text-xs text-muted-foreground">
+              <Info className="h-4 w-4 text-electric shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                <strong className="text-foreground">Survey map-unit estimate (0–30 cm):</strong>{" "}
+                Values represent depth-weighted soil survey component averages. Field borders and local inclusions vary; confirm with on-site laboratory soil testing before applying lime or fertilizer.
               </p>
             </div>
           )}
@@ -408,22 +423,22 @@ export default function SoilPage() {
             />
           </div>
 
-          {/* Component Composition */}
+          {/* Soil Profile / Component Breakdown */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base font-semibold text-foreground">
                 {isSsurgoSurvey
-                  ? "Component Composition"
+                  ? "Soil Component Composition"
                   : isSoilGridsWcs
-                  ? "ISRIC SoilGrids v2.0 Grid Profile (~250 m)"
-                  : "Regional Reference Soil Group"}
+                  ? "Soil Profile Breakdown"
+                  : "Regional Reference Profile"}
               </CardTitle>
               <CardDescription className="text-xs">
                 {isSsurgoSurvey
                   ? "Named soil components in the map unit. Percentages reflect the share of each component within the map unit polygon."
                   : isSoilGridsWcs
-                  ? "Modeled 250 m raster profile extracted across the three standard SoilGrids topsoil depth intervals (0–5 cm, 5–15 cm, and 15–30 cm)."
-                  : "Polygon map-unit component records are only available for USDA SSURGO surveyed fields in the United States."}
+                  ? "Modeled 0–30 cm profile synthesized across the three topsoil depth intervals (0–5 cm, 5–15 cm, and 15–30 cm)."
+                  : "Representative 0–30 cm topsoil profile for this agroecological zone."}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -439,7 +454,7 @@ export default function SoilPage() {
                     <thead>
                       <tr className="border-b border-border">
                         <th className="text-left py-2 pr-4 font-medium text-muted-foreground">
-                          Component
+                          {isSoilGridsWcs ? "Soil Unit" : "Component"}
                         </th>
                         <th className="text-right py-2 px-3 font-medium text-muted-foreground">
                           %
@@ -457,7 +472,7 @@ export default function SoilPage() {
                           Slope
                         </th>
                         <th className="text-right py-2 px-3 font-medium text-muted-foreground">
-                          Horizons
+                          {isSoilGridsWcs ? "Depth Layers" : "Horizons"}
                         </th>
                       </tr>
                     </thead>
@@ -468,7 +483,11 @@ export default function SoilPage() {
                           className="border-b border-border/50"
                         >
                           <td className="py-2 pr-4 text-foreground font-medium">
-                            {comp.name}
+                            {formatSoilDisplayName(
+                              comp.name,
+                              isSoilGridsWcs,
+                              data.wrbSoilGroup
+                            )}
                           </td>
                           <td className="text-right py-2 px-3 tabular-nums">
                             {comp.percent}%
@@ -520,17 +539,23 @@ export default function SoilPage() {
             </CardContent>
           </Card>
 
-          {/* Horizon details per component */}
+          {/* Horizon / Depth Layer details per component */}
           {data.components.map((comp) =>
             comp.horizons.length > 0 ? (
               <Card key={comp.cokey}>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base font-semibold text-foreground">
-                    {comp.name} — Horizon Data
+                    {formatSoilDisplayName(
+                      comp.name,
+                      isSoilGridsWcs,
+                      data.wrbSoilGroup
+                    )}{" "}
+                    — {isSoilGridsWcs ? "Depth Layer Breakdown" : "Horizon Data"}
                   </CardTitle>
                   <CardDescription className="text-xs">
-                    Depth-weighted contributions to the 0-30 cm aggregate from
-                    this component ({comp.percent}% of map unit).
+                    {isSoilGridsWcs
+                      ? "Depth-interval values (0–5 cm, 5–15 cm, and 15–30 cm) used to compute the thickness-weighted 0–30 cm topsoil summary."
+                      : `Depth-weighted contributions to the 0–30 cm aggregate from this component (${comp.percent}% of map unit).`}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -598,26 +623,81 @@ export default function SoilPage() {
             ) : null
           )}
 
-          {/* Subtle Expandable Source & Coverage Details */}
+          {/* Data Sources & Methodology */}
           <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
             <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
-              <span>Data source, coverage &amp; limitations</span>
+              <span className="flex items-center gap-2">
+                <Database className="h-3.5 w-3.5 text-muted-foreground" />
+                Data Sources &amp; Methodology
+              </span>
               <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
                 ▼
               </span>
             </summary>
-            <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
+            <div className="mt-3 space-y-2.5 border-t border-border/60 pt-3 leading-relaxed">
               <p>
-                <strong className="text-foreground">Data source:</strong> {data.source}
+                <strong className="text-foreground">
+                  {isSsurgoSurvey
+                    ? "Live Survey Data Source:"
+                    : isSoilGridsWcs
+                    ? "Live Modeled Grid Source:"
+                    : "Static Regional Reference Source:"}
+                </strong>{" "}
+                {isSsurgoSurvey ? (
+                  <>
+                    <a
+                      href="https://sdmdataaccess.sc.egov.usda.gov/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-electric hover:underline"
+                    >
+                      {data.source}
+                    </a>{" "}
+                    (polygon soil survey, 1:12,000–1:24,000 scale).
+                  </>
+                ) : isSoilGridsWcs ? (
+                  <>
+                    <a
+                      href="https://maps.isric.org/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-electric hover:underline"
+                    >
+                      {data.source}
+                    </a>{" "}
+                    (
+                    <a
+                      href="https://docs.isric.org/globaldata/soilgrids/wcs.html"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-electric hover:underline"
+                    >
+                      OGC WCS documentation
+                    </a>
+                    , ~250 m / 0.00225° WGS84 grid).
+                  </>
+                ) : (
+                  <>{data.source} (macro-regional reference fallback).</>
+                )}
               </p>
               <p>
-                <strong className="text-foreground">Coverage &amp; methodology:</strong>{" "}
+                <strong className="text-foreground">Coverage &amp; Depth Aggregation:</strong>{" "}
                 {data.coverage}
               </p>
+              {isSoilGridsWcs && (
+                <p>
+                  <strong className="text-foreground">Direct vs. Derived Values:</strong>{" "}
+                  Sand, silt, clay, soil organic carbon
+                  {socPct !== null ? ` (SOC ${fmt(socPct, 2)}%)` : ""}, pH in H₂O
+                  {bulkDensity !== null ? `, bulk density (${fmt(bulkDensity, 2)} g/cm³)` : ""}
+                  {coarseFragments !== null ? `, and coarse fragments (${fmt(coarseFragments, 1)}%)` : ""}{" "}
+                  are direct SoilGrids v2.0 median (Q0.5) predictions extracted from a single geographic pixel across 0–5 cm, 5–15 cm, and 15–30 cm. Organic matter ({fmt(om, 2)}%) is a derived estimate computed from SOC using the Van Bemmelen factor (<code>OM = SOC × 1.724</code>), and AWC ({awc !== null ? `${fmt(awc, 3)} cm/cm` : "unavailable"}) is derived from volumetric water retention at 33 kPa and 1500 kPa adjusted for coarse fragments. Drainage class and slope are not published by SoilGrids and remain unpopulated (<code>null</code>).
+                </p>
+              )}
               {data.layerUncertainty && (
                 <div className="space-y-1">
                   <p className="font-medium text-foreground">
-                    Layer-Specific Prediction Uncertainty ({data.layerUncertainty.depthLabel}):
+                    Surface Layer Prediction Uncertainty ({data.layerUncertainty.depthLabel} Q0.05–Q0.95):
                   </p>
                   <p className="text-muted-foreground">{data.layerUncertainty.note}</p>
                   <ul className="list-disc list-inside space-y-0.5 text-muted-foreground">
@@ -646,21 +726,21 @@ export default function SoilPage() {
                 </div>
               )}
               {data.limitations.length > 0 && (
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  {data.limitations.map((l, i) => (
-                    <li key={i}>{l}</li>
-                  ))}
-                </ul>
+                <div className="space-y-1">
+                  <p className="font-medium text-foreground">Limitations &amp; Caveats:</p>
+                  <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                    {data.limitations.map((l, i) => (
+                      <li key={i}>{l}</li>
+                    ))}
+                  </ul>
+                </div>
               )}
               <p>
-                Aggregated values are decision-support heuristics, not field-level
-                measurements. On-site soil testing is recommended before management
-                decisions.{" "}
                 <Link
                   href="/data-sources"
                   className="text-electric hover:underline font-medium"
                 >
-                  Learn more about data sources →
+                  View complete data sources catalog →
                 </Link>
               </p>
             </div>

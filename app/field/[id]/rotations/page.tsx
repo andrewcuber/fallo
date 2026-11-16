@@ -491,10 +491,21 @@ export default function RotationsPage() {
                     <span className="font-semibold text-foreground">
                       Topsoil Context (0–30 cm)
                     </span>
-                    {adaptedSoil && !adaptedSoil.source.toUpperCase().includes("SSURGO") && (
-                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
-                        Regional estimate
-                      </span>
+                    {adaptedSoil && (
+                      adaptedSoil.source.toUpperCase().includes("SSURGO") ? (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 border border-emerald-200">
+                          Surveyed map unit
+                        </span>
+                      ) : adaptedSoil.source.includes("SoilGrids v2.0") &&
+                        !adaptedSoil.source.toLowerCase().includes("fallback") ? (
+                        <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 border border-blue-200">
+                          Modeled ~250 m grid
+                        </span>
+                      ) : (
+                        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200">
+                          Regional estimate
+                        </span>
+                      )
                     )}
                   </div>
                   {adaptedSoil ? (
@@ -503,7 +514,12 @@ export default function RotationsPage() {
                       {soilOm !== null ? `${soilOm.toFixed(1)}%` : "—"} · pH:{" "}
                       {soilPh !== null ? soilPh.toFixed(1) : "—"} · Drainage: {soilDrainage ?? "—"} · Slope:{" "}
                       {soilSlope !== null ? `${soilSlope.toFixed(1)}%` : "—"}
-                      {soil?.mapUnit?.name ? ` · ${soil.mapUnit.name}` : ""}
+                      {soil?.mapUnit?.name
+                        ? ` · ${soil.mapUnit.name.replace(
+                            /^ISRIC SoilGrids v2\.0\s*\([^)]*\)\s*(?:—\s*)?/i,
+                            "Modeled soil grid cell — "
+                          ).replace(/Modeled soil grid cell — $/, "Modeled soil grid cell")}`
+                        : ""}
                     </p>
                   ) : (
                     <p className="text-[11px] text-amber-800">
@@ -770,12 +786,12 @@ export default function RotationsPage() {
             </div>
           )}
 
-          {/* Subtle Expandable Data & Methodology Details */}
+          {/* Data Sources & Methodology */}
           <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
             <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
               <span className="flex items-center gap-2">
                 <Database className="h-3.5 w-3.5 text-muted-foreground" />
-                Data sources, coverage &amp; scoring methodology
+                Data Sources &amp; Methodology
               </span>
               <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
                 ▼
@@ -783,28 +799,41 @@ export default function RotationsPage() {
             </summary>
             <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
               <p>
-                <strong className="text-foreground">Climate source:</strong>{" "}
-                {adaptedClimate.source} ({adaptedClimate.spatialResolution}).{" "}
+                <strong className="text-foreground">Live Climate Data:</strong>{" "}
+                <a
+                  href="https://power.larc.nasa.gov/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-electric hover:underline"
+                >
+                  {adaptedClimate.source}
+                </a>{" "}
+                ({adaptedClimate.spatialResolution}).{" "}
                 {fieldClassification.reasons[0] ?? ""}
               </p>
               <p>
-                <strong className="text-foreground">Soil source:</strong>{" "}
+                <strong className="text-foreground">Topsoil Data:</strong>{" "}
                 {adaptedSoil
                   ? adaptedSoil.source.toUpperCase().includes("SSURGO")
-                    ? `${adaptedSoil.source} (${soilCoveragePct !== null ? `${soilCoveragePct.toFixed(0)}% map-unit coverage` : "0–30 cm survey"})`
-                    : `${adaptedSoil.source} (regional topsoil reference estimate — not a coordinate-extracted on-site soil test)`
+                    ? `${adaptedSoil.source} (${soilCoveragePct !== null ? `${soilCoveragePct.toFixed(0)}% map-unit coverage` : "0–30 cm depth-weighted survey"}) — live polygon soil survey.`
+                    : adaptedSoil.source.includes("SoilGrids v2.0") &&
+                      !adaptedSoil.source.toLowerCase().includes("fallback")
+                    ? `${adaptedSoil.source} — live ~250 m modeled 0–30 cm topsoil predictions across 0–5, 5–15, and 15–30 cm layers (with OM derived from SOC × 1.724 and AWC from 33/1500 kPa retention; drainage and slope unmodeled).`
+                    : `${adaptedSoil.source} — static macro-regional 0–30 cm topsoil reference estimate (used when coordinate-specific soil extraction is unavailable).`
                   : "Soil data unavailable for these coordinates."}
               </p>
               <p>
-                <strong className="text-foreground">Classification &amp; scoring note:</strong>{" "}
-                Classification confidence is{" "}
+                <strong className="text-foreground">Crop Catalog, Validation &amp; Scoring:</strong>{" "}
+                Verified crop traits (<code>data/crops.json</code>) cite USDA ARS/NASS, FAO, and university extension guides. Super Intelligence (SI) proposals arrange only verified crops for the{" "}
+                <strong className="text-foreground">{formatAgGroupLabel(fieldClassification.group)}</strong>{" "}
+                zone and must pass deterministic rotation compatibility rules before scoring. Classification confidence is{" "}
                 <strong className="text-foreground">{fieldClassification.confidence}</strong>
-                {fieldEvidence ? ` (${fieldEvidence.label})` : ""}. Suitability scores (0–100) are deterministic agronomic heuristics, not calibrated yield predictions.{" "}
+                {fieldEvidence ? ` (${fieldEvidence.label})` : ""}. Suitability scores (0–100) are deterministic decision-support heuristics, not calibrated yield or economic predictions.{" "}
                 <Link
                   href="/data-sources"
                   className="text-electric hover:underline font-medium"
                 >
-                  View full data source documentation →
+                  View complete data sources catalog →
                 </Link>
               </p>
             </div>

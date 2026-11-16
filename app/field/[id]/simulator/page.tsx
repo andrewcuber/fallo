@@ -456,9 +456,7 @@ export default function WhatIfSimulatorPage() {
                     Hypothetical Climate Adjustments
                   </CardTitle>
                   <CardDescription className="text-xs">
-                    Adjust temperature (°C) and precipitation (% or mm/yr).
-                    Observed baseline climate data and saved rotation plans
-                    are never overwritten.
+                    Adjust temperature (°C) and precipitation (% or mm/yr) to test sensitivity under hypothetical climate shifts. These are decision-support sensitivity tests, not meteorological forecasts—observed baseline climate data and saved rotation plans are never overwritten.
                   </CardDescription>
                 </div>
 
@@ -1531,35 +1529,53 @@ export default function WhatIfSimulatorPage() {
             </CardContent>
           </Card>
 
-          {/* 7. Subtle Expandable Units & Data Details */}
+          {/* 7. Data Sources & Methodology */}
           <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
             <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
               <span className="flex items-center gap-2">
                 <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
-                Units, simulation assumptions &amp; data details
+                Data Sources &amp; Methodology
               </span>
               <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
                 ▼
               </span>
             </summary>
-            <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
-              <ul className="list-disc list-inside space-y-1">
-                {evaluation.assumptions.map((a, idx) => (
-                  <li key={idx}>{a}</li>
-                ))}
-              </ul>
+            <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
+              <p>
+                <strong className="text-foreground">Observed Baseline Climate (Live):</strong>{" "}
+                <a
+                  href="https://power.larc.nasa.gov/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-electric hover:underline"
+                >
+                  {climate?.source}
+                </a>{" "}
+                ({climate?.spatialResolution}).
+              </p>
+              <p>
+                <strong className="text-foreground">Topsoil Context (Held Constant):</strong>{" "}
+                {soil?.source ?? "Soil data unavailable for these coordinates."}
+              </p>
+              <div className="space-y-1">
+                <p className="font-medium text-foreground">
+                  Derived Scenario Calculations &amp; Assumptions:
+                </p>
+                <ul className="list-disc list-inside space-y-1">
+                  {evaluation.assumptions.map((a, idx) => (
+                    <li key={idx}>{a}</li>
+                  ))}
+                </ul>
+              </div>
               <p className="text-[11px] pt-1 flex items-center gap-1.5 text-muted-foreground/90">
                 <Info className="h-3.5 w-3.5 text-electric shrink-0" />
                 <span>
-                  Observed baseline data is sourced from{" "}
-                  <strong className="text-foreground">{climate?.source}</strong>{" "}
-                  ({climate?.spatialResolution}). Hypothetical scenario outputs are
-                  decision-support sensitivity tests, not meteorological forecasts.{" "}
+                  Hypothetical scenario outputs are decision-support sensitivity tests, not meteorological forecasts.{" "}
                   <Link
                     href="/data-sources"
                     className="text-electric hover:underline font-medium"
                   >
-                    Learn more about data sources →
+                    View complete data sources catalog →
                   </Link>
                 </span>
               </p>
