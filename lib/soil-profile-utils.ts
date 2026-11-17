@@ -13,6 +13,7 @@
  *    omits unavailable properties completely instead of rendering dashes (`—`) or `N/A`.
  */
 
+import { LRUCache } from "lru-cache";
 import { normalizeCoordinates } from "@/lib/coordinates";
 import {
   isUnitedStatesCoordinate,
@@ -1798,5 +1799,270 @@ export async function resolveSoilProfileForCoordinate(
     httpStatus: 200,
     response,
     cachePolicy: "international_regional_fallback",
+  };
+}
+
+// ─── Server & Browser Soil Profile Cache Policy & Automatic SSURGO Recovery ───
+
+/**
+ * Server-side route cache TTL (`24 hours`) for authoritative primary provider responses:
+ * - U.S. USDA NRCS SSURGO (`ssurgo_primary`)
+ * - Complete international ISRIC SoilGrids v2.0 WCS (`soilgrids_primary`, `enrichmentStatus !== "partial_optional"`)
+ */
+export const SOIL_PRIMARY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Server-side route cache TTL (`5 minutes`) for fallback responses:
+ * - U.S. SoilGrids fallback during a transient USDA SSURGO outage (`us_outage_soilgrids_fallback`)
+ * - U.S. SoilGrids fallback when SSURGO returned no map unit or no usable data (`us_unmapped_soilgrids_fallback`)
+ * - International macro-regional reference fallback (`international_regional_fallback`)
+ */
+export const SOIL_FALLBACK_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Server-side route cache TTL (`1 minute`) when SoilGrids optional enrichment (`mean` texture,
+ * `wv0033`/`wv1500` AWC, `wrb`, `bdod`, `cfvo`, or `Q0.05`/`Q0.95` uncertainty) is only partially
+ * complete (`enrichmentStatus === "partial_optional"`), so missing optional layers can be
+ * completed on a subsequent request while reusing the 24-hour per-coverage `coverageCache`.
+ */
+export const SOIL_PARTIAL_ENRICHMENT_CACHE_TTL_MS = 60 * 1000;
+
+/**
+ * Browser in-memory environmental cache (`envMemoryCache`) TTL (`15 minutes`) for authoritative
+ * primary soil responses (`usda_ssurgo` and complete international `soilgrids_wcs_250m`).
+ */
+export const ENV_PRIMARY_CACHE_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Browser in-memory environmental cache (`envMemoryCache`) TTL (`5 minutes`, matching
+ * `SOIL_FALLBACK_CACHE_TTL_MS`) for U.S. SoilGrids fallbacks and international regional fallbacks,
+ * ensuring browser cache entries expire so subsequent requests automatically re-attempt USDA SSURGO.
+ */
+export const ENV_FALLBACK_CACHE_TTL_MS = SOIL_FALLBACK_CACHE_TTL_MS;
+
+/**
+ * Browser in-memory environmental cache (`envMemoryCache`) TTL (`1 minute`) for partially enriched
+ * SoilGrids responses (`enrichmentStatus === "partial_optional"`).
+ */
+export const ENV_PARTIAL_ENRICHMENT_CACHE_TTL_MS =
+  SOIL_PARTIAL_ENRICHMENT_CACHE_TTL_MS;
+
+export function buildSoilCacheKey(lat: number, lon: number): string {
+  return `v3_${lat.toFixed(4)}_${lon.toFixed(4)}`;
+}
+
+/**
+ * Determine the server-side `/api/soil` route cache TTL (in milliseconds) for a resolved soil profile.
+ */
+export function resolveSoilRouteCacheTtlMs(
+  cachePolicy: SoilCachePolicy,
+  enrichmentStatus?: "complete" | "partial_optional"
+): number {
+  if (enrichmentStatus === "partial_optional") {
+    return SOIL_PARTIAL_ENRICHMENT_CACHE_TTL_MS;
+  }
+  if (
+    cachePolicy === "ssurgo_primary" ||
+    cachePolicy === "soilgrids_primary"
+  ) {
+    return SOIL_PRIMARY_CACHE_TTL_MS;
+  }
+  return SOIL_FALLBACK_CACHE_TTL_MS;
+}
+
+/**
+ * Determine the browser-side `envMemoryCache` TTL (in milliseconds) for a soil API response.
+ *
+ * - Partially enriched SoilGrids responses (`enrichmentStatus === "partial_optional"`): `1 minute`
+ * - U.S. SoilGrids fallback responses (`usSsurgoFallback !== undefined`) or international
+ *   macro-regional reference fallbacks (`dataTier === "regional_reference_fallback"`): `5 minutes`
+ * - Authoritative `usda_ssurgo` or complete international `soilgrids_wcs_250m` primary profiles: `15 minutes`
+ */
+export function resolveBrowserSoilCacheTtlMs(response: {
+  dataTier?: SoilDataTier;
+  source?: string;
+  enrichmentStatus?: "complete" | "partial_optional";
+  usSsurgoFallback?: UsSsurgoFallbackMeta;
+}): number {
+  if (response.enrichmentStatus === "partial_optional") {
+    return ENV_PARTIAL_ENRICHMENT_CACHE_TTL_MS;
+  }
+  if (
+    response.usSsurgoFallback !== undefined ||
+    resolveSoilDataTier(response) === "regional_reference_fallback"
+  ) {
+    return ENV_FALLBACK_CACHE_TTL_MS;
+  }
+  return ENV_PRIMARY_CACHE_TTL_MS;
+}
+
+export interface CachedSoilRouteEntry {
+  response: SoilApiResponsePayload;
+  cachePolicy: SoilCachePolicy;
+  cachedAt: number;
+  ttlMs: number;
+  expiresAt: number;
+}
+
+const soilRouteCache = new LRUCache<string, CachedSoilRouteEntry>({
+  max: 500,
+  ttl: SOIL_PRIMARY_CACHE_TTL_MS,
+});
+
+export function clearSoilRouteCacheForTests(): void {
+  soilRouteCache.clear();
+}
+
+export function getSoilRouteCacheEntryForTests(
+  latInput: number,
+  lonInput: number
+): CachedSoilRouteEntry | undefined {
+  const norm = normalizeCoordinates(latInput, lonInput);
+  const lat = norm.valid ? norm.lat : latInput;
+  const lon = norm.valid ? norm.lon : lonInput;
+  return soilRouteCache.get(buildSoilCacheKey(lat, lon));
+}
+
+export type CachedSoilRouteResult =
+  | {
+      ok: true;
+      httpStatus: 200;
+      response: SoilApiResponsePayload;
+      cachePolicy: SoilCachePolicy;
+      fromCache: boolean;
+      ttlMs: number;
+      cacheControl: string;
+      usSsurgoStatus?: UsdaSsurgoFetchResult["status"];
+    }
+  | {
+      ok: false;
+      httpStatus: 503 | 404;
+      error: string;
+      detail: string;
+      usSsurgoStatus: Exclude<UsdaSsurgoFetchResult["status"], "ok">;
+      cacheControl: "no-store";
+    };
+
+/**
+ * Server-side soil profile resolver with TTL-aware route caching and automatic USDA SSURGO recovery:
+ *
+ * - Reuses fresh cached responses without re-querying USDA SSURGO or ISRIC SoilGrids WCS.
+ * - Expires U.S. SoilGrids outage fallbacks after `SOIL_FALLBACK_CACHE_TTL_MS` (5 minutes)
+ *   and partially enriched SoilGrids profiles after `SOIL_PARTIAL_ENRICHMENT_CACHE_TTL_MS` (1 minute).
+ * - Once a fallback entry expires (or when `forceRefresh: true`), the next request for a U.S.
+ *   coordinate attempts live USDA NRCS SSURGO first and immediately replaces the fallback cache
+ *   entry with the authoritative `usda_ssurgo` profile (`SOIL_PRIMARY_CACHE_TTL_MS` = 24 hours)
+ *   when USDA succeeds.
+ */
+export async function resolveCachedSoilProfileForCoordinate(
+  latInput: number,
+  lonInput: number,
+  options?: {
+    forceRefresh?: boolean;
+    sdaFetchFn?: typeof fetch;
+    wcsFetchFn?: typeof fetch;
+    soilGridsWcsFetcher?: SoilGridsWcsFetcherFn;
+    sdaTimeoutMs?: number;
+    nowFn?: () => number;
+  }
+): Promise<CachedSoilRouteResult> {
+  const norm = normalizeCoordinates(latInput, lonInput);
+  const lat = norm.valid ? norm.lat : latInput;
+  const lon = norm.valid ? norm.lon : lonInput;
+  const locationMeta = {
+    lat,
+    lon,
+    ...(norm.valid && norm.lonWasNormalized
+      ? { lonWasNormalized: true, originalLon: norm.originalLon }
+      : {}),
+  };
+
+  const nowFn = options?.nowFn ?? Date.now;
+  const forceRefresh = Boolean(options?.forceRefresh);
+  const cacheKey = buildSoilCacheKey(lat, lon);
+
+  if (!forceRefresh) {
+    const cached = soilRouteCache.get(cacheKey);
+    if (cached) {
+      const now = nowFn();
+      if (
+        now < cached.expiresAt &&
+        isUsableCachedSoilResponse(lat, lon, cached.response)
+      ) {
+        return {
+          ok: true,
+          httpStatus: 200,
+          response: {
+            ...cached.response,
+            location: locationMeta,
+            cached: true,
+          },
+          cachePolicy: cached.cachePolicy,
+          fromCache: true,
+          ttlMs: cached.ttlMs,
+          cacheControl: "no-store",
+        };
+      }
+      // Evict expired or disallowed fallback entry so the next resolution queries the primary provider
+      soilRouteCache.delete(cacheKey);
+    }
+  } else {
+    soilRouteCache.delete(cacheKey);
+  }
+
+  const result = await resolveSoilProfileForCoordinate(lat, lon, {
+    sdaFetchFn: options?.sdaFetchFn,
+    wcsFetchFn: options?.wcsFetchFn,
+    soilGridsWcsFetcher: options?.soilGridsWcsFetcher,
+    bypassCache: forceRefresh,
+    sdaTimeoutMs: options?.sdaTimeoutMs,
+  });
+
+  if (!result.ok) {
+    return {
+      ...result,
+      cacheControl: "no-store",
+    };
+  }
+
+  const response: SoilApiResponsePayload = {
+    ...result.response,
+    location: locationMeta,
+  };
+
+  const ttlMs = resolveSoilRouteCacheTtlMs(
+    result.cachePolicy,
+    response.enrichmentStatus
+  );
+  const cachedAt = nowFn();
+
+  soilRouteCache.set(
+    cacheKey,
+    {
+      response,
+      cachePolicy: result.cachePolicy,
+      cachedAt,
+      ttlMs,
+      expiresAt: cachedAt + ttlMs,
+    },
+    { ttl: ttlMs }
+  );
+
+  const isPrimaryComplete =
+    (result.cachePolicy === "ssurgo_primary" ||
+      result.cachePolicy === "soilgrids_primary") &&
+    response.enrichmentStatus !== "partial_optional";
+
+  return {
+    ok: true,
+    httpStatus: 200,
+    response,
+    cachePolicy: result.cachePolicy,
+    fromCache: false,
+    ttlMs,
+    cacheControl: isPrimaryComplete
+      ? "private, max-age=300, stale-while-revalidate=3600"
+      : "no-store",
+    ...(result.usSsurgoStatus ? { usSsurgoStatus: result.usSsurgoStatus } : {}),
   };
 }

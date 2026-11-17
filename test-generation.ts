@@ -105,8 +105,12 @@ import {
 import {
   applyFieldRotationsUpdate,
   sanitizeStoredFields,
+  loadEnvironmentalData,
+  getValidCachedEnvEntry,
+  clearEnvMemoryCacheForTests,
   type Field,
   type StoredRotations,
+  type RawClimateApiResponse,
 } from "@/components/providers";
 import {
   normalizeLongitude,
@@ -166,6 +170,17 @@ import {
   fetchUsdaSsurgoProfile,
   isUsableCachedSoilResponse,
   resolveSoilProfileForCoordinate,
+  SOIL_PRIMARY_CACHE_TTL_MS,
+  SOIL_FALLBACK_CACHE_TTL_MS,
+  SOIL_PARTIAL_ENRICHMENT_CACHE_TTL_MS,
+  ENV_PRIMARY_CACHE_TTL_MS,
+  ENV_FALLBACK_CACHE_TTL_MS,
+  ENV_PARTIAL_ENRICHMENT_CACHE_TTL_MS,
+  resolveSoilRouteCacheTtlMs,
+  resolveBrowserSoilCacheTtlMs,
+  resolveCachedSoilProfileForCoordinate,
+  clearSoilRouteCacheForTests,
+  getSoilRouteCacheEntryForTests,
   type SoilProfileInput,
   type SoilComponentInput,
 } from "@/lib/soil-profile-utils";
@@ -6709,6 +6724,618 @@ test("Case 8: Warm-cache requests return cached complete profiles with 0 network
     requestedOnCall3.length,
     0,
     "Warm cache hit for a complete profile must make 0 network requests"
+  );
+});
+
+// ============================================================================
+// Automatic USDA SSURGO Recovery & Multi-Tier Soil Cache Expiration Tests
+// ============================================================================
+
+const COMPLETE_TEST_COVERAGES: Record<string, number> = {
+  "sand_0-5cm_Q0.5": 95,
+  "sand_5-15cm_Q0.5": 94,
+  "sand_15-30cm_Q0.5": 98,
+  "silt_0-5cm_Q0.5": 584,
+  "silt_5-15cm_Q0.5": 581,
+  "silt_15-30cm_Q0.5": 565,
+  "clay_0-5cm_Q0.5": 270,
+  "clay_5-15cm_Q0.5": 274,
+  "clay_15-30cm_Q0.5": 288,
+  "soc_0-5cm_Q0.5": 202,
+  "soc_5-15cm_Q0.5": 152,
+  "soc_15-30cm_Q0.5": 118,
+  "phh2o_0-5cm_Q0.5": 62,
+  "phh2o_5-15cm_Q0.5": 62,
+  "phh2o_15-30cm_Q0.5": 62,
+  "sand_0-5cm_mean": 110,
+  "sand_5-15cm_mean": 110,
+  "sand_15-30cm_mean": 110,
+  "silt_0-5cm_mean": 471,
+  "silt_5-15cm_mean": 471,
+  "silt_15-30cm_mean": 471,
+  "clay_0-5cm_mean": 419,
+  "clay_5-15cm_mean": 419,
+  "clay_15-30cm_mean": 419,
+  "wv0033_0-5cm_Q0.5": 350,
+  "wv0033_5-15cm_Q0.5": 345,
+  "wv0033_15-30cm_Q0.5": 340,
+  "wv1500_0-5cm_Q0.5": 155,
+  "wv1500_5-15cm_Q0.5": 157,
+  "wv1500_15-30cm_Q0.5": 158,
+  MostProbable: 6, // Cambisols
+  "bdod_0-5cm_Q0.5": 148,
+  "bdod_5-15cm_Q0.5": 154,
+  "bdod_15-30cm_Q0.5": 156,
+  "cfvo_0-5cm_Q0.5": 0,
+  "cfvo_5-15cm_Q0.5": 0,
+  "cfvo_15-30cm_Q0.5": 0,
+  "sand_0-5cm_Q0.05": 20,
+  "sand_0-5cm_Q0.95": 210,
+  "silt_0-5cm_Q0.05": 420,
+  "silt_0-5cm_Q0.95": 710,
+  "clay_0-5cm_Q0.05": 180,
+  "clay_0-5cm_Q0.95": 380,
+  "soc_0-5cm_Q0.05": 110,
+  "soc_0-5cm_Q0.95": 360,
+  "phh2o_0-5cm_Q0.05": 54,
+  "phh2o_0-5cm_Q0.95": 71,
+};
+
+section("Automatic USDA SSURGO Recovery & Server/Browser Cache Expiration");
+
+test("1–5. Server soil route cache: USDA 502 -> 5-min SoilGrids fallback -> reused while fresh without hammering USDA -> re-queries USDA after TTL expiry -> replaces fallback with 24h SSURGO profile upon recovery", async () => {
+  clearSoilGridsCacheForTests();
+  clearSoilRouteCacheForTests();
+
+  const lat = 41.8780;
+  const lon = -93.0977;
+  let fakeNow = 1_700_000_000_000;
+  const nowFn = () => fakeNow;
+
+  let usdaHealthy = false;
+  let usdaRequestCount = 0;
+  let wcsRequestCount = 0;
+
+  const mockSdaFetch: typeof fetch = async (_input, init) => {
+    usdaRequestCount++;
+    if (!usdaHealthy) {
+      return new Response(
+        "<html><head><title>502 Bad Gateway</title></head><body><h1>502 Bad Gateway</h1></body></html>",
+        { status: 502, headers: { "Content-Type": "text/html" } }
+      );
+    }
+
+    const bodyStr = typeof init?.body === "string" ? init.body : "";
+    const parsed = JSON.parse(bodyStr) as { query: string };
+    if (parsed.query.includes("SDA_Get_Mukey_from_intersection_with_WktWgs84")) {
+      return new Response(JSON.stringify({ Table: [["408312"]] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (parsed.query.includes("SELECT muname FROM mapunit")) {
+      return new Response(
+        JSON.stringify({ Table: [["Clarion loam, 2 to 6 percent slopes"]] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        Table: [
+          [
+            "40831201",
+            "100",
+            "Clarion",
+            "Moderately well drained",
+            "4.0",
+            "Series",
+            "Yes",
+            "0",
+            "30",
+            "38.0",
+            "40.0",
+            "22.0",
+            "3.6",
+            "6.5",
+            "0.20",
+          ],
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  };
+
+  const baseWcsMock = createMockSoilGridsFetch(COMPLETE_TEST_COVERAGES);
+  const mockWcsFetch: typeof fetch = async (input, init) => {
+    wcsRequestCount++;
+    return baseWcsMock(input, init);
+  };
+
+  // 1. At t = 0: USDA returns HTTP 502 -> coordinate-specific SoilGrids fallback is returned and cached for 5 minutes (<= 5 minutes)
+  const res1 = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    sdaFetchFn: mockSdaFetch,
+    wcsFetchFn: mockWcsFetch,
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+
+  assert.equal(res1.ok, true);
+  if (!res1.ok) return;
+  assert.equal(res1.fromCache, false);
+  assert.equal(res1.cachePolicy, "us_outage_soilgrids_fallback");
+  assert.equal(res1.ttlMs, SOIL_FALLBACK_CACHE_TTL_MS);
+  assert.ok(
+    res1.ttlMs <= 5 * 60 * 1000,
+    `U.S. outage fallback TTL (${res1.ttlMs} ms) must be no more than 5 minutes`
+  );
+  assert.equal(res1.cacheControl, "no-store");
+  assert.equal(res1.response.dataTier, "soilgrids_wcs_250m");
+  assert.equal(res1.response.usSsurgoFallback?.reason, "request_error");
+  assert.equal(usdaRequestCount, 1, "USDA queried once on initial cold request");
+  assert.equal(wcsRequestCount, 47, "SoilGrids WCS queried on initial cold fallback");
+
+  // 2. At t = +2 minutes (still within 5-minute fallback TTL):
+  //    Fresh fallback is reused from cache WITHOUT repeatedly querying USDA or SoilGrids WCS
+  fakeNow += 2 * 60 * 1000;
+  const res2 = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    sdaFetchFn: mockSdaFetch,
+    wcsFetchFn: mockWcsFetch,
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+
+  assert.equal(res2.ok, true);
+  if (!res2.ok) return;
+  assert.equal(res2.fromCache, true);
+  assert.equal(res2.response.cached, true);
+  assert.equal(res2.response.dataTier, "soilgrids_wcs_250m");
+  assert.equal(res2.response.usSsurgoFallback?.reason, "request_error");
+  assert.equal(
+    usdaRequestCount,
+    1,
+    "USDA must NOT be hammered while the 5-minute fallback entry is fresh"
+  );
+  assert.equal(wcsRequestCount, 47, "SoilGrids WCS must not be re-queried on cache hit");
+
+  // 3 & 4. At t = +5 minutes + 1 ms (fallback TTL expired) and USDA has recovered:
+  //        Next request automatically queries USDA SSURGO again and returns the authoritative SSURGO profile!
+  fakeNow += 3 * 60 * 1000 + 1;
+  usdaHealthy = true;
+
+  const res3 = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    sdaFetchFn: mockSdaFetch,
+    wcsFetchFn: mockWcsFetch,
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+
+  assert.equal(res3.ok, true);
+  if (!res3.ok) return;
+  assert.equal(res3.fromCache, false);
+  assert.equal(res3.cachePolicy, "ssurgo_primary");
+  assert.equal(res3.ttlMs, SOIL_PRIMARY_CACHE_TTL_MS);
+  assert.equal(
+    res3.cacheControl,
+    "private, max-age=300, stale-while-revalidate=3600"
+  );
+  assert.equal(res3.response.dataTier, "usda_ssurgo");
+  assert.equal(res3.response.usSsurgoFallback, undefined);
+  assert.equal(res3.response.mapUnit?.mukey, "408312");
+  assert.equal(res3.response.aggregated.drainage, "Moderately well drained");
+  assert.equal(res3.response.aggregated.slope, 4.0);
+  assert.equal(
+    usdaRequestCount,
+    4,
+    "After fallback expiry, USDA SDA must be queried again (3 queries: spatial mukey, mapunit name, component+chorizon)"
+  );
+  assert.equal(
+    wcsRequestCount,
+    47,
+    "SoilGrids WCS must not be called when USDA SSURGO succeeds"
+  );
+
+  // 5. Verify the successful SSURGO response replaced the previous fallback cache entry
+  //    and remains cached for the 24-hour primary TTL (e.g. at +1 hour after recovery)
+  const storedEntry = getSoilRouteCacheEntryForTests(lat, lon);
+  assert.ok(storedEntry);
+  assert.equal(storedEntry.cachePolicy, "ssurgo_primary");
+  assert.equal(storedEntry.ttlMs, SOIL_PRIMARY_CACHE_TTL_MS);
+  assert.equal(storedEntry.response.dataTier, "usda_ssurgo");
+  assert.equal(storedEntry.response.usSsurgoFallback, undefined);
+
+  fakeNow += 60 * 60 * 1000; // +1 hour (< 24h primary TTL)
+  const res4 = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    sdaFetchFn: mockSdaFetch,
+    wcsFetchFn: mockWcsFetch,
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+  assert.equal(res4.ok, true);
+  if (!res4.ok) return;
+  assert.equal(res4.fromCache, true);
+  assert.equal(res4.response.dataTier, "usda_ssurgo");
+  assert.equal(res4.response.usSsurgoFallback, undefined);
+  assert.equal(usdaRequestCount, 4, "Cached SSURGO profile is served without re-querying USDA");
+});
+
+test("5b. Explicit refresh (forceRefresh: true) while fallback is still fresh immediately queries USDA and replaces the cached fallback entry with SSURGO", async () => {
+  clearSoilGridsCacheForTests();
+  clearSoilRouteCacheForTests();
+
+  const lat = 41.8780;
+  const lon = -93.0977;
+  let fakeNow = 1_700_000_000_000;
+  const nowFn = () => fakeNow;
+
+  let usdaHealthy = false;
+  let usdaCalls = 0;
+
+  const mockSdaFetch: typeof fetch = async (_input, init) => {
+    usdaCalls++;
+    if (!usdaHealthy) {
+      return new Response("502 Bad Gateway", { status: 502 });
+    }
+    const bodyStr = typeof init?.body === "string" ? init.body : "";
+    const parsed = JSON.parse(bodyStr) as { query: string };
+    if (parsed.query.includes("SDA_Get_Mukey_from_intersection_with_WktWgs84")) {
+      return new Response(JSON.stringify({ Table: [["408312"]] }), { status: 200 });
+    }
+    if (parsed.query.includes("SELECT muname FROM mapunit")) {
+      return new Response(JSON.stringify({ Table: [["Clarion loam"]] }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({
+        Table: [
+          [
+            "40831201",
+            "100",
+            "Clarion",
+            "Well drained",
+            "3.0",
+            "Series",
+            "Yes",
+            "0",
+            "30",
+            "38.0",
+            "40.0",
+            "22.0",
+            "3.5",
+            "6.5",
+            "0.20",
+          ],
+        ],
+      }),
+      { status: 200 }
+    );
+  };
+
+  // Initial request during outage caches fallback at t = 0
+  const fallbackRes = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    sdaFetchFn: mockSdaFetch,
+    wcsFetchFn: createMockSoilGridsFetch(COMPLETE_TEST_COVERAGES),
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+  assert.equal(fallbackRes.ok, true);
+  if (!fallbackRes.ok) return;
+  assert.equal(fallbackRes.cachePolicy, "us_outage_soilgrids_fallback");
+  assert.equal(usdaCalls, 1);
+
+  // At t = +30 seconds (fallback still fresh), USDA recovers and user clicks "Retry USDA SSURGO" (forceRefresh: true)
+  fakeNow += 30 * 1000;
+  usdaHealthy = true;
+
+  const refreshRes = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    forceRefresh: true,
+    sdaFetchFn: mockSdaFetch,
+    wcsFetchFn: createMockSoilGridsFetch(COMPLETE_TEST_COVERAGES),
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+  assert.equal(refreshRes.ok, true);
+  if (!refreshRes.ok) return;
+  assert.equal(refreshRes.fromCache, false);
+  assert.equal(refreshRes.cachePolicy, "ssurgo_primary");
+  assert.equal(refreshRes.response.dataTier, "usda_ssurgo");
+  assert.equal(usdaCalls, 4);
+
+  // Subsequent normal request at t = +45 seconds receives the replaced SSURGO profile from cache
+  fakeNow += 15 * 1000;
+  const subsequentRes = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    forceRefresh: false,
+    sdaFetchFn: mockSdaFetch,
+    wcsFetchFn: createMockSoilGridsFetch(COMPLETE_TEST_COVERAGES),
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+  assert.equal(subsequentRes.ok, true);
+  if (!subsequentRes.ok) return;
+  assert.equal(subsequentRes.fromCache, true);
+  assert.equal(subsequentRes.response.dataTier, "usda_ssurgo");
+  assert.equal(subsequentRes.response.usSsurgoFallback, undefined);
+  assert.equal(usdaCalls, 4, "Replaced SSURGO cache entry is served without further USDA calls");
+});
+
+test("6. Browser environmental cache (envMemoryCache): expires U.S. SoilGrids fallback after 5 minutes, triggers fresh /api/soil request, and upgrades to 15-minute TTL once SSURGO recovers", async () => {
+  clearEnvMemoryCacheForTests();
+
+  const lat = 41.8780;
+  const lon = -93.0977;
+  let fakeNow = 1_700_000_000_000;
+  const nowFn = () => fakeNow;
+
+  let apiSoilCalls = 0;
+  let apiClimateCalls = 0;
+  let serverReturnsSsurgo = false;
+
+  const dummyClimatePayload: RawClimateApiResponse = {
+    location: { lat, lon, elevation: 300 },
+    periods: {
+      startYear: 2005,
+      endYear: 2024,
+      recentStart: 2015,
+      recentEnd: 2024,
+      baselineStart: 2005,
+      baselineEnd: 2014,
+    },
+    fullRecord: {
+      avgAnnualTemp: 9.8,
+      avgAnnualPrecip: 890,
+      avgDailySolar: 15.2,
+      monthlyTemp: Array(12).fill(9.8),
+      monthlyPrecip: Array(12).fill(74),
+      monthlySolar: Array(12).fill(15.2),
+      annualPrecipTotals: Array(20).fill(890),
+      precipCV: 0.18,
+    },
+    baseline: {
+      avgAnnualTemp: 9.5,
+      avgAnnualPrecip: 880,
+      avgDailySolar: 15.1,
+      monthlyTemp: Array(12).fill(9.5),
+      monthlyPrecip: Array(12).fill(73),
+      monthlySolar: Array(12).fill(15.1),
+      annualPrecipTotals: Array(10).fill(880),
+      precipCV: 0.17,
+    },
+    recent: {
+      avgAnnualTemp: 10.1,
+      avgAnnualPrecip: 900,
+      avgDailySolar: 15.3,
+      monthlyTemp: Array(12).fill(10.1),
+      monthlyPrecip: Array(12).fill(75),
+      monthlySolar: Array(12).fill(15.3),
+      annualPrecipTotals: Array(10).fill(900),
+      precipCV: 0.19,
+    },
+    stressMetrics: makeClimate().stressMetrics,
+    units: { temp: "°C", precip: "mm", solar: "MJ/m²/day", wetness: "days" },
+    source: "NASA POWER",
+    spatialResolution: "~55 km",
+    dataQuality: { totalDays: 7305, validDays: {}, missingDays: {} },
+    parameters: ["T2M", "PRECTOTCORR", "ALLSKY_SFC_SW_DWN"],
+    warnings: [],
+  };
+
+  const mockBrowserFetch: typeof fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.startsWith("/api/climate")) {
+      apiClimateCalls++;
+      return new Response(JSON.stringify(dummyClimatePayload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.startsWith("/api/soil")) {
+      apiSoilCalls++;
+      if (!serverReturnsSsurgo) {
+        return new Response(
+          JSON.stringify({
+            location: { lat, lon },
+            dataTier: "soilgrids_wcs_250m",
+            source: "ISRIC SoilGrids v2.0 (250 m global digital soil mapping via OGC WCS). https://maps.isric.org/",
+            coverage: "United States coordinate — live ISRIC SoilGrids v2.0 fallback",
+            wrbSoilGroup: "Phaeozems",
+            mapUnit: { mukey: "SG250M_41.8780_-93.0977", name: "ISRIC SoilGrids v2.0 (250 m) — Phaeozems" },
+            totalComponentPercent: 100,
+            components: [],
+            aggregated: {
+              depth0_30cm: { sand: 11.0, silt: 47.1, clay: 41.9, om: 2.47, ph: 6.3, awc: 0.187 },
+              drainage: null,
+              slope: null,
+            },
+            dataCoverage: {
+              depth0_30cm: { sand: 100, silt: 100, clay: 100, om: 100, ph: 100, awc: 100 },
+              drainage: null,
+              slope: null,
+            },
+            limitations: ["Fallback during USDA outage"],
+            enrichmentStatus: "complete",
+            usSsurgoFallback: {
+              reason: "request_error",
+              detail: "USDA Soil Data Access API returned HTTP 502 Bad Gateway",
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          location: { lat, lon },
+          dataTier: "usda_ssurgo",
+          source: "USDA NRCS Soil Survey Geographic Database (SSURGO). https://sdmdataaccess.sc.egov.usda.gov",
+          coverage: "United States (USDA SSURGO primary survey).",
+          mapUnit: { mukey: "408312", name: "Clarion loam, 2 to 6 percent slopes" },
+          totalComponentPercent: 100,
+          components: [],
+          aggregated: {
+            depth0_30cm: { sand: 36.5, silt: 40.0, clay: 23.5, om: 3.51, ph: 6.56, awc: 0.199 },
+            drainage: "Moderately well drained",
+            slope: 3.7,
+          },
+          dataCoverage: {
+            depth0_30cm: { sand: 100, silt: 100, clay: 100, om: 100, ph: 100, awc: 100 },
+            drainage: 100,
+            slope: 100,
+          },
+          limitations: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  // Step A: Initial load at t = 0 caches U.S. SoilGrids outage fallback with 5-minute TTL (not 15 minutes)
+  const entry1 = await loadEnvironmentalData(lat, lon, false, {
+    fetchFn: mockBrowserFetch,
+    nowFn,
+  });
+  assert.equal(apiSoilCalls, 1);
+  assert.equal(apiClimateCalls, 1);
+  assert.equal(entry1.soilRaw?.dataTier, "soilgrids_wcs_250m");
+  assert.equal(entry1.ttlMs, ENV_FALLBACK_CACHE_TTL_MS);
+  assert.equal(entry1.ttlMs, 5 * 60 * 1000);
+
+  // Step B: At t = +3 minutes (< 5 minutes), browser cache is still valid and makes 0 API calls
+  fakeNow += 3 * 60 * 1000;
+  assert.ok(getValidCachedEnvEntry(lat, lon, nowFn));
+  const entry2 = await loadEnvironmentalData(lat, lon, false, {
+    fetchFn: mockBrowserFetch,
+    nowFn,
+  });
+  assert.equal(apiSoilCalls, 1, "Browser cache must reuse fresh fallback within 5 minutes");
+  assert.equal(entry2.soilRaw?.dataTier, "soilgrids_wcs_250m");
+
+  // Step C: At t = +5 minutes + 1 ms (> 5 minutes, even though < 15 minutes!),
+  //         browser fallback cache expires and triggers a fresh /api/soil request
+  fakeNow += 2 * 60 * 1000 + 1;
+  assert.equal(
+    getValidCachedEnvEntry(lat, lon, nowFn),
+    null,
+    "getValidCachedEnvEntry must return null and evict once 5-minute fallback TTL expires"
+  );
+
+  serverReturnsSsurgo = true;
+  const entry3 = await loadEnvironmentalData(lat, lon, false, {
+    fetchFn: mockBrowserFetch,
+    nowFn,
+  });
+  assert.equal(apiSoilCalls, 2, "Expired browser fallback cache must trigger a fresh /api/soil request");
+  assert.equal(entry3.soilRaw?.dataTier, "usda_ssurgo");
+  assert.equal(entry3.soilRaw?.usSsurgoFallback, undefined);
+  assert.equal(
+    entry3.ttlMs,
+    ENV_PRIMARY_CACHE_TTL_MS,
+    "Recovered SSURGO profile in browser cache must receive the normal 15-minute primary TTL"
+  );
+
+  // Step D: At +10 minutes after SSURGO recovery (< 15-minute primary TTL), SSURGO entry remains cached
+  fakeNow += 10 * 60 * 1000;
+  const entry4 = await loadEnvironmentalData(lat, lon, false, {
+    fetchFn: mockBrowserFetch,
+    nowFn,
+  });
+  assert.equal(apiSoilCalls, 2, "Authoritative SSURGO profile remains cached in browser for 15 minutes");
+  assert.equal(entry4.soilRaw?.dataTier, "usda_ssurgo");
+});
+
+test("7. International SoilGrids and partially enriched (partial_optional) profile caching remain correct across route, WCS, and browser caches", async () => {
+  clearSoilGridsCacheForTests();
+  clearSoilRouteCacheForTests();
+  clearEnvMemoryCacheForTests();
+
+  // International coordinate: Rothamsted, United Kingdom (51.8094, -0.3564)
+  const lat = 51.8094;
+  const lon = -0.3564;
+  let fakeNow = 1_700_000_000_000;
+  const nowFn = () => fakeNow;
+
+  let failWrb = true;
+  const wcsRequestedCoverages: string[] = [];
+  const baseMock = createMockSoilGridsFetch(COMPLETE_TEST_COVERAGES);
+  const statefulWcsFetch: typeof fetch = async (input, init) => {
+    const urlStr =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
+    const cov = new URL(urlStr).searchParams.get("COVERAGE") ?? "";
+    wcsRequestedCoverages.push(cov);
+    if (failWrb && cov === "MostProbable") {
+      return new Response("WRB timeout", { status: 503 });
+    }
+    return baseMock(input, init);
+  };
+
+  // 1. Cold international request with 1 optional layer failing -> `enrichmentStatus === "partial_optional"`
+  //    Route cache TTL must be 1 minute (`SOIL_PARTIAL_ENRICHMENT_CACHE_TTL_MS`), NOT 24 hours!
+  const partialRes = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    wcsFetchFn: statefulWcsFetch,
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+  assert.equal(partialRes.ok, true);
+  if (!partialRes.ok) return;
+  assert.equal(partialRes.cachePolicy, "soilgrids_primary");
+  assert.equal(partialRes.response.enrichmentStatus, "partial_optional");
+  assert.equal(partialRes.response.wrbSoilGroup, undefined);
+  assert.equal(partialRes.ttlMs, SOIL_PARTIAL_ENRICHMENT_CACHE_TTL_MS);
+  assert.equal(partialRes.cacheControl, "no-store");
+  assert.equal(
+    resolveBrowserSoilCacheTtlMs(partialRes.response),
+    ENV_PARTIAL_ENRICHMENT_CACHE_TTL_MS,
+    "Browser cache TTL for partial_optional profile must also be 1 minute"
+  );
+  assert.equal(wcsRequestedCoverages.length, 47);
+
+  // 2. Within 1 minute (at t = +30s), route cache serves the partial profile without re-querying WCS
+  fakeNow += 30 * 1000;
+  const cachedPartial = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    wcsFetchFn: statefulWcsFetch,
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+  assert.equal(cachedPartial.ok, true);
+  if (!cachedPartial.ok) return;
+  assert.equal(cachedPartial.fromCache, true);
+  assert.equal(wcsRequestedCoverages.length, 47);
+
+  // 3. After 1 minute + 1 ms (at t = +60,001 ms), route cache expires the `partial_optional` entry.
+  //    WCS fetches ONLY the 1 missing optional layer (`MostProbable`) because the 46 succeeded grids
+  //    were preserved in `coverageCache`, and upgrades the route cache entry to `enrichmentStatus: "complete"`
+  //    with the full 24-hour `SOIL_PRIMARY_CACHE_TTL_MS` (and 15-minute browser TTL)!
+  fakeNow += 30 * 1000 + 1;
+  failWrb = false;
+  wcsRequestedCoverages.length = 0;
+
+  const completeRes = await resolveCachedSoilProfileForCoordinate(lat, lon, {
+    wcsFetchFn: statefulWcsFetch,
+    soilGridsWcsFetcher: fetchSoilGridsWcsProfile,
+    nowFn,
+  });
+  assert.equal(completeRes.ok, true);
+  if (!completeRes.ok) return;
+  assert.equal(completeRes.fromCache, false);
+  assert.equal(completeRes.cachePolicy, "soilgrids_primary");
+  assert.equal(completeRes.response.enrichmentStatus, "complete");
+  assert.equal(completeRes.response.wrbSoilGroup, "Cambisols");
+  assert.equal(completeRes.ttlMs, SOIL_PRIMARY_CACHE_TTL_MS);
+  assert.equal(
+    completeRes.cacheControl,
+    "private, max-age=300, stale-while-revalidate=3600"
+  );
+  assert.equal(
+    resolveBrowserSoilCacheTtlMs(completeRes.response),
+    ENV_PRIMARY_CACHE_TTL_MS,
+    "Complete international SoilGrids profile receives the full 15-minute browser TTL"
+  );
+  assert.deepEqual(
+    wcsRequestedCoverages,
+    ["MostProbable"],
+    "Only the 1 previously failed optional layer is fetched on recovery"
   );
 });
 
