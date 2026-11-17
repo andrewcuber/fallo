@@ -145,6 +145,18 @@ import {
   fetchSoilGridsWcsProfile,
   clearSoilGridsCacheForTests,
 } from "@/lib/soilgrids-wcs";
+import {
+  SOIL_PROVIDER_CAPABILITIES,
+  resolveSoilDataTier,
+  classifySoilPropertyStatus,
+  normalizeSoilTexture,
+  buildSoilProfileDisplayModel,
+  depthWeightedAverage,
+  depthWeightedTextureAverage,
+  aggregateComponents,
+  type SoilProfileInput,
+  type SoilComponentInput,
+} from "@/lib/soil-profile-utils";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -4902,6 +4914,742 @@ test("Adversarial guard (F-3, F-6, F-7): preserves valid 0 observations on confi
     liveWcsEvidence.activeProviders.some((p) => p.id === "isric_soilgrids_wcs"),
     "Live SoilGrids WCS evidence profile at same coordinate must not collide with cached fallback profile and must include isric_soilgrids_wcs"
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// 20. Soil Texture Normalization & Conditional Property Rendering
+// ═══════════════════════════════════════════════════════════════════════
+
+section("20. Soil Texture Normalization & Conditional Property Rendering");
+
+test("Soil texture normalization: values already totaling 100% remain unchanged, <100% (36.3, 29.7, 19.8 = 85.8%) normalizes to 42.3%, 34.6%, 23.1% (100.0%), and raw values remain preserved", () => {
+  // 1. Values already totaling 100.0% remain unchanged and wasNormalized is false
+  const exact100 = normalizeSoilTexture(42.0, 35.0, 23.0);
+  assert.equal(exact100.valid, true);
+  assert.equal(exact100.sand, 42.0);
+  assert.equal(exact100.silt, 35.0);
+  assert.equal(exact100.clay, 23.0);
+  assert.equal(exact100.total, 100.0);
+  assert.equal(exact100.wasNormalized, false);
+  assert.deepEqual(exact100.raw, {
+    sand: 42.0,
+    silt: 35.0,
+    clay: 23.0,
+    total: 100.0,
+  });
+
+  // 2. Values totaling less than 100% (36.3% sand, 29.7% silt, 19.8% clay -> 85.8%)
+  // normalize proportionally (42.3077%, 34.6154%, 23.0769%) and round cleanly to 42.3%, 34.6%, 23.1% (100.0%)
+  const sub100 = normalizeSoilTexture(36.3, 29.7, 19.8);
+  assert.equal(sub100.valid, true);
+  assert.equal(sub100.sand, 42.3);
+  assert.equal(sub100.silt, 34.6);
+  assert.equal(sub100.clay, 23.1);
+  assert.equal(sub100.total, 100.0);
+  assert.equal(
+    Number((sub100.sand! + sub100.silt! + sub100.clay!).toFixed(1)),
+    100.0
+  );
+  assert.equal(sub100.wasNormalized, true);
+  // Raw values are preserved separately without modification
+  assert.deepEqual(sub100.raw, {
+    sand: 36.3,
+    silt: 29.7,
+    clay: 19.8,
+    total: 85.8,
+  });
+
+  // 3. Small rounding discrepancies (e.g., 16.7 + 56.7 + 26.7 = 100.1% or 33.3 + 33.3 + 33.3 = 99.9%)
+  // normalize cleanly to 100.0% and never produce 99.9% or 100.1%
+  const over100 = normalizeSoilTexture(16.7, 56.7, 26.7);
+  assert.equal(over100.valid, true);
+  assert.equal(over100.total, 100.0);
+  assert.equal(
+    Number((over100.sand! + over100.silt! + over100.clay!).toFixed(1)),
+    100.0
+  );
+  assert.equal(over100.wasNormalized, true);
+  assert.equal(over100.raw.total, 100.1);
+
+  const threeThirds = normalizeSoilTexture(33.3, 33.3, 33.3);
+  assert.equal(threeThirds.valid, true);
+  assert.equal(threeThirds.total, 100.0);
+  assert.equal(
+    Number(
+      (threeThirds.sand! + threeThirds.silt! + threeThirds.clay!).toFixed(1)
+    ),
+    100.0
+  );
+  assert.equal(threeThirds.wasNormalized, true);
+  assert.equal(threeThirds.raw.total, 99.9);
+
+  // 4. Exhaustive rounding edge-case sweep across challenging triplets (never 99.9% or 100.1%)
+  const edgeTriplets: [number, number, number][] = [
+    [1, 1, 1],
+    [10, 10, 10],
+    [33.35, 33.35, 33.35],
+    [33.36, 33.36, 33.28], // naive toFixed(1) would give 33.4 + 33.4 + 33.3 = 100.1%
+    [33.34, 33.34, 33.32], // naive toFixed(1) would give 33.3 + 33.3 + 33.3 = 99.9%
+    [14.25, 14.25, 71.5],
+    [28.4, 41.9, 17.6],
+    [0, 50, 50],
+    [0, 0, 18.5],
+  ];
+  for (const [s, si, c] of edgeTriplets) {
+    const res = normalizeSoilTexture(s, si, c);
+    assert.equal(res.valid, true, `Expected valid normalization for [${s}, ${si}, ${c}]`);
+    const sum = Number((res.sand! + res.silt! + res.clay!).toFixed(1));
+    assert.equal(
+      sum,
+      100.0,
+      `Expected sum 100.0% for [${s}, ${si}, ${c}], got ${res.sand} + ${res.silt} + ${res.clay} = ${sum}`
+    );
+    assert.equal(res.raw.sand, s);
+    assert.equal(res.raw.silt, si);
+    assert.equal(res.raw.clay, c);
+  }
+
+  // 5. Missing or invalid fractions (null, undefined, NaN, Infinity, negative, zero total) are NOT normalized
+  const invalidCases: [number | null | undefined, number | null | undefined, number | null | undefined][] = [
+    [null, 40, 60],
+    [40, null, 60],
+    [40, 60, null],
+    [undefined, 50, 50],
+    [NaN, 50, 50],
+    [Infinity, 30, 20],
+    [-5, 55, 50],
+    [0, 0, 0],
+  ];
+  for (const [s, si, c] of invalidCases) {
+    const res = normalizeSoilTexture(s, si, c);
+    assert.equal(res.valid, false);
+    assert.equal(res.sand, null);
+    assert.equal(res.silt, null);
+    assert.equal(res.clay, null);
+    assert.equal(res.total, null);
+    assert.equal(res.wasNormalized, false);
+  }
+});
+
+test("Conditional soil property rendering: distinguishes provider capabilities, displays slope/drainage on valid SSURGO profiles, and completely omits unavailable properties on SoilGrids, fallback, and partial-data profiles", () => {
+  // Verify provider capability matrix distinguishes supported vs unsupported properties
+  assert.ok(SOIL_PROVIDER_CAPABILITIES.usda_ssurgo.supportedProperties.includes("slope"));
+  assert.ok(SOIL_PROVIDER_CAPABILITIES.usda_ssurgo.supportedProperties.includes("drainage"));
+  assert.ok(SOIL_PROVIDER_CAPABILITIES.soilgrids_wcs_250m.unsupportedProperties.includes("slope"));
+  assert.ok(SOIL_PROVIDER_CAPABILITIES.soilgrids_wcs_250m.unsupportedProperties.includes("drainage"));
+  assert.ok(SOIL_PROVIDER_CAPABILITIES.regional_reference_fallback.unsupportedProperties.includes("slope"));
+  assert.ok(SOIL_PROVIDER_CAPABILITIES.regional_reference_fallback.unsupportedProperties.includes("drainage"));
+
+  assert.equal(
+    classifySoilPropertyStatus("soilgrids_wcs_250m", "slope", false),
+    "provider_unsupported"
+  );
+  assert.equal(
+    classifySoilPropertyStatus("soilgrids_wcs_250m", "drainage", false),
+    "provider_unsupported"
+  );
+  assert.equal(
+    classifySoilPropertyStatus("soilgrids_wcs_250m", "awc", false),
+    "missing_at_location"
+  );
+  assert.equal(
+    classifySoilPropertyStatus("usda_ssurgo", "slope", false),
+    "missing_at_location"
+  );
+
+  // Case 7: U.S. SSURGO profile with valid slope and drainage displays both properties and columns
+  const ssurgoProfile: SoilProfileInput = {
+    dataTier: "usda_ssurgo",
+    source: "USDA NRCS Soil Survey Geographic Database (SSURGO)",
+    totalComponentPercent: 95,
+    components: [
+      {
+        cokey: "co_1",
+        name: "Cecil",
+        percent: 85,
+        kind: "Series",
+        majcompflag: "Yes",
+        drainage: "Well drained",
+        slope: 4.5,
+        horizons: [
+          {
+            depthTop: 0,
+            depthBottom: 20,
+            sand: 45.2,
+            silt: 32.1,
+            clay: 22.7,
+            om: 1.8,
+            ph: 6.2,
+            awc: 0.14,
+          },
+        ],
+      },
+    ],
+    aggregated: {
+      depth0_30cm: {
+        sand: 45.2,
+        silt: 32.1,
+        clay: 22.7,
+        om: 1.8,
+        ph: 6.2,
+        awc: 0.14,
+      },
+      drainage: "Well drained",
+      slope: 4.5,
+    },
+  };
+
+  const ssurgoView = buildSoilProfileDisplayModel(ssurgoProfile);
+  assert.equal(ssurgoView.dataTier, "usda_ssurgo");
+  assert.equal(ssurgoView.texture.valid, true);
+  assert.equal(ssurgoView.texture.wasNormalized, false);
+  assert.deepEqual(
+    ssurgoView.availableMetrics.map((m) => m.key),
+    ["om", "ph", "awc", "slope", "drainage"]
+  );
+  assert.equal(ssurgoView.propertyStatuses.slope, "available");
+  assert.equal(ssurgoView.propertyStatuses.drainage, "available");
+  assert.equal(ssurgoView.componentTable.visible, true);
+  assert.equal(ssurgoView.componentTable.showMajorColumn, true);
+  assert.equal(ssurgoView.componentTable.showDrainageColumn, true);
+  assert.equal(ssurgoView.componentTable.showSlopeColumn, true);
+  assert.equal(ssurgoView.componentTable.showKnownTotalRow, true);
+  assert.ok(ssurgoView.subtitlePropertiesLabel.includes("drainage, and slope"));
+
+  // Case 8: International SoilGrids profile without slope or drainage (and with sub-100% texture 36.3/29.7/19.8)
+  // omits slope and drainage completely from cards, subtitle, and component breakdown table
+  const soilGridsProfile: SoilProfileInput = {
+    dataTier: "soilgrids_wcs_250m",
+    source: "ISRIC SoilGrids v2.0 (250 m global digital soil mapping via OGC WCS). https://maps.isric.org/",
+    totalComponentPercent: 100,
+    components: [
+      {
+        cokey: "SG250_48.4500_1.4900",
+        name: "ISRIC SoilGrids v2.0 (250 m) — Luvisols",
+        percent: 100,
+        kind: "Modeled 250 m Grid Cell",
+        majcompflag: "Yes",
+        drainage: null,
+        slope: null,
+        horizons: [
+          {
+            depthTop: 0,
+            depthBottom: 5,
+            sand: 36.3,
+            silt: 29.7,
+            clay: 19.8,
+            om: 2.4,
+            ph: 6.8,
+            awc: 0.15,
+          },
+        ],
+      },
+    ],
+    aggregated: {
+      depth0_30cm: {
+        sand: 36.3,
+        silt: 29.7,
+        clay: 19.8,
+        om: 2.4,
+        ph: 6.8,
+        awc: 0.15,
+      },
+      drainage: null,
+      slope: null,
+    },
+  };
+
+  const sgView = buildSoilProfileDisplayModel(soilGridsProfile);
+  assert.equal(sgView.dataTier, "soilgrids_wcs_250m");
+  assert.equal(sgView.texture.valid, true);
+  assert.equal(sgView.texture.sand, 42.3);
+  assert.equal(sgView.texture.silt, 34.6);
+  assert.equal(sgView.texture.clay, 23.1);
+  assert.equal(sgView.texture.total, 100.0);
+  assert.equal(sgView.texture.wasNormalized, true);
+  assert.equal(sgView.texture.raw.sand, 36.3);
+  assert.equal(sgView.texture.raw.silt, 29.7);
+  assert.equal(sgView.texture.raw.clay, 19.8);
+  assert.deepEqual(
+    sgView.availableMetrics.map((m) => m.key),
+    ["om", "ph", "awc"],
+    "Slope and drainage must be completely omitted from SoilGrids availableMetrics"
+  );
+  assert.equal(sgView.propertyStatuses.slope, "provider_unsupported");
+  assert.equal(sgView.propertyStatuses.drainage, "provider_unsupported");
+  assert.equal(sgView.componentTable.showDrainageColumn, false);
+  assert.equal(sgView.componentTable.showSlopeColumn, false);
+  assert.equal(sgView.componentTable.showMajorColumn, false);
+  assert.equal(sgView.componentTable.showKnownTotalRow, false);
+  assert.ok(!sgView.subtitlePropertiesLabel.includes("slope"));
+  assert.ok(!sgView.subtitlePropertiesLabel.includes("drainage"));
+  assert.equal(sgView.horizonTables[0].rows[0].texture.sand, 42.3);
+  assert.equal(sgView.horizonTables[0].rows[0].texture.silt, 34.6);
+  assert.equal(sgView.horizonTables[0].rows[0].texture.clay, 23.1);
+
+  // Case 9: Regional fallback profile omits unsupported/missing properties (slope, drainage, empty component table)
+  const fallbackRaw = resolveGlobalSoilFallback(48.45, 1.49);
+  assert.equal(fallbackRaw.aggregated.drainage, null);
+  assert.equal(fallbackRaw.aggregated.slope, null);
+  const fallbackView = buildSoilProfileDisplayModel({
+    dataTier: "regional_reference_fallback",
+    source: fallbackRaw.source,
+    totalComponentPercent: fallbackRaw.totalComponentPercent,
+    components: [],
+    aggregated: fallbackRaw.aggregated,
+  });
+  assert.equal(fallbackView.dataTier, "regional_reference_fallback");
+  assert.deepEqual(
+    fallbackView.availableMetrics.map((m) => m.key),
+    ["om", "ph", "awc"]
+  );
+  assert.equal(
+    fallbackView.componentTable.visible,
+    false,
+    "Regional fallback with 0 components must omit the empty component breakdown card"
+  );
+
+  // Case 10: Provider-supported property with null/missing value at a specific location (e.g. AWC null on SoilGrids, or slope/awc null on SSURGO) is omitted
+  const partialSgProfile: SoilProfileInput = {
+    ...soilGridsProfile,
+    components: [
+      {
+        ...soilGridsProfile.components![0],
+        horizons: [
+          {
+            ...soilGridsProfile.components![0].horizons[0],
+            awc: null,
+          },
+        ],
+      },
+    ],
+    aggregated: {
+      ...soilGridsProfile.aggregated,
+      depth0_30cm: {
+        ...soilGridsProfile.aggregated.depth0_30cm,
+        awc: null,
+      },
+    },
+  };
+  const partialSgView = buildSoilProfileDisplayModel(partialSgProfile);
+  assert.deepEqual(
+    partialSgView.availableMetrics.map((m) => m.key),
+    ["om", "ph"],
+    "Missing AWC at a specific SoilGrids location must be omitted from metric cards"
+  );
+  assert.equal(partialSgView.propertyStatuses.awc, "missing_at_location");
+  assert.equal(
+    partialSgView.horizonTables[0].showAwcColumn,
+    false,
+    "Horizon table must omit the AWC column when all horizons have null AWC"
+  );
+  assert.ok(!partialSgView.subtitlePropertiesLabel.includes("water-holding capacity"));
+});
+
+test("SoilGrids ALR compositional mean texture layers (sand_mean, silt_mean, clay_mean) are extracted at the selected pixel, displayed at 100.0% across main card and depth layers, while preserving Q0.50 values for downstream scoring", async () => {
+  clearSoilGridsCacheForTests();
+  const lat = 48.38;
+  const lon = 1.55;
+
+  // Simulate a realistic SoilGrids pixel (like Beauce, France / South Darfur) where:
+  // - Q0.50 marginal medians (Quantile Regression Forests after ALR back-transformation,
+  //   ALR1 = ln(sand / clay), ALR2 = ln(silt / clay)) sum to <100% (363 + 297 + 198 = 858 g/kg -> 85.8%)
+  // - mean expected-value predictions (default Random Forests algorithm) are approximately compositionally
+  //   closed (~1000 g/kg, including a 1001 g/kg = 100.1% integer quantization layer in 0-5cm to verify 100.0% display rounding)
+  const alrMeanAndQ50Coverages: Record<string, number> = {
+    "sand_0-5cm_Q0.5": 363,
+    "sand_5-15cm_Q0.5": 363,
+    "sand_15-30cm_Q0.5": 363,
+    "silt_0-5cm_Q0.5": 297,
+    "silt_5-15cm_Q0.5": 297,
+    "silt_15-30cm_Q0.5": 297,
+    "clay_0-5cm_Q0.5": 198,
+    "clay_5-15cm_Q0.5": 198,
+    "clay_15-30cm_Q0.5": 198,
+    // Mean texture layers (g/kg)
+    "sand_0-5cm_mean": 573,
+    "silt_0-5cm_mean": 195,
+    "clay_0-5cm_mean": 233, // 57.3 + 19.5 + 23.3 = 100.1% (integer quantization)
+    "sand_5-15cm_mean": 556,
+    "silt_5-15cm_mean": 189,
+    "clay_5-15cm_mean": 255, // 55.6 + 18.9 + 25.5 = 100.0%
+    "sand_15-30cm_mean": 556,
+    "silt_15-30cm_mean": 189,
+    "clay_15-30cm_mean": 255, // 55.6 + 18.9 + 25.5 = 100.0%
+    // Other core properties (Q0.50)
+    "soc_0-5cm_Q0.5": 150,
+    "soc_5-15cm_Q0.5": 140,
+    "soc_15-30cm_Q0.5": 130,
+    "phh2o_0-5cm_Q0.5": 65,
+    "phh2o_5-15cm_Q0.5": 66,
+    "phh2o_15-30cm_Q0.5": 67,
+    "bdod_0-5cm_Q0.5": 138,
+    "bdod_5-15cm_Q0.5": 140,
+    "bdod_15-30cm_Q0.5": 142,
+    "cfvo_0-5cm_Q0.5": 40,
+    "cfvo_5-15cm_Q0.5": 45,
+    "cfvo_15-30cm_Q0.5": 50,
+    "wv0033_0-5cm_Q0.5": 280,
+    "wv0033_5-15cm_Q0.5": 280,
+    "wv0033_15-30cm_Q0.5": 280,
+    "wv1500_0-5cm_Q0.5": 130,
+    "wv1500_5-15cm_Q0.5": 130,
+    "wv1500_15-30cm_Q0.5": 130,
+    MostProbable: 16, // Luvisols
+  };
+
+  const sgProfile = await fetchSoilGridsWcsProfile(lat, lon, {
+    fetchFn: createMockSoilGridsFetch(alrMeanAndQ50Coverages),
+    bypassCache: true,
+  });
+  assert.ok(sgProfile, "Expected SoilGrids WCS profile with both Q0.50 and mean texture layers");
+
+  // 1. Q0.50 values are preserved untouched in aggregated.depth0_30cm.{sand, silt, clay} for downstream scoring
+  assert.equal(sgProfile.aggregated.depth0_30cm.sand, 36.3);
+  assert.equal(sgProfile.aggregated.depth0_30cm.silt, 29.7);
+  assert.equal(sgProfile.aggregated.depth0_30cm.clay, 19.8);
+
+  // 2. Mean texture layers are extracted and depth-weighted into textureMean0_30cm and horizon sandMean/siltMean/clayMean
+  assert.ok(sgProfile.aggregated.depth0_30cm.textureMean0_30cm);
+  assert.equal(sgProfile.components[0].horizons[0].sandMean, 57.3);
+  assert.equal(sgProfile.components[0].horizons[0].siltMean, 19.5);
+  assert.equal(sgProfile.components[0].horizons[0].clayMean, 23.3);
+
+  // 3. Display model uses SoilGrids mean predictions (`soilgrids_mean`), preserves Q0.50 raw in `q50TextureRaw`,
+  //    and guarantees 100.0% totals in both the main 0–30 cm card and all 3 depth-layer rows
+  const displayModel = buildSoilProfileDisplayModel({
+    dataTier: "soilgrids_wcs_250m",
+    source: sgProfile.source,
+    totalComponentPercent: sgProfile.totalComponentPercent,
+    components: sgProfile.components,
+    aggregated: sgProfile.aggregated,
+  });
+
+  assert.equal(displayModel.textureStatistic, "soilgrids_mean");
+  assert.equal(displayModel.texture.valid, true);
+  assert.equal(displayModel.texture.total, 100.0);
+  assert.equal(
+    Number(
+      (
+        displayModel.texture.sand! +
+        displayModel.texture.silt! +
+        displayModel.texture.clay!
+      ).toFixed(1)
+    ),
+    100.0
+  );
+  assert.deepEqual(displayModel.q50TextureRaw, {
+    sand: 36.3,
+    silt: 29.7,
+    clay: 19.8,
+    total: 85.8,
+  });
+
+  assert.equal(displayModel.horizonTables.length, 1);
+  assert.equal(displayModel.horizonTables[0].rows.length, 3);
+  for (const row of displayModel.horizonTables[0].rows) {
+    assert.equal(row.textureStatistic, "soilgrids_mean");
+    assert.equal(row.texture.valid, true);
+    assert.equal(row.texture.total, 100.0);
+    const rowSum = Number(
+      (row.texture.sand! + row.texture.silt! + row.texture.clay!).toFixed(1)
+    );
+    assert.equal(
+      rowSum,
+      100.0,
+      `Expected depth layer ${row.depthTop}-${row.depthBottom} cm to total 100.0%, got ${rowSum}%`
+    );
+  }
+});
+
+test("SSURGO complete-triplet texture aggregation excludes incomplete horizon/component triplets and accurately drives buildFieldSpecificObjectives across the 68% sand threshold (when OM >= 1.3% and AWC >= 0.12 cm/cm)", () => {
+  // Shared moderate temperate climate and crop catalog where neither isHotDry nor isHumidOrWet is active,
+  // and where OM = 1.6% (>= 1.3%) and AWC = 0.14 cm/cm (>= 0.12 cm/cm) are identical across all cases,
+  // so `isLowOmOrAwc` in `buildFieldSpecificObjectives()` is governed strictly by `sand >= 68%`.
+  const sharedModerateClimate = makeClimate({
+    avgAnnualTemp: 15.0,
+    avgAnnualPrecip: 820,
+    springPrecip: { avgTotalMm: 220, monthsDesc: "Mar–May" },
+    growingSeasonPrecip: { avgTotalMm: 310, monthsDesc: "May–Aug" },
+    summerDrySpells: { avgMaxConsecutiveDryDays: 9, thresholdMm: 1, monthsDesc: "Jun–Aug" },
+    summerHeatDays: { avgDaysAboveThreshold: 4, thresholdC: 35, monthsDesc: "Jul–Aug" },
+  });
+  const availableCrops = getAvailableCropsForContext("temperate_humid", "us_southeast");
+
+  // 1. Construct a multi-horizon, multi-component SSURGO profile with incomplete texture triplets:
+  //    - Component 1 (75% of map unit):
+  //      * Horizon 1 (0–20 cm, 20 cm): complete coarse triplet -> sand: 72%, silt: 18%, clay: 10% (sum = 100%)
+  //      * Horizon 2 (20–30 cm, 10 cm): INCOMPLETE triplet -> sand: 54%, silt: 26%, clay: null
+  //    - Component 2 (25% of map unit):
+  //      * Horizon 1 (0–30 cm, 30 cm): INCOMPLETE triplet -> sand: 56%, silt: null, clay: 20%
+  //    Note: If incomplete triplets were NOT excluded, naive per-property averaging would compute
+  //    Component 1 sand = (72*20 + 54*10)/30 = 66.0% and Component 2 sand = 56.0%, yielding a
+  //    map-unit sand of (66.0*75 + 56.0*25)/100 = 63.5% (< 68% threshold) and an unclosed 96.7% sum.
+  const partialTripletComponents: SoilComponentInput[] = [
+    {
+      cokey: "comp_1",
+      name: "Norfolk loamy sand",
+      percent: 75,
+      kind: "Series",
+      majcompflag: "Yes",
+      drainage: "Well drained",
+      slope: 3.0,
+      horizons: [
+        {
+          depthTop: 0,
+          depthBottom: 20,
+          sand: 72,
+          silt: 18,
+          clay: 10,
+          om: 1.6,
+          ph: 6.2,
+          awc: 0.14,
+        },
+        {
+          depthTop: 20,
+          depthBottom: 30,
+          sand: 54,
+          silt: 26,
+          clay: null, // Incomplete triplet on 20–30 cm horizon
+          om: 1.6,
+          ph: 6.2,
+          awc: 0.14,
+        },
+      ],
+    },
+    {
+      cokey: "comp_2",
+      name: "Goldsboro sandy loam (incomplete lab record)",
+      percent: 25,
+      kind: "Series",
+      majcompflag: "Yes",
+      drainage: "Well drained",
+      slope: 3.0,
+      horizons: [
+        {
+          depthTop: 0,
+          depthBottom: 30,
+          sand: 56,
+          silt: null, // Incomplete triplet on entire component
+          clay: 20,
+          om: 1.6,
+          ph: 6.2,
+          awc: 0.14,
+        },
+      ],
+    },
+  ];
+
+  // 2 & 3. Verify that the incomplete horizon and incomplete component triplets are excluded as a whole,
+  //        and verify the resulting complete-triplet weighted sand/silt/clay percentages.
+  assert.equal(
+    depthWeightedAverage(partialTripletComponents[0].horizons, "sand"),
+    66,
+    "Single-property depthWeightedAverage would include the partial 20–30 cm horizon (66.0% sand)"
+  );
+  const comp1CompleteTex = depthWeightedTextureAverage(partialTripletComponents[0].horizons);
+  assert.deepEqual(
+    comp1CompleteTex,
+    { sand: 72, silt: 18, clay: 10 },
+    "depthWeightedTextureAverage must exclude the incomplete 20–30 cm horizon as a whole"
+  );
+  assert.equal(
+    depthWeightedTextureAverage(partialTripletComponents[1].horizons),
+    null,
+    "depthWeightedTextureAverage must return null for Component 2 whose only horizon has silt: null"
+  );
+
+  const aggregatedCaseA = aggregateComponents(partialTripletComponents);
+  assert.equal(aggregatedCaseA.aggregated.depth0_30cm.sand, 72);
+  assert.equal(aggregatedCaseA.aggregated.depth0_30cm.silt, 18);
+  assert.equal(aggregatedCaseA.aggregated.depth0_30cm.clay, 10);
+  assert.equal(
+    aggregatedCaseA.aggregated.depth0_30cm.sand! +
+      aggregatedCaseA.aggregated.depth0_30cm.silt! +
+      aggregatedCaseA.aggregated.depth0_30cm.clay!,
+    100
+  );
+  // Texture coverage reflects only Component 1 (75%), while OM, pH, and AWC reflect both components (100%)
+  assert.equal(aggregatedCaseA.dataCoverage.depth0_30cm.sand, 75);
+  assert.equal(aggregatedCaseA.dataCoverage.depth0_30cm.silt, 75);
+  assert.equal(aggregatedCaseA.dataCoverage.depth0_30cm.clay, 75);
+  assert.equal(aggregatedCaseA.aggregated.depth0_30cm.om, 1.6);
+  assert.equal(aggregatedCaseA.aggregated.depth0_30cm.ph, 6.2);
+  assert.equal(aggregatedCaseA.aggregated.depth0_30cm.awc, 0.14);
+  assert.equal(aggregatedCaseA.dataCoverage.depth0_30cm.om, 100);
+  assert.equal(aggregatedCaseA.dataCoverage.depth0_30cm.ph, 100);
+  assert.equal(aggregatedCaseA.dataCoverage.depth0_30cm.awc, 100);
+
+  const soilCaseA: SoilData = {
+    aggregated: aggregatedCaseA.aggregated,
+    dataCoverage: aggregatedCaseA.dataCoverage,
+    totalComponentPercent: 100,
+    source: "USDA NRCS Soil Survey Geographic Database (SSURGO)",
+    limitations: [],
+  };
+
+  // 4 & 5. Pass the resulting soil aggregate into buildFieldSpecificObjectives() and buildObjectiveFieldContextBullets().
+  //        Because complete-triplet sand is 72.0% (>= 68%), `isLowOmOrAwc` is true even though OM (1.6%) >= 1.3%
+  //        and AWC (0.14 cm/cm) >= 0.12 cm/cm.
+  const objectivesCaseA = buildFieldSpecificObjectives({
+    climate: sharedModerateClimate,
+    soil: soilCaseA,
+    priorities: DEFAULT_PRIORITIES,
+    availableCropIds: availableCrops,
+  });
+  const soilHealthA = objectivesCaseA.find((o) => o.archetype === "soil_health")!;
+  const waterResA = objectivesCaseA.find((o) => o.archetype === "water_resilience")!;
+  const diversityA = objectivesCaseA.find((o) => o.archetype === "crop_diversity")!;
+
+  assert.equal(soilHealthA.name, "Organic Matter & Water-Holding Rebuilding");
+  assert.equal(waterResA.name, "Low-AWC Root-Zone Moisture Efficiency");
+  assert.equal(diversityA.name, "Multi-Family Rotation & Root-Depth Diversity");
+  assert.ok(
+    waterResA.objective.includes("72% sand"),
+    "Water resilience objective description must cite the 72% complete-triplet sand percentage"
+  );
+
+  const waterBulletsA = buildObjectiveFieldContextBullets(
+    "water_resilience",
+    sharedModerateClimate,
+    soilCaseA
+  );
+  assert.ok(
+    waterBulletsA.some((b) => b.includes("72% sand")),
+    "Water resilience field-context bullets must include 72% sand when sand >= 68%"
+  );
+
+  // 6. Comparison cases where sand does NOT cross the 68% threshold, keeping every non-texture field input
+  //    (climate, priorities, availableCropIds, OM = 1.6%, AWC = 0.14 cm/cm, pH = 6.2, drainage, slope,
+  //    component percents, and horizon depths) 100% identical:
+  //
+  //    Comparison B1: Same raw sand values (72%, 54%, 56%), but with the missing clay (20%) and silt (24%)
+  //    populated so all triplets are complete -> weighted sand = (66.0 * 75 + 56.0 * 25) / 100 = 63.5% (< 68%).
+  const completedLowerSandComponents: SoilComponentInput[] = [
+    {
+      ...partialTripletComponents[0],
+      horizons: [
+        partialTripletComponents[0].horizons[0],
+        {
+          ...partialTripletComponents[0].horizons[1],
+          clay: 20, // Complete triplet: 54 + 26 + 20 = 100%
+        },
+      ],
+    },
+    {
+      ...partialTripletComponents[1],
+      horizons: [
+        {
+          ...partialTripletComponents[1].horizons[0],
+          silt: 24, // Complete triplet: 56 + 24 + 20 = 100%
+        },
+      ],
+    },
+  ];
+
+  const aggregatedCaseB1 = aggregateComponents(completedLowerSandComponents);
+  assert.equal(aggregatedCaseB1.aggregated.depth0_30cm.sand, 63.5);
+  assert.equal(aggregatedCaseB1.aggregated.depth0_30cm.silt, 21.5);
+  assert.equal(aggregatedCaseB1.aggregated.depth0_30cm.clay, 15.0);
+  assert.equal(aggregatedCaseB1.aggregated.depth0_30cm.om, 1.6);
+  assert.equal(aggregatedCaseB1.aggregated.depth0_30cm.awc, 0.14);
+
+  const soilCaseB1: SoilData = {
+    aggregated: aggregatedCaseB1.aggregated,
+    dataCoverage: aggregatedCaseB1.dataCoverage,
+    totalComponentPercent: 100,
+    source: "USDA NRCS Soil Survey Geographic Database (SSURGO)",
+    limitations: [],
+  };
+
+  const objectivesCaseB1 = buildFieldSpecificObjectives({
+    climate: sharedModerateClimate,
+    soil: soilCaseB1,
+    priorities: DEFAULT_PRIORITIES,
+    availableCropIds: availableCrops,
+  });
+  assert.equal(
+    objectivesCaseB1.find((o) => o.archetype === "soil_health")!.name,
+    "Soil Organic Matter & Biological Nitrogen"
+  );
+  assert.equal(
+    objectivesCaseB1.find((o) => o.archetype === "water_resilience")!.name,
+    "Seasonal Moisture & Dry-Spell Resilience"
+  );
+  assert.equal(
+    objectivesCaseB1.find((o) => o.archetype === "crop_diversity")!.name,
+    "Multi-Family Disease & Pest Cycle Break"
+  );
+
+  //    Comparison B2: Same incomplete-triplet structure as Case A, but Horizon 1 (0–20 cm) has
+  //    complete triplet sand = 64%, silt = 22%, clay = 14% (< 68% threshold).
+  const belowThresholdPartialComponents: SoilComponentInput[] = [
+    {
+      ...partialTripletComponents[0],
+      horizons: [
+        {
+          ...partialTripletComponents[0].horizons[0],
+          sand: 64,
+          silt: 22,
+          clay: 14,
+        },
+        partialTripletComponents[0].horizons[1],
+      ],
+    },
+    partialTripletComponents[1],
+  ];
+
+  const aggregatedCaseB2 = aggregateComponents(belowThresholdPartialComponents);
+  assert.equal(aggregatedCaseB2.aggregated.depth0_30cm.sand, 64);
+  assert.equal(aggregatedCaseB2.aggregated.depth0_30cm.silt, 22);
+  assert.equal(aggregatedCaseB2.aggregated.depth0_30cm.clay, 14);
+  assert.equal(aggregatedCaseB2.aggregated.depth0_30cm.om, 1.6);
+  assert.equal(aggregatedCaseB2.aggregated.depth0_30cm.awc, 0.14);
+
+  const soilCaseB2: SoilData = {
+    aggregated: aggregatedCaseB2.aggregated,
+    dataCoverage: aggregatedCaseB2.dataCoverage,
+    totalComponentPercent: 100,
+    source: "USDA NRCS Soil Survey Geographic Database (SSURGO)",
+    limitations: [],
+  };
+
+  const objectivesCaseB2 = buildFieldSpecificObjectives({
+    climate: sharedModerateClimate,
+    soil: soilCaseB2,
+    priorities: DEFAULT_PRIORITIES,
+    availableCropIds: availableCrops,
+  });
+  assert.equal(
+    objectivesCaseB2.find((o) => o.archetype === "soil_health")!.name,
+    "Soil Organic Matter & Biological Nitrogen"
+  );
+  assert.equal(
+    objectivesCaseB2.find((o) => o.archetype === "water_resilience")!.name,
+    "Seasonal Moisture & Dry-Spell Resilience"
+  );
+  assert.equal(
+    objectivesCaseB2.find((o) => o.archetype === "crop_diversity")!.name,
+    "Multi-Family Disease & Pest Cycle Break"
+  );
+
+  // Confirm that numerical rotation scoring (`scoreStrategy`) is completely unchanged across Case A and Case B
+  const refStrategy = makeValidStrategy("ssurgo_triplet_score_check", "SSURGO Triplet Score Check");
+  const scoredA = scoreStrategy(refStrategy, sharedModerateClimate, soilCaseA, DEFAULT_PRIORITIES);
+  const scoredB1 = scoreStrategy(refStrategy, sharedModerateClimate, soilCaseB1, DEFAULT_PRIORITIES);
+  const scoredB2 = scoreStrategy(refStrategy, sharedModerateClimate, soilCaseB2, DEFAULT_PRIORITIES);
+  assert.equal(scoredA.overallScore, scoredB1.overallScore);
+  assert.equal(scoredA.overallScore, scoredB2.overallScore);
+  for (const key of [
+    "waterSuitability",
+    "nitrogenContribution",
+    "soilCoverage",
+    "diversityPestBreak",
+    "climateRiskResilience",
+  ] as const) {
+    assert.equal(scoredA.factorScores[key].score, scoredB1.factorScores[key].score);
+    assert.equal(scoredA.factorScores[key].score, scoredB2.factorScores[key].score);
+  }
 });
 
 // ─── Execute all queued tests ─────────────────────────────────────────

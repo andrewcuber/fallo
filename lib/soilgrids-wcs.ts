@@ -687,6 +687,9 @@ export interface SoilGridsLayerHorizon {
   sand: number | null;
   silt: number | null;
   clay: number | null;
+  sandMean?: number | null;
+  siltMean?: number | null;
+  clayMean?: number | null;
   socPct: number | null;
   om: number | null;
   ph: number | null;
@@ -732,6 +735,9 @@ export interface SoilGridsWcsProfileResult {
       sand: number | null;
       silt: number | null;
       clay: number | null;
+      sandMean?: number | null;
+      siltMean?: number | null;
+      clayMean?: number | null;
       om: number | null;
       ph: number | null;
       awc: number | null;
@@ -743,6 +749,27 @@ export interface SoilGridsWcsProfileResult {
       sand: number | null;
       silt: number | null;
       clay: number | null;
+      /**
+       * Depth-weighted 0–30 cm expected-value (`mean`) texture predictions
+       * (`sand_mean`, `silt_mean`, and `clay_mean`) extracted from the same
+       * selected pixel across 0–5 cm, 5–15 cm, and 15–30 cm.
+       *
+       * In SoilGrids v2.0 (Poggio et al., 2021), particle-size fractions are
+       * transformed via the additive log-ratio (ALR) transformation with clay
+       * as the denominator:
+       *   - ALR1 = ln(sand / clay)
+       *   - ALR2 = ln(silt / clay)
+       * Quantiles (`Q0.05`, `Q0.50`, `Q0.95`) are computed using Quantile
+       * Regression Forests after back-transforming individual tree predictions,
+       * whereas `mean` expected-value predictions are computed using the default
+       * Random Forests algorithm and are approximately compositionally closed
+       * (~100.0% ± 0.1% integer g/kg quantization).
+       */
+      textureMean0_30cm?: {
+        sand: number;
+        silt: number;
+        clay: number;
+      };
       om: number | null;
       ph: number | null;
       awc: number | null;
@@ -1003,6 +1030,31 @@ async function fetchSoilGridsWcsProfileUncached(
     }
   }
 
+  // Fetch 0–5, 5–15, and 15–30 cm expected-value (`mean`) texture predictions
+  // (`sand_mean`, `silt_mean`, and `clay_mean`).
+  // Per Poggio et al. (2021, SOIL 7:217–240) and ISRIC documentation, SoilGrids v2.0
+  // transforms particle-size fractions via the additive log-ratio (ALR) transformation
+  // with clay as the denominator:
+  //   - ALR1 = ln(sand / clay)
+  //   - ALR2 = ln(silt / clay)
+  // Quantiles (`Q0.05`, `Q0.50`, `Q0.95`) are computed using Quantile Regression Forests
+  // (after back-transforming individual tree predictions), so marginal `Q0.50` medians do
+  // not necessarily sum to 100%, whereas the `mean` expected-value predictions (computed
+  // using the default Random Forests algorithm) are approximately compositionally closed
+  // (~100.0% ± 0.1% from integer g/kg raster quantization).
+  const textureMeanProps: ("sand" | "silt" | "clay")[] = ["sand", "silt", "clay"];
+  for (const propId of textureMeanProps) {
+    const spec = SOILGRIDS_PROPERTIES[propId];
+    for (const depth of SOILGRIDS_DEPTH_LAYERS) {
+      tasks.push({
+        key: `${propId}_${depth.id}_mean`,
+        mapFile: spec.mapFile,
+        coverageId: `${propId}_${depth.id}_mean`,
+        format: "GEOTIFF_INT16",
+      });
+    }
+  }
+
   // Fetch 0–5 cm Q0.05 and Q0.95 prediction quantiles for the 5 primary properties
   const uncertaintyProps: SoilGridsPropertyId[] = ["sand", "silt", "clay", "soc", "phh2o"];
   for (const propId of uncertaintyProps) {
@@ -1087,9 +1139,38 @@ async function fetchSoilGridsWcsProfileUncached(
       "wv1500"
     );
 
+    const sandMeanRaw = extractPropertyAtSelectedPixel(
+      decodedMap.get(`sand_${depth.id}_mean`) ?? null,
+      "sand"
+    );
+    const siltMeanRaw = extractPropertyAtSelectedPixel(
+      decodedMap.get(`silt_${depth.id}_mean`) ?? null,
+      "silt"
+    );
+    const clayMeanRaw = extractPropertyAtSelectedPixel(
+      decodedMap.get(`clay_${depth.id}_mean`) ?? null,
+      "clay"
+    );
+
     const sand = sandRaw !== null ? convertRawSoilGridsValue(sandRaw, "sand", 1) : null;
     const silt = siltRaw !== null ? convertRawSoilGridsValue(siltRaw, "silt", 1) : null;
     const clay = clayRaw !== null ? convertRawSoilGridsValue(clayRaw, "clay", 1) : null;
+
+    const hasLayerMeanTexture =
+      sandMeanRaw !== null &&
+      siltMeanRaw !== null &&
+      clayMeanRaw !== null &&
+      sandMeanRaw + siltMeanRaw + clayMeanRaw > 0;
+    const sandMean = hasLayerMeanTexture
+      ? convertRawSoilGridsValue(sandMeanRaw, "sand", 1)
+      : null;
+    const siltMean = hasLayerMeanTexture
+      ? convertRawSoilGridsValue(siltMeanRaw, "silt", 1)
+      : null;
+    const clayMean = hasLayerMeanTexture
+      ? convertRawSoilGridsValue(clayMeanRaw, "clay", 1)
+      : null;
+
     const socPct = socRaw !== null ? convertRawSoilGridsValue(socRaw, "soc", 2) : null;
     const om =
       socPct !== null ? Number((socPct * VAN_BEMMELEN_OM_FACTOR).toFixed(2)) : null;
@@ -1114,6 +1195,7 @@ async function fetchSoilGridsWcsProfileUncached(
       sand,
       silt,
       clay,
+      ...(hasLayerMeanTexture ? { sandMean, siltMean, clayMean } : {}),
       socPct,
       om,
       ph,
@@ -1141,6 +1223,17 @@ async function fetchSoilGridsWcsProfileUncached(
   const sandW = weightProp((h) => h.sand, 1);
   const siltW = weightProp((h) => h.silt, 1);
   const clayW = weightProp((h) => h.clay, 1);
+  const sandMeanW = weightProp((h) => h.sandMean ?? null, 1);
+  const siltMeanW = weightProp((h) => h.siltMean ?? null, 1);
+  const clayMeanW = weightProp((h) => h.clayMean ?? null, 1);
+  const hasFullMeanTextureCoverage =
+    sandMeanW.value !== null &&
+    sandMeanW.coveredDepthCm === 30 &&
+    siltMeanW.value !== null &&
+    siltMeanW.coveredDepthCm === 30 &&
+    clayMeanW.value !== null &&
+    clayMeanW.coveredDepthCm === 30 &&
+    sandMeanW.value + siltMeanW.value + clayMeanW.value > 0;
   const socW = weightProp((h) => h.socPct, 2);
   const omW = weightProp(
     (h) => (h.socPct !== null ? h.socPct * VAN_BEMMELEN_OM_FACTOR : null),
@@ -1259,15 +1352,21 @@ async function fetchSoilGridsWcsProfileUncached(
   const propertySources: Record<string, string> = {
     sand:
       sandW.value !== null
-        ? `ISRIC SoilGrids v2.0 WCS (sand_Q0.5, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${sandW.coveredDepthCm} cm)`
+        ? hasFullMeanTextureCoverage && sandMeanW.value !== null
+          ? `ISRIC SoilGrids v2.0 WCS (display: sand_mean = ${sandMeanW.value.toFixed(1)}%; suitability: sand_Q0.5 = ${sandW.value.toFixed(1)}%, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${sandW.coveredDepthCm} cm)`
+          : `ISRIC SoilGrids v2.0 WCS (sand_Q0.5, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${sandW.coveredDepthCm} cm)`
         : "Unavailable in SoilGrids WCS at this coordinate",
     silt:
       siltW.value !== null
-        ? `ISRIC SoilGrids v2.0 WCS (silt_Q0.5, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${siltW.coveredDepthCm} cm)`
+        ? hasFullMeanTextureCoverage && siltMeanW.value !== null
+          ? `ISRIC SoilGrids v2.0 WCS (display: silt_mean = ${siltMeanW.value.toFixed(1)}%; suitability: silt_Q0.5 = ${siltW.value.toFixed(1)}%, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${siltW.coveredDepthCm} cm)`
+          : `ISRIC SoilGrids v2.0 WCS (silt_Q0.5, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${siltW.coveredDepthCm} cm)`
         : "Unavailable in SoilGrids WCS at this coordinate",
     clay:
       clayW.value !== null
-        ? `ISRIC SoilGrids v2.0 WCS (clay_Q0.5, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${clayW.coveredDepthCm} cm)`
+        ? hasFullMeanTextureCoverage && clayMeanW.value !== null
+          ? `ISRIC SoilGrids v2.0 WCS (display: clay_mean = ${clayMeanW.value.toFixed(1)}%; suitability: clay_Q0.5 = ${clayW.value.toFixed(1)}%, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${clayW.coveredDepthCm} cm)`
+          : `ISRIC SoilGrids v2.0 WCS (clay_Q0.5, g/kg ÷ 10 -> %, depth-weighted 0–30 cm across ${clayW.coveredDepthCm} cm)`
         : "Unavailable in SoilGrids WCS at this coordinate",
     organicCarbon:
       socW.value !== null
@@ -1327,10 +1426,23 @@ async function fetchSoilGridsWcsProfileUncached(
   }
 
   if (sandW.value !== null && siltW.value !== null && clayW.value !== null) {
-    const textureSum = sandW.value + siltW.value + clayW.value;
-    if (Math.abs(textureSum - 100) > 3) {
+    const q50TextureSum = sandW.value + siltW.value + clayW.value;
+    if (
+      hasFullMeanTextureCoverage &&
+      sandMeanW.value !== null &&
+      siltMeanW.value !== null &&
+      clayMeanW.value !== null
+    ) {
+      const meanTextureSum = sandMeanW.value + siltMeanW.value + clayMeanW.value;
       limitations.push(
-        `SoilGrids models sand, silt, and clay independently via quantile random forests; depth-weighted 0–30 cm fractions at this pixel sum to ${textureSum.toFixed(1)}%.`
+        "SoilGrids v2.0 (Poggio et al., 2021) transforms sand, silt, and clay using an additive log-ratio (ALR) transformation with clay as the denominator (ALR1 = ln(sand / clay), ALR2 = ln(silt / clay)). " +
+          `Quantiles (Q0.05, Q0.50, Q0.95) are computed using Quantile Regression Forests after back-transforming individual tree predictions, so marginal medians (Q0.50) do not necessarily sum to 100% (0–30 cm Q0.50 sum = ${q50TextureSum.toFixed(1)}%). ` +
+          `Displayed texture percentages use ISRIC's expected-value mean predictions (sand_mean, silt_mean, and clay_mean, computed using the default Random Forests algorithm; 0–30 cm raw sum = ${meanTextureSum.toFixed(1)}%) with a 100.0% display normalization adjustment, while other soil properties and internal suitability calculations use Q0.50 median predictions.`
+      );
+    } else if (Math.abs(q50TextureSum - 100) > 3) {
+      limitations.push(
+        "SoilGrids v2.0 (Poggio et al., 2021) transforms sand, silt, and clay using an additive log-ratio (ALR) transformation with clay as the denominator (ALR1 = ln(sand / clay), ALR2 = ln(silt / clay)) " +
+          `and back-transforms individual tree predictions before computing Quantile Regression Forest quantiles; because marginal medians (Q0.50) are non-linear quantiles computed separately for each fraction, the depth-weighted 0–30 cm Q0.50 predictions at this pixel sum to ${q50TextureSum.toFixed(1)}%.`
       );
     }
   }
@@ -1367,7 +1479,9 @@ async function fetchSoilGridsWcsProfileUncached(
         cokey: `SG250M_PIXEL_${targetPixel.pixelLat.toFixed(4)}_${targetPixel.pixelLon.toFixed(4)}`,
         name: profileName,
         percent: 100,
-        kind: "Modeled 250 m grid cell (Q0.5 median)",
+        kind: hasFullMeanTextureCoverage
+          ? "Modeled 250 m grid cell (mean texture / Q0.5 properties)"
+          : "Modeled 250 m grid cell (Q0.5 median)",
         majcompflag: "Yes",
         drainage: null,
         slope: null,
@@ -1377,6 +1491,13 @@ async function fetchSoilGridsWcsProfileUncached(
           sand: h.sand,
           silt: h.silt,
           clay: h.clay,
+          ...(hasFullMeanTextureCoverage
+            ? {
+                sandMean: h.sandMean ?? null,
+                siltMean: h.siltMean ?? null,
+                clayMean: h.clayMean ?? null,
+              }
+            : {}),
           om: h.om,
           ph: h.ph,
           awc: h.awc,
@@ -1389,6 +1510,18 @@ async function fetchSoilGridsWcsProfileUncached(
         sand: sandW.value,
         silt: siltW.value,
         clay: clayW.value,
+        ...(hasFullMeanTextureCoverage &&
+        sandMeanW.value !== null &&
+        siltMeanW.value !== null &&
+        clayMeanW.value !== null
+          ? {
+              textureMean0_30cm: {
+                sand: sandMeanW.value,
+                silt: siltMeanW.value,
+                clay: clayMeanW.value,
+              },
+            }
+          : {}),
         om: omW.value,
         ph: phW.value,
         awc: awcW.value,

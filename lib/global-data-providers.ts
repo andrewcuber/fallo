@@ -140,7 +140,10 @@ export const GLOBAL_DATA_PROVIDERS: Record<DataProviderId, DataProviderDescripto
     integrationStatus: "live_api_integrated",
     licenseAndAttribution: "CC BY 4.0 (ISRIC — World Soil Information; Poggio et al., 2021)",
     uncertaintyAndLimitations:
-      "Coordinate-specific ~250 m machine-learning soil predictions (not field measurements or lab tests; ISRIC notes SoilGrids is designed for regional/screening context rather than farm-scale management without on-site testing). Masked pixels only use an adjacent unmasked pixel within ≤ 250 m; organic matter is estimated from Soil Organic Carbon (SOC × 1.724), AWC is computed where valid 33/1500 kPa retention predictions exist, and categorical drainage/slope are not fabricated.",
+      "Coordinate-specific ~250 m machine-learning soil predictions (not field measurements or lab tests; ISRIC notes SoilGrids is designed for regional/screening context rather than farm-scale management without on-site testing). " +
+      "Displayed fine-earth texture uses ISRIC's expected-value mean predictions (`sand_mean`, `silt_mean`, and `clay_mean`, computed via the default Random Forests algorithm and approximately compositionally closed within ±0.1% integer quantization, with a 100.0% display adjustment), " +
+      "whereas quantiles (`Q0.05`, `Q0.50`, `Q0.95`) are computed via Quantile Regression Forests after back-transforming ALR predictions (`ALR1 = ln(sand / clay)`, `ALR2 = ln(silt / clay)`; Poggio et al., 2021) and `Q0.50` medians are retained for other properties and suitability calculations. " +
+      "Masked pixels only use an adjacent unmasked pixel within ≤ 250 m; organic matter is estimated from Soil Organic Carbon (SOC × 1.724), AWC is computed where valid 33/1500 kPa retention predictions exist, and categorical drainage/slope are not fabricated.",
   },
   fao_hwsd_v22: {
     id: "fao_hwsd_v22",
@@ -645,8 +648,9 @@ export function resolveGlobalSoilFallback(
       bulkDensityGcm3: matchedUnit.bulkDensityGcm3,
       coarseFragmentsPct: matchedUnit.coarseFragmentsPct,
     },
-    drainage: matchedUnit.drainage,
-    slope: matchedUnit.slope,
+    // Coordinate-specific drainage class and terrain slope are not available in macro-regional reference summaries; do not fabricate them.
+    drainage: null,
+    slope: null,
   };
 
   // Component coverage percentages only apply to surveyed USDA SSURGO map units;
@@ -701,8 +705,6 @@ export function resolveGlobalSoilFallback(
       bulkDensity: "Regional reference bulk density (g/cm³, FAO HWSD v2.2 regional summary)",
       coarseFragments: "Regional reference coarse fragments (%vol, FAO HWSD v2.2 regional summary)",
       awc: "Regional reference 0–30 cm AWC (Saxton & Rawls 2006 pedotransfer from regional texture/SOC)",
-      drainage: "Typical regional drainage class (FAO HWSD v2.2 reference soil group)",
-      slope: "Typical regional cropland terrain slope estimate",
     },
     harmonizationNotes,
   };

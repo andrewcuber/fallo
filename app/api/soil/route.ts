@@ -10,58 +10,17 @@ import {
   fetchSoilGridsWcsProfile,
   type SoilGridsLayerUncertainty,
 } from "@/lib/soilgrids-wcs";
+import {
+  aggregateComponents,
+  type SoilHorizonInput as ComponentHorizon,
+  type SoilComponentInput as SoilComponent,
+  type SsurgoAggregatedProperties as AggregatedProperties,
+  type SsurgoDataCoverage as DataCoverage,
+} from "@/lib/soil-profile-utils";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const FALLBACK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes when falling back after transient WCS error
 const SDA_TIMEOUT_MS = 20000; // 20 seconds per query
-
-interface ComponentHorizon {
-  depthTop: number;
-  depthBottom: number;
-  sand: number | null;
-  silt: number | null;
-  clay: number | null;
-  om: number | null;
-  ph: number | null;
-  awc: number | null;
-}
-
-interface SoilComponent {
-  cokey: string;
-  name: string;
-  percent: number; // comppct_r
-  kind: string;
-  majcompflag: string | null; // 'Yes' | 'No' | null
-  drainage: string | null;
-  slope: number | null; // percent
-  horizons: ComponentHorizon[];
-}
-
-interface AggregatedProperties {
-  depth0_30cm: {
-    sand: number | null; // %
-    silt: number | null; // %
-    clay: number | null; // %
-    om: number | null; // %
-    ph: number | null; // 1:1 H2O
-    awc: number | null; // cm/cm
-  };
-  drainage: string | null;
-  slope: number | null; // %
-}
-
-interface DataCoverage {
-  depth0_30cm: {
-    sand: number | null;
-    silt: number | null;
-    clay: number | null;
-    om: number | null;
-    ph: number | null;
-    awc: number | null;
-  };
-  drainage: number | null;
-  slope: number | null;
-}
 
 interface SoilResponse {
   location: {
@@ -82,6 +41,11 @@ interface SoilResponse {
   components: SoilComponent[];
   aggregated: AggregatedProperties & {
     depth0_30cm: AggregatedProperties["depth0_30cm"] & {
+      textureMean0_30cm?: {
+        sand: number;
+        silt: number;
+        clay: number;
+      };
       organicCarbonPct?: number | null;
       bulkDensityGcm3?: number | null;
       coarseFragmentsPct?: number | null;
@@ -162,122 +126,6 @@ async function querySDA<T>(query: string): Promise<T[][]> {
     clearTimeout(timeout);
     throw err;
   }
-}
-
-function depthWeightedAverage(
-  horizons: ComponentHorizon[],
-  property: keyof Omit<ComponentHorizon, "depthTop" | "depthBottom">
-): number | null {
-  let weightedSum = 0;
-  let totalDepth = 0;
-  let hasValue = false;
-
-  for (const h of horizons) {
-    const top = h.depthTop;
-    const bottom = Math.min(h.depthBottom, 30);
-    if (top >= 30 || bottom <= top) continue;
-
-    const val = h[property];
-    if (val === null || Number.isNaN(val)) continue;
-
-    const depth = bottom - top;
-    weightedSum += val * depth;
-    totalDepth += depth;
-    hasValue = true;
-  }
-
-  if (!hasValue || totalDepth === 0) return null;
-  return weightedSum / totalDepth;
-}
-
-function aggregateComponents(
-  components: SoilComponent[]
-): { aggregated: AggregatedProperties; dataCoverage: DataCoverage } {
-  const properties: (keyof Omit<
-    ComponentHorizon,
-    "depthTop" | "depthBottom"
-  >)[] = ["sand", "silt", "clay", "om", "ph", "awc"];
-
-  const depth0_30cm = {
-    sand: null as number | null,
-    silt: null as number | null,
-    clay: null as number | null,
-    om: null as number | null,
-    ph: null as number | null,
-    awc: null as number | null,
-  };
-
-  const coverage0_30cm = {
-    sand: null as number | null,
-    silt: null as number | null,
-    clay: null as number | null,
-    om: null as number | null,
-    ph: null as number | null,
-    awc: null as number | null,
-  };
-
-  for (const prop of properties) {
-    let weightedSum = 0;
-    let totalPercent = 0;
-    let hasValue = false;
-
-    for (const comp of components) {
-      const compVal = depthWeightedAverage(comp.horizons, prop);
-      if (compVal === null || Number.isNaN(compVal)) continue;
-
-      weightedSum += compVal * comp.percent;
-      totalPercent += comp.percent;
-      hasValue = true;
-    }
-
-    if (hasValue && totalPercent > 0) {
-      depth0_30cm[prop] = weightedSum / totalPercent;
-      (coverage0_30cm as Record<string, number | null>)[prop] = totalPercent;
-    }
-  }
-
-  // Drainage: weighted dominant class among components with valid drainage
-  const drainageCounts = new Map<string, number>();
-  let drainageTotalPercent = 0;
-  for (const comp of components) {
-    if (comp.drainage) {
-      drainageCounts.set(
-        comp.drainage,
-        (drainageCounts.get(comp.drainage) ?? 0) + comp.percent
-      );
-      drainageTotalPercent += comp.percent;
-    }
-  }
-  let drainage: string | null = null;
-  let maxDrainagePercent = 0;
-  for (const [d, p] of drainageCounts) {
-    if (p > maxDrainagePercent) {
-      maxDrainagePercent = p;
-      drainage = d;
-    }
-  }
-
-  // Slope: weighted average among components with valid slope
-  let slopeSum = 0;
-  let slopePercent = 0;
-  let hasSlope = false;
-  for (const comp of components) {
-    if (comp.slope !== null && !Number.isNaN(comp.slope)) {
-      slopeSum += comp.slope * comp.percent;
-      slopePercent += comp.percent;
-      hasSlope = true;
-    }
-  }
-  const slope = hasSlope && slopePercent > 0 ? slopeSum / slopePercent : null;
-
-  return {
-    aggregated: { depth0_30cm, drainage, slope },
-    dataCoverage: {
-      depth0_30cm: coverage0_30cm,
-      drainage: drainageTotalPercent > 0 ? drainageTotalPercent : null,
-      slope: hasSlope && slopePercent > 0 ? slopePercent : null,
-    },
-  };
 }
 
 export async function GET(request: NextRequest) {
@@ -548,6 +396,33 @@ export async function GET(request: NextRequest) {
       "Aggregated 0-30 cm values are depth-weighted averages of named soil components, weighted by component percentage. Missing values are excluded, not treated as zero."
     );
 
+    const ssurgoPropertySources: Record<string, string> = {};
+    if (
+      aggregated.depth0_30cm.sand !== null &&
+      aggregated.depth0_30cm.silt !== null &&
+      aggregated.depth0_30cm.clay !== null
+    ) {
+      ssurgoPropertySources.sand = "USDA NRCS SSURGO (depth-weighted 0–30 cm)";
+      ssurgoPropertySources.silt = "USDA NRCS SSURGO (depth-weighted 0–30 cm)";
+      ssurgoPropertySources.clay = "USDA NRCS SSURGO (depth-weighted 0–30 cm)";
+    }
+    if (aggregated.depth0_30cm.om !== null) {
+      ssurgoPropertySources.om = "USDA NRCS SSURGO (depth-weighted 0–30 cm)";
+    }
+    if (aggregated.depth0_30cm.ph !== null) {
+      ssurgoPropertySources.ph = "USDA NRCS SSURGO (1:1 H2O, depth-weighted 0–30 cm)";
+    }
+    if (aggregated.depth0_30cm.awc !== null) {
+      ssurgoPropertySources.awc = "USDA NRCS SSURGO (depth-weighted 0–30 cm)";
+    }
+    if (aggregated.drainage) {
+      ssurgoPropertySources.drainage =
+        "USDA NRCS SSURGO (dominant component drainage class)";
+    }
+    if (aggregated.slope !== null) {
+      ssurgoPropertySources.slope = "USDA NRCS SSURGO (component-weighted slope %)";
+    }
+
     const response: SoilResponse = {
       location: locationMeta,
       dataTier: "usda_ssurgo",
@@ -561,16 +436,7 @@ export async function GET(request: NextRequest) {
       totalComponentPercent,
       components,
       aggregated,
-      propertySources: {
-        sand: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
-        silt: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
-        clay: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
-        om: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
-        ph: "USDA NRCS SSURGO (1:1 H2O, depth-weighted 0–30 cm)",
-        awc: "USDA NRCS SSURGO (depth-weighted 0–30 cm)",
-        drainage: "USDA NRCS SSURGO (dominant component drainage class)",
-        slope: "USDA NRCS SSURGO (component-weighted slope %)",
-      },
+      propertySources: ssurgoPropertySources,
       dataCoverage,
       limitations,
     };
