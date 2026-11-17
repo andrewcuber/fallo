@@ -8,6 +8,7 @@ import {
   buildSoilProfileDisplayModel,
   type AvailableSoilMetric,
   type SoilDataTier,
+  type UsSsurgoFallbackMeta,
 } from "@/lib/soil-profile-utils";
 import {
   Card,
@@ -116,6 +117,7 @@ interface SoilData {
     slope: number | null;
   };
   limitations: string[];
+  usSsurgoFallback?: UsSsurgoFallbackMeta;
   cached?: boolean;
 }
 
@@ -424,18 +426,42 @@ export default function SoilPage() {
         <>
           {/* Compact Farmer Warning Near Results */}
           {isSoilGridsWcs ? (
-            <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50/70 px-3.5 py-2.5 text-xs text-blue-950">
-              <Info className="h-4 w-4 text-blue-700 shrink-0 mt-0.5" />
-              <p className="leading-relaxed">
-                <strong>Modeled topsoil estimate (~250 m grid):</strong>{" "}
-                Values are machine-learning predictions for 0–30 cm topsoil (with organic matter derived from SOC × 1.724), not on-site soil test measurements. Field-scale soil properties vary over short distances—verify with laboratory soil sampling before making lime, fertilizer, or management decisions.
-                {data.pixelResolution?.usedNeighborPixel && (
-                  <>
-                    {" "}
-                    <strong>Neighbor pixel note:</strong> The exact coordinate fell on a masked pixel (water/built-up); values come from the nearest unmasked pixel ~{data.pixelResolution.neighborDistanceMeters} m away (≤ 250 m limit).
-                  </>
-                )}
-              </p>
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50/70 px-3.5 py-2.5 text-xs text-blue-950">
+              <div className="flex items-start gap-2">
+                <Info className="h-4 w-4 text-blue-700 shrink-0 mt-0.5" />
+                <p className="leading-relaxed">
+                  <strong>
+                    {data.usSsurgoFallback
+                      ? "ISRIC SoilGrids v2.0 (~250 m grid) — U.S. Coordinate Fallback:"
+                      : "Modeled topsoil estimate (~250 m grid):"}
+                  </strong>{" "}
+                  {data.usSsurgoFallback ? (
+                    <>
+                      {data.usSsurgoFallback.reason === "request_error"
+                        ? "Live USDA NRCS SSURGO survey service was temporarily unreachable; displaying coordinate-specific ISRIC SoilGrids v2.0 0–30 cm topsoil predictions instead."
+                        : "USDA NRCS SSURGO returned no surveyed soil component at this coordinate; displaying coordinate-specific ISRIC SoilGrids v2.0 0–30 cm topsoil predictions instead."}{" "}
+                    </>
+                  ) : null}
+                  Values are machine-learning predictions for 0–30 cm topsoil (with organic matter derived from SOC × 1.724), not on-site soil test measurements. Field-scale soil properties vary over short distances—verify with laboratory soil sampling before making lime, fertilizer, or management decisions.
+                  {data.pixelResolution?.usedNeighborPixel && (
+                    <>
+                      {" "}
+                      <strong>Neighbor pixel note:</strong> The exact coordinate fell on a masked pixel (water/built-up); values come from the nearest unmasked pixel ~{data.pixelResolution.neighborDistanceMeters} m away (≤ 250 m limit).
+                    </>
+                  )}
+                </p>
+              </div>
+              {data.usSsurgoFallback?.reason === "request_error" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={fetchSoil}
+                  className="shrink-0 h-7 text-xs border-blue-300 bg-white/80 text-blue-900 hover:bg-blue-100/80"
+                >
+                  <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                  Retry USDA SSURGO
+                </Button>
+              )}
             </div>
           ) : !isSsurgoSurvey ? (
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 text-xs text-amber-900">

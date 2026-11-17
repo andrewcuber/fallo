@@ -23,6 +23,11 @@ import {
   DEFAULT_WHAT_IF_SCENARIO,
 } from "@/lib/what-if-simulator";
 import { normalizeCoordinates } from "@/lib/coordinates";
+import {
+  isUsableCachedSoilResponse,
+  type SoilDataTier,
+  type UsSsurgoFallbackMeta,
+} from "@/lib/soil-profile-utils";
 
 export interface RawClimateApiResponse {
   location: {
@@ -85,14 +90,17 @@ export interface RawSoilComponent {
 
 export interface RawSoilApiResponse {
   location: { lat: number; lon: number };
+  dataTier?: SoilDataTier;
   source: string;
   coverage: string;
+  wrbSoilGroup?: string;
   mapUnit: { mukey: string; name: string } | null;
   totalComponentPercent: number;
   components: RawSoilComponent[];
   aggregated: ScoringSoilData["aggregated"];
   dataCoverage: ScoringSoilData["dataCoverage"];
   limitations: string[];
+  usSsurgoFallback?: UsSsurgoFallbackMeta;
   cached?: boolean;
 }
 
@@ -545,11 +553,21 @@ async function loadEnvironmentalData(
   const key = makeCoordKey(lat, lon);
   if (!forceRefresh) {
     const cached = envMemoryCache.get(key);
-    if (cached && Date.now() - cached.fetchedAt < ENV_CACHE_TTL_MS && !cached.climateError) {
+    if (
+      cached &&
+      Date.now() - cached.fetchedAt < ENV_CACHE_TTL_MS &&
+      cached.climateRaw &&
+      !cached.climateError &&
+      cached.soilRaw &&
+      !cached.soilError &&
+      isUsableCachedSoilResponse(lat, lon, cached.soilRaw)
+    ) {
       return cached;
     }
     const inflight = envInFlight.get(key);
     if (inflight) return inflight;
+  } else {
+    envMemoryCache.delete(key);
   }
 
   const promise = (async (): Promise<CachedEnvEntry> => {
@@ -559,9 +577,12 @@ async function loadEnvironmentalData(
     let soilError: string | null = null;
 
     try {
+      const soilUrl = `/api/soil?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}${
+        forceRefresh ? "&refresh=1" : ""
+      }`;
       const [climateRes, soilRes] = await Promise.all([
         fetch(`/api/climate?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`),
-        fetch(`/api/soil?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`),
+        fetch(soilUrl, { cache: "no-store" }),
       ]);
 
       try {
@@ -580,7 +601,13 @@ async function loadEnvironmentalData(
         if (!soilRes.ok) {
           soilError = soilJson?.error || `Soil request failed (${soilRes.status})`;
         } else {
-          soilRaw = soilJson as RawSoilApiResponse;
+          const candidateSoil = soilJson as RawSoilApiResponse;
+          if (isUsableCachedSoilResponse(lat, lon, candidateSoil)) {
+            soilRaw = candidateSoil;
+          } else {
+            soilError =
+              "Received an invalid regional fallback soil profile for a U.S. coordinate. Please retry to query coordinate-specific soil data.";
+          }
         }
       } catch (err) {
         soilError = err instanceof Error ? err.message : "Failed to parse soil response";
@@ -598,7 +625,13 @@ async function loadEnvironmentalData(
       soilError,
       fetchedAt: Date.now(),
     };
-    if (climateRaw) {
+    if (
+      climateRaw &&
+      !climateError &&
+      soilRaw &&
+      !soilError &&
+      isUsableCachedSoilResponse(lat, lon, soilRaw)
+    ) {
       envMemoryCache.set(key, entry);
     }
     return entry;
@@ -614,7 +647,14 @@ async function loadEnvironmentalData(
 
 export function useFieldEnvironmentalData(field: Field | null | undefined) {
   const coordKey = field ? makeCoordKey(field.lat, field.lon) : null;
-  const initialCached = coordKey ? envMemoryCache.get(coordKey) ?? null : null;
+  const rawInitialCached = coordKey ? envMemoryCache.get(coordKey) ?? null : null;
+  const initialSoilUsable = Boolean(
+    field &&
+      rawInitialCached?.soilRaw &&
+      isUsableCachedSoilResponse(field.lat, field.lon, rawInitialCached.soilRaw)
+  );
+  const initialCached =
+    rawInitialCached && initialSoilUsable ? rawInitialCached : null;
 
   const [climateRaw, setClimateRaw] = useState<RawClimateApiResponse | null>(
     initialCached?.climateRaw ?? null
@@ -628,14 +668,24 @@ export function useFieldEnvironmentalData(field: Field | null | undefined) {
   const [soilError, setSoilError] = useState<string | null>(
     initialCached?.soilError ?? null
   );
-  const [loading, setLoading] = useState<boolean>(Boolean(field && !initialCached?.climateRaw));
+  const [loading, setLoading] = useState<boolean>(
+    Boolean(field && (!initialCached?.climateRaw || !initialCached?.soilRaw))
+  );
 
   const fetchEnv = useCallback(
     async (forceRefresh = false) => {
       if (!field) return;
       if (!forceRefresh) {
         const cached = envMemoryCache.get(makeCoordKey(field.lat, field.lon));
-        if (cached && Date.now() - cached.fetchedAt < ENV_CACHE_TTL_MS && cached.climateRaw) {
+        if (
+          cached &&
+          Date.now() - cached.fetchedAt < ENV_CACHE_TTL_MS &&
+          cached.climateRaw &&
+          !cached.climateError &&
+          cached.soilRaw &&
+          !cached.soilError &&
+          isUsableCachedSoilResponse(field.lat, field.lon, cached.soilRaw)
+        ) {
           setClimateRaw(cached.climateRaw);
           setSoilRaw(cached.soilRaw);
           setClimateError(cached.climateError);

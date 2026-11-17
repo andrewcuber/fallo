@@ -237,11 +237,65 @@ const WCS_GRID_HEIGHT = 5;
  * matching SoilGrids native ~250 m (0.00225°) resolution with pixel (2, 2) centered at (lat, lon).
  */
 const WCS_HALF_SPAN_DEG = 0.005625;
-const CANARY_TIMEOUT_MS = 5000;
-const LAYER_TIMEOUT_MS = 5000;
-const TOTAL_BUDGET_MS = 12000;
-const MAX_CONCURRENCY = 4;
+export const CANARY_TIMEOUT_MS = 6500;
+export const LAYER_TIMEOUT_MS = 6500;
+export const ESSENTIAL_LAYER_TIMEOUT_MS = 6500;
+export const ESSENTIAL_BUDGET_MS = 15000;
+export const ESSENTIAL_MAX_CONCURRENCY = 6;
+export const ESSENTIAL_RETRY_DELAY_MS = 150;
+export const OPTIONAL_LAYER_TIMEOUT_MS = 4500;
+export const OPTIONAL_BUDGET_MS = 10000;
+export const OPTIONAL_MAX_CONCURRENCY = 6;
+export const TOTAL_BUDGET_MS = 22000;
 const CACHE_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+
+export type SoilGridsStage = "essential" | "optional";
+
+export type SoilGridsFailureReason =
+  | "timeout"
+  | "http_error"
+  | "invalid_geotiff"
+  | "nodata"
+  | "budget_exhausted"
+  | "network_error";
+
+export interface SoilGridsLayerDiagnostic {
+  coverageId: string;
+  stage: SoilGridsStage;
+  attempt: number;
+  reason: SoilGridsFailureReason;
+  httpStatus?: number;
+  elapsedMs: number;
+  remainingStageBudgetMs: number;
+  remainingTotalBudgetMs: number;
+  retried: boolean;
+  recoveredOnRetry?: boolean;
+  detail?: string;
+}
+
+export interface SoilGridsFetchDiagnostics {
+  lat: number;
+  lon: number;
+  essentialComplete: boolean;
+  optionalComplete: boolean;
+  essentialLayersSucceeded: number;
+  essentialLayersTotal: number;
+  optionalLayersSucceeded: number;
+  optionalLayersTotal: number;
+  essentialElapsedMs: number;
+  optionalElapsedMs: number;
+  totalElapsedMs: number;
+  remainingTotalBudgetMs: number;
+  layerEvents: SoilGridsLayerDiagnostic[];
+}
+
+export const ESSENTIAL_SOILGRIDS_PROPERTIES: readonly SoilGridsPropertyId[] = [
+  "sand",
+  "silt",
+  "clay",
+  "soc",
+  "phh2o",
+] as const;
 
 // ─── GeoTIFF Decoder Types & Implementation ──────────────────────────
 
@@ -808,14 +862,22 @@ export interface SoilGridsWcsProfileResult {
     slope: null;
   };
   limitations: string[];
+  enrichmentStatus?: "complete" | "partial_optional";
 }
 
 export interface SoilGridsFetchOptions {
   fetchFn?: typeof fetch;
   canaryTimeoutMs?: number;
   layerTimeoutMs?: number;
+  essentialBudgetMs?: number;
+  optionalLayerTimeoutMs?: number;
+  optionalBudgetMs?: number;
   totalBudgetMs?: number;
+  essentialMaxConcurrency?: number;
+  optionalMaxConcurrency?: number;
+  essentialRetryDelayMs?: number;
   bypassCache?: boolean;
+  onDiagnostics?: (diagnostics: SoilGridsFetchDiagnostics) => void;
 }
 
 const memoryCache = new LRUCache<string, SoilGridsWcsProfileResult>({
@@ -823,8 +885,188 @@ const memoryCache = new LRUCache<string, SoilGridsWcsProfileResult>({
   ttl: CACHE_TTL_SECONDS * 1000,
 });
 
+/**
+ * Per-coverage decoded 5×5 GeoTIFF cache keyed by `${lat.toFixed(4)}_${lon.toFixed(4)}_${layerKey}`.
+ *
+ * Caching the full 5×5 decoded GeoTIFF grid per coverage ensures that:
+ * 1. If a cold request succeeds on all 15 essential layers and part of the 32 optional layers
+ *    before an optional layer times out, subsequent requests reuse the already-decoded grids
+ *    and only fetch the missing optional coverage(s).
+ * 2. Every property and depth layer is still extracted strictly at the single `(selectedRow, selectedCol)`
+ *    pixel chosen from `clay_0-5cm_Q0.5` for that coordinate (never mixing pixels across requests).
+ */
+const coverageCache = new LRUCache<string, DecodedSoilGridsGeoTiff>({
+  max: 6000,
+  ttl: CACHE_TTL_SECONDS * 1000,
+});
+
+const partialProfileScratch = new LRUCache<string, SoilGridsWcsProfileResult>({
+  max: 100,
+  ttl: 30 * 1000,
+});
+
+function evictCoordinateFromCaches(coordKey: string): void {
+  memoryCache.delete(coordKey);
+  partialProfileScratch.delete(coordKey);
+  const prefix = `${coordKey}_`;
+  for (const key of coverageCache.keys()) {
+    if (key.startsWith(prefix)) {
+      coverageCache.delete(key);
+    }
+  }
+}
+
 export function clearSoilGridsCacheForTests(): void {
   memoryCache.clear();
+  coverageCache.clear();
+  partialProfileScratch.clear();
+}
+
+export interface SoilGridsCoverageTaskSpec {
+  key: string;
+  mapFile: string;
+  coverageId: string;
+  format: "GEOTIFF_INT16" | "GEOTIFF_BYTE";
+  stage: SoilGridsStage;
+  propertyId?: SoilGridsPropertyId;
+  depthId?: SoilGridsDepthId;
+}
+
+/**
+ * Build the 15 essential core `Q0.5` layer specifications (`sand`, `silt`, `clay`, `soc`, `phh2o`
+ * across `0-5cm`, `5-15cm`, and `15-30cm`), with `clay_0-5cm_Q0.5` first as the pixel-selection anchor.
+ */
+export function buildEssentialCoverageTasks(): SoilGridsCoverageTaskSpec[] {
+  const anchorTask: SoilGridsCoverageTaskSpec = {
+    key: "clay_0-5cm_Q0.5",
+    mapFile: SOILGRIDS_PROPERTIES.clay.mapFile,
+    coverageId: "clay_0-5cm_Q0.5",
+    format: "GEOTIFF_INT16",
+    stage: "essential",
+    propertyId: "clay",
+    depthId: "0-5cm",
+  };
+
+  const remaining: SoilGridsCoverageTaskSpec[] = [];
+  for (const propId of ESSENTIAL_SOILGRIDS_PROPERTIES) {
+    const spec = SOILGRIDS_PROPERTIES[propId];
+    for (const depth of SOILGRIDS_DEPTH_LAYERS) {
+      if (propId === "clay" && depth.id === "0-5cm") {
+        // Anchor layer is first in the list and is never fetched twice
+        continue;
+      }
+      remaining.push({
+        key: `${propId}_${depth.id}_Q0.5`,
+        mapFile: spec.mapFile,
+        coverageId: `${propId}_${depth.id}_Q0.5`,
+        format: "GEOTIFF_INT16",
+        stage: "essential",
+        propertyId: propId,
+        depthId: depth.id,
+      });
+    }
+  }
+
+  return [anchorTask, ...remaining];
+}
+
+/**
+ * Build the 32 optional enrichment layer specifications retrieved ONLY after the 15 essential
+ * layers succeed:
+ * 1. 9 expected-value `mean` texture layers (`sand_mean`, `silt_mean`, `clay_mean` × 3 depths)
+ * 2. 6 water-retention (`wv0033`, `wv1500`) `Q0.5` layers (for derived 0–30 cm AWC)
+ * 3. 1 WRB `MostProbable` reference soil group classification layer (`GEOTIFF_BYTE`)
+ * 4. 3 bulk density (`bdod`) `Q0.5` layers
+ * 5. 3 coarse fragments (`cfvo`) `Q0.5` layers
+ * 6. 10 surface `0-5cm` `Q0.05`/`Q0.95` uncertainty quantile layers (`sand`, `silt`, `clay`, `soc`, `phh2o`)
+ */
+export function buildOptionalCoverageTasks(): SoilGridsCoverageTaskSpec[] {
+  const tasks: SoilGridsCoverageTaskSpec[] = [];
+
+  // 1. 9 mean texture layers (prioritized first in optional enrichment for compositional 100% display)
+  const textureMeanProps: ("sand" | "silt" | "clay")[] = ["sand", "silt", "clay"];
+  for (const propId of textureMeanProps) {
+    const spec = SOILGRIDS_PROPERTIES[propId];
+    for (const depth of SOILGRIDS_DEPTH_LAYERS) {
+      tasks.push({
+        key: `${propId}_${depth.id}_mean`,
+        mapFile: spec.mapFile,
+        coverageId: `${propId}_${depth.id}_mean`,
+        format: "GEOTIFF_INT16",
+        stage: "optional",
+        propertyId: propId,
+        depthId: depth.id,
+      });
+    }
+  }
+
+  // 2. 6 water-retention layers for derived Available Water Capacity (AWC)
+  const waterRetentionProps: ("wv0033" | "wv1500")[] = ["wv0033", "wv1500"];
+  for (const propId of waterRetentionProps) {
+    const spec = SOILGRIDS_PROPERTIES[propId];
+    for (const depth of SOILGRIDS_DEPTH_LAYERS) {
+      tasks.push({
+        key: `${propId}_${depth.id}_Q0.5`,
+        mapFile: spec.mapFile,
+        coverageId: `${propId}_${depth.id}_Q0.5`,
+        format: "GEOTIFF_INT16",
+        stage: "optional",
+        propertyId: propId,
+        depthId: depth.id,
+      });
+    }
+  }
+
+  // 3. 1 WRB MostProbable reference soil group layer
+  tasks.push({
+    key: "wrb_MostProbable",
+    mapFile: "wrb",
+    coverageId: "MostProbable",
+    format: "GEOTIFF_BYTE",
+    stage: "optional",
+  });
+
+  // 4 & 5. 6 physical property layers (bdod and cfvo across 0–5, 5–15, 15–30 cm)
+  const physicalOptionalProps: ("bdod" | "cfvo")[] = ["bdod", "cfvo"];
+  for (const propId of physicalOptionalProps) {
+    const spec = SOILGRIDS_PROPERTIES[propId];
+    for (const depth of SOILGRIDS_DEPTH_LAYERS) {
+      tasks.push({
+        key: `${propId}_${depth.id}_Q0.5`,
+        mapFile: spec.mapFile,
+        coverageId: `${propId}_${depth.id}_Q0.5`,
+        format: "GEOTIFF_INT16",
+        stage: "optional",
+        propertyId: propId,
+        depthId: depth.id,
+      });
+    }
+  }
+
+  // 6. 10 surface 0–5 cm Q0.05 and Q0.95 prediction uncertainty layers
+  for (const propId of ESSENTIAL_SOILGRIDS_PROPERTIES) {
+    const spec = SOILGRIDS_PROPERTIES[propId];
+    tasks.push({
+      key: `${propId}_0-5cm_Q0.05`,
+      mapFile: spec.mapFile,
+      coverageId: `${propId}_0-5cm_Q0.05`,
+      format: "GEOTIFF_INT16",
+      stage: "optional",
+      propertyId: propId,
+      depthId: "0-5cm",
+    });
+    tasks.push({
+      key: `${propId}_0-5cm_Q0.95`,
+      mapFile: spec.mapFile,
+      coverageId: `${propId}_0-5cm_Q0.95`,
+      format: "GEOTIFF_INT16",
+      stage: "optional",
+      propertyId: propId,
+      depthId: "0-5cm",
+    });
+  }
+
+  return tasks;
 }
 
 /**
@@ -881,7 +1123,22 @@ async function runWithBoundedConcurrency<T, R>(
 }
 
 /**
- * Core implementation that queries ISRIC SoilGrids v2.0 WCS at `(lat, lon)`.
+ * Core implementation that queries ISRIC SoilGrids v2.0 WCS at `(lat, lon)`
+ * using a two-stage retrieval architecture:
+ *
+ * - **Stage 1 (Essential Profile — 15 `Q0.5` layers):**
+ *   Retrieves `clay_0-5cm_Q0.5` first to select the target terrestrial pixel within ≤ 250 m,
+ *   then retrieves the remaining 14 essential `Q0.5` layers (`sand`, `silt`, `clay`, `soc`, `phh2o`
+ *   across `0-5cm`, `5-15cm`, `15-30cm`) with bounded concurrency and 1 bounded retry on transient
+ *   failure when sufficient essential-stage budget remains.
+ *   Immediately validates full 0–30 cm core depth coverage (`coveredDepthCm === 30`) before
+ *   any optional layers are requested, so optional layers can never consume the essential budget.
+ *
+ * - **Stage 2 (Optional Enrichment — 32 layers):**
+ *   Retrieves 9 `mean` texture layers, 6 water-retention (`wv0033`/`wv1500`) layers,
+ *   1 WRB `MostProbable` classification layer, 6 `bdod`/`cfvo` layers, and 10 surface `0-5cm`
+ *   `Q0.05`/`Q0.95` uncertainty quantile layers under a dedicated optional budget.
+ *   Optional layer failures/timeouts never invalidate a valid essential profile.
  */
 async function fetchSoilGridsWcsProfileUncached(
   lat: number,
@@ -894,10 +1151,43 @@ async function fetchSoilGridsWcsProfileUncached(
   }
 
   const fetchImpl = options?.fetchFn ?? fetch;
-  const canaryTimeout = options?.canaryTimeoutMs ?? CANARY_TIMEOUT_MS;
-  const layerTimeout = options?.layerTimeoutMs ?? LAYER_TIMEOUT_MS;
-  const totalBudget = options?.totalBudgetMs ?? TOTAL_BUDGET_MS;
-  const deadline = Date.now() + totalBudget;
+  const essentialLayerTimeout =
+    options?.layerTimeoutMs ?? ESSENTIAL_LAYER_TIMEOUT_MS;
+  const canaryTimeout =
+    options?.canaryTimeoutMs ?? options?.layerTimeoutMs ?? CANARY_TIMEOUT_MS;
+  const optionalLayerTimeout =
+    options?.optionalLayerTimeoutMs ??
+    options?.layerTimeoutMs ??
+    OPTIONAL_LAYER_TIMEOUT_MS;
+  const essentialConcurrency =
+    options?.essentialMaxConcurrency ?? ESSENTIAL_MAX_CONCURRENCY;
+  const optionalConcurrency =
+    options?.optionalMaxConcurrency ?? OPTIONAL_MAX_CONCURRENCY;
+  const retryDelayMs =
+    options?.essentialRetryDelayMs ?? ESSENTIAL_RETRY_DELAY_MS;
+  const useCoverageCache = !options?.bypassCache;
+  const coordKey = `${lat.toFixed(4)}_${lon.toFixed(4)}`;
+
+  const requestStart = Date.now();
+  const essentialBudget =
+    options?.essentialBudgetMs ??
+    (options?.totalBudgetMs !== undefined
+      ? options.totalBudgetMs
+      : ESSENTIAL_BUDGET_MS);
+  const optionalBudget =
+    options?.optionalBudgetMs ??
+    (options?.totalBudgetMs !== undefined
+      ? options.totalBudgetMs
+      : OPTIONAL_BUDGET_MS);
+  const totalBudget =
+    options?.totalBudgetMs ??
+    (options?.essentialBudgetMs !== undefined ||
+    options?.optionalBudgetMs !== undefined
+      ? essentialBudget + optionalBudget
+      : TOTAL_BUDGET_MS);
+
+  const totalDeadline = requestStart + totalBudget;
+  const essentialDeadline = Math.min(totalDeadline, requestStart + essentialBudget);
 
   const bbox = {
     lonMin: Number((lon - WCS_HALF_SPAN_DEG).toFixed(6)),
@@ -906,21 +1196,111 @@ async function fetchSoilGridsWcsProfileUncached(
     latMax: Number((lat + WCS_HALF_SPAN_DEG).toFixed(6)),
   };
 
-  async function fetchAndDecodeCoverage(
-    mapFile: string,
-    coverageId: string,
-    format: "GEOTIFF_INT16" | "GEOTIFF_BYTE",
-    timeoutMs: number
-  ): Promise<DecodedSoilGridsGeoTiff | null> {
-    const remainingBudget = deadline - Date.now();
-    if (remainingBudget <= 150) return null;
+  const essentialTasks = buildEssentialCoverageTasks();
+  const optionalTasks = buildOptionalCoverageTasks();
+  const layerEvents: SoilGridsLayerDiagnostic[] = [];
+  let essentialElapsedMs = 0;
+  let optionalElapsedMs = 0;
+
+  function emitDiagnostics(
+    essentialComplete: boolean,
+    optionalComplete: boolean,
+    essentialLayersSucceeded: number,
+    optionalLayersSucceeded: number
+  ): void {
+    const totalElapsedMs = Date.now() - requestStart;
+    const remainingTotalBudgetMs = Math.max(0, totalDeadline - Date.now());
+    const diag: SoilGridsFetchDiagnostics = {
+      lat,
+      lon,
+      essentialComplete,
+      optionalComplete,
+      essentialLayersSucceeded,
+      essentialLayersTotal: essentialTasks.length,
+      optionalLayersSucceeded,
+      optionalLayersTotal: optionalTasks.length,
+      essentialElapsedMs,
+      optionalElapsedMs,
+      totalElapsedMs,
+      remainingTotalBudgetMs,
+      layerEvents,
+    };
+
+    if (options?.onDiagnostics) {
+      options.onDiagnostics(diag);
+    }
+
+    if (layerEvents.length > 0 && !options?.fetchFn) {
+      console.warn(
+        "[SoilGrids WCS]",
+        JSON.stringify({
+          lat: Number(lat.toFixed(4)),
+          lon: Number(lon.toFixed(4)),
+          essentialComplete,
+          optionalComplete,
+          essentialLayers: `${essentialLayersSucceeded}/${essentialTasks.length}`,
+          optionalLayers: `${optionalLayersSucceeded}/${optionalTasks.length}`,
+          essentialElapsedMs,
+          optionalElapsedMs,
+          totalElapsedMs,
+          remainingTotalBudgetMs,
+          events: layerEvents.map((e) => ({
+            coverageId: e.coverageId,
+            stage: e.stage,
+            attempt: e.attempt,
+            reason: e.reason,
+            httpStatus: e.httpStatus,
+            elapsedMs: e.elapsedMs,
+            remainingStageBudgetMs: e.remainingStageBudgetMs,
+            retried: e.retried,
+            recoveredOnRetry: e.recoveredOnRetry,
+          })),
+        })
+      );
+    }
+  }
+
+  interface SingleAttemptResult {
+    decoded: DecodedSoilGridsGeoTiff | null;
+    reason?: SoilGridsFailureReason;
+    httpStatus?: number;
+    elapsedMs: number;
+    detail?: string;
+  }
+
+  async function fetchAndDecodeSingleAttempt(
+    task: SoilGridsCoverageTaskSpec,
+    timeoutMs: number,
+    stageDeadline: number
+  ): Promise<SingleAttemptResult> {
+    const now = Date.now();
+    const remainingStage = stageDeadline - now;
+    const remainingTotal = totalDeadline - now;
+    const remainingBudget = Math.min(remainingStage, remainingTotal);
+
+    if (remainingBudget <= 50) {
+      return {
+        decoded: null,
+        reason: "budget_exhausted",
+        elapsedMs: 0,
+        detail: "Stage or total request budget exhausted before request start",
+      };
+    }
 
     const effectiveTimeout = Math.min(timeoutMs, remainingBudget);
+    const budgetCapped = effectiveTimeout < timeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+    const attemptStart = Date.now();
 
     try {
-      const url = buildSoilGridsWcsUrl({ mapFile, coverageId, lat, lon, format });
+      const url = buildSoilGridsWcsUrl({
+        mapFile: task.mapFile,
+        coverageId: task.coverageId,
+        lat,
+        lon,
+        format: task.format,
+      });
       const reqInit: RequestInit = {
         signal: controller.signal,
         cache: "no-store",
@@ -932,31 +1312,192 @@ async function fetchSoilGridsWcsProfileUncached(
 
       const res = await fetchImpl(url, reqInit);
       clearTimeout(timer);
-      if (!res.ok) return null;
+      const elapsedMs = Date.now() - attemptStart;
+
+      if (!res.ok) {
+        return {
+          decoded: null,
+          reason: "http_error",
+          httpStatus: res.status,
+          elapsedMs,
+          detail: `HTTP ${res.status}`,
+        };
+      }
 
       const ct = (res.headers.get("content-type") ?? "").toLowerCase();
       if (ct.includes("xml") || ct.includes("html")) {
-        return null;
+        return {
+          decoded: null,
+          reason: "invalid_geotiff",
+          httpStatus: res.status,
+          elapsedMs,
+          detail: `Unexpected content-type: ${ct}`,
+        };
       }
 
       const buf = Buffer.from(await res.arrayBuffer());
-      return decodeSoilGridsGeoTiff(buf);
-    } catch {
+      try {
+        const decoded = decodeSoilGridsGeoTiff(buf);
+        return {
+          decoded,
+          elapsedMs: Date.now() - attemptStart,
+        };
+      } catch (decodeErr: unknown) {
+        const msg =
+          decodeErr instanceof Error ? decodeErr.message : String(decodeErr);
+        return {
+          decoded: null,
+          reason: "invalid_geotiff",
+          httpStatus: res.status,
+          elapsedMs: Date.now() - attemptStart,
+          detail: msg,
+        };
+      }
+    } catch (err: unknown) {
       clearTimeout(timer);
-      return null;
+      const elapsedMs = Date.now() - attemptStart;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const isAbortOrTimeout =
+        controller.signal.aborted ||
+        (err instanceof Error && err.name === "AbortError") ||
+        /abort|timed?\s*out/i.test(errMsg);
+
+      if (isAbortOrTimeout) {
+        const stageRemainingNow = Math.min(
+          stageDeadline - Date.now(),
+          totalDeadline - Date.now()
+        );
+        const reason: SoilGridsFailureReason =
+          budgetCapped && stageRemainingNow <= 25
+            ? "budget_exhausted"
+            : "timeout";
+        return {
+          decoded: null,
+          reason,
+          elapsedMs,
+          detail:
+            reason === "budget_exhausted"
+              ? `Aborted when stage/total budget expired after ${elapsedMs} ms`
+              : `Timed out after ${elapsedMs} ms`,
+        };
+      }
+
+      return {
+        decoded: null,
+        reason: "network_error",
+        elapsedMs,
+        detail: errMsg,
+      };
     }
   }
 
-  // ── Step 1: Canary request (`clay_0-5cm_Q0.5`) to verify WCS reachability,
-  // warm up the TLS keep-alive socket, and select the target terrestrial pixel. ──
+  async function fetchCoverageWithStagePolicy(
+    task: SoilGridsCoverageTaskSpec,
+    timeoutMs: number,
+    stageDeadline: number
+  ): Promise<DecodedSoilGridsGeoTiff | null> {
+    const covCacheKey = `${coordKey}_${task.key}`;
+    if (useCoverageCache) {
+      const cachedGrid = coverageCache.get(covCacheKey);
+      if (cachedGrid) {
+        return cachedGrid;
+      }
+    }
+
+    const attempt1 = await fetchAndDecodeSingleAttempt(
+      task,
+      timeoutMs,
+      stageDeadline
+    );
+    if (attempt1.decoded) {
+      if (useCoverageCache) {
+        coverageCache.set(covCacheKey, attempt1.decoded);
+      }
+      return attempt1.decoded;
+    }
+
+    const remainingStageAfter1 = Math.max(0, stageDeadline - Date.now());
+    const remainingTotalAfter1 = Math.max(0, totalDeadline - Date.now());
+    const minRemainingAfter1 = Math.min(
+      remainingStageAfter1,
+      remainingTotalAfter1
+    );
+
+    const canRetry =
+      task.stage === "essential" &&
+      attempt1.reason !== "budget_exhausted" &&
+      minRemainingAfter1 > retryDelayMs + 100;
+
+    const event1: SoilGridsLayerDiagnostic = {
+      coverageId: task.coverageId,
+      stage: task.stage,
+      attempt: 1,
+      reason: attempt1.reason ?? "network_error",
+      ...(attempt1.httpStatus !== undefined
+        ? { httpStatus: attempt1.httpStatus }
+        : {}),
+      elapsedMs: attempt1.elapsedMs,
+      remainingStageBudgetMs: remainingStageAfter1,
+      remainingTotalBudgetMs: remainingTotalAfter1,
+      retried: canRetry,
+      ...(attempt1.detail ? { detail: attempt1.detail } : {}),
+    };
+    layerEvents.push(event1);
+
+    if (!canRetry) {
+      return null;
+    }
+
+    if (retryDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+
+    const attempt2 = await fetchAndDecodeSingleAttempt(
+      task,
+      timeoutMs,
+      stageDeadline
+    );
+    if (attempt2.decoded) {
+      event1.recoveredOnRetry = true;
+      if (useCoverageCache) {
+        coverageCache.set(covCacheKey, attempt2.decoded);
+      }
+      return attempt2.decoded;
+    }
+
+    event1.recoveredOnRetry = false;
+    layerEvents.push({
+      coverageId: task.coverageId,
+      stage: task.stage,
+      attempt: 2,
+      reason: attempt2.reason ?? "network_error",
+      ...(attempt2.httpStatus !== undefined
+        ? { httpStatus: attempt2.httpStatus }
+        : {}),
+      elapsedMs: attempt2.elapsedMs,
+      remainingStageBudgetMs: Math.max(0, stageDeadline - Date.now()),
+      remainingTotalBudgetMs: Math.max(0, totalDeadline - Date.now()),
+      retried: false,
+      ...(attempt2.detail ? { detail: attempt2.detail } : {}),
+    });
+
+    return null;
+  }
+
+  // ── Stage 1A: Anchor essential layer (`clay_0-5cm_Q0.5`) to verify WCS reachability,
+  // warm up the TLS keep-alive socket, and select the target terrestrial pixel.
+  // Never fetched a second time. ──
+  const essentialStageStart = Date.now();
+  const anchorTask = essentialTasks[0];
   const canarySpec = SOILGRIDS_PROPERTIES.clay;
-  const canaryDecoded = await fetchAndDecodeCoverage(
-    canarySpec.mapFile,
-    "clay_0-5cm_Q0.5",
-    "GEOTIFF_INT16",
-    canaryTimeout
+  const canaryDecoded = await fetchCoverageWithStagePolicy(
+    anchorTask,
+    canaryTimeout,
+    essentialDeadline
   );
   if (!canaryDecoded) {
+    essentialElapsedMs = Date.now() - essentialStageStart;
+    emitDiagnostics(false, false, 0, 0);
     return null;
   }
 
@@ -965,10 +1506,24 @@ async function fetchSoilGridsWcsProfileUncached(
     lat,
     lon,
     bbox,
-    (raw) => isRawSoilGridsValueValid(raw, canarySpec, canaryDecoded.noDataValue, false)
+    (raw) =>
+      isRawSoilGridsValueValid(raw, canarySpec, canaryDecoded.noDataValue, false)
   );
   if (!targetPixel) {
     // All pixels in the 5×5 (~500 m) window are NoData (ocean, lake, glacier, or dense urban mask)
+    essentialElapsedMs = Date.now() - essentialStageStart;
+    layerEvents.push({
+      coverageId: anchorTask.coverageId,
+      stage: "essential",
+      attempt: 1,
+      reason: "nodata",
+      elapsedMs: essentialElapsedMs,
+      remainingStageBudgetMs: Math.max(0, essentialDeadline - Date.now()),
+      remainingTotalBudgetMs: Math.max(0, totalDeadline - Date.now()),
+      retried: false,
+      detail: "No valid unmasked soil pixel within 250 m",
+    });
+    emitDiagnostics(false, false, 0, 0);
     return null;
   }
 
@@ -993,110 +1548,129 @@ async function fetchSoilGridsWcsProfileUncached(
     return null;
   }
 
-  // ── Step 2: Build bounded request batch for 0–5, 5–15, 15–30 cm layers + 0–5 cm Q0.05/Q0.95 + WRB ──
-  interface CoverageTask {
-    key: string;
-    mapFile: string;
-    coverageId: string;
-    format: "GEOTIFF_INT16" | "GEOTIFF_BYTE";
-  }
-
-  const tasks: CoverageTask[] = [];
-  const allProps: SoilGridsPropertyId[] = [
-    "sand",
-    "silt",
-    "clay",
-    "soc",
-    "phh2o",
-    "bdod",
-    "cfvo",
-    "wv0033",
-    "wv1500",
-  ];
-
-  for (const propId of allProps) {
-    const spec = SOILGRIDS_PROPERTIES[propId];
-    for (const depth of SOILGRIDS_DEPTH_LAYERS) {
-      if (propId === "clay" && depth.id === "0-5cm") {
-        // Already fetched in canary Step 1
-        continue;
-      }
-      tasks.push({
-        key: `${propId}_${depth.id}_Q0.5`,
-        mapFile: spec.mapFile,
-        coverageId: `${propId}_${depth.id}_Q0.5`,
-        format: "GEOTIFF_INT16",
-      });
-    }
-  }
-
-  // Fetch 0–5, 5–15, and 15–30 cm expected-value (`mean`) texture predictions
-  // (`sand_mean`, `silt_mean`, and `clay_mean`).
-  // Per Poggio et al. (2021, SOIL 7:217–240) and ISRIC documentation, SoilGrids v2.0
-  // transforms particle-size fractions via the additive log-ratio (ALR) transformation
-  // with clay as the denominator:
-  //   - ALR1 = ln(sand / clay)
-  //   - ALR2 = ln(silt / clay)
-  // Quantiles (`Q0.05`, `Q0.50`, `Q0.95`) are computed using Quantile Regression Forests
-  // (after back-transforming individual tree predictions), so marginal `Q0.50` medians do
-  // not necessarily sum to 100%, whereas the `mean` expected-value predictions (computed
-  // using the default Random Forests algorithm) are approximately compositionally closed
-  // (~100.0% ± 0.1% from integer g/kg raster quantization).
-  const textureMeanProps: ("sand" | "silt" | "clay")[] = ["sand", "silt", "clay"];
-  for (const propId of textureMeanProps) {
-    const spec = SOILGRIDS_PROPERTIES[propId];
-    for (const depth of SOILGRIDS_DEPTH_LAYERS) {
-      tasks.push({
-        key: `${propId}_${depth.id}_mean`,
-        mapFile: spec.mapFile,
-        coverageId: `${propId}_${depth.id}_mean`,
-        format: "GEOTIFF_INT16",
-      });
-    }
-  }
-
-  // Fetch 0–5 cm Q0.05 and Q0.95 prediction quantiles for the 5 primary properties
-  const uncertaintyProps: SoilGridsPropertyId[] = ["sand", "silt", "clay", "soc", "phh2o"];
-  for (const propId of uncertaintyProps) {
-    const spec = SOILGRIDS_PROPERTIES[propId];
-    tasks.push({
-      key: `${propId}_0-5cm_Q0.05`,
-      mapFile: spec.mapFile,
-      coverageId: `${propId}_0-5cm_Q0.05`,
-      format: "GEOTIFF_INT16",
-    });
-    tasks.push({
-      key: `${propId}_0-5cm_Q0.95`,
-      mapFile: spec.mapFile,
-      coverageId: `${propId}_0-5cm_Q0.95`,
-      format: "GEOTIFF_INT16",
-    });
-  }
-
-  // Fetch WRB MostProbable reference soil group
-  tasks.push({
-    key: "wrb_MostProbable",
-    mapFile: "wrb",
-    coverageId: "MostProbable",
-    format: "GEOTIFF_BYTE",
-  });
-
   const decodedMap = new Map<string, DecodedSoilGridsGeoTiff | null>();
-  decodedMap.set("clay_0-5cm_Q0.5", canaryDecoded);
+  decodedMap.set(anchorTask.key, canaryDecoded);
 
-  const taskResults = await runWithBoundedConcurrency(tasks, MAX_CONCURRENCY, async (task) => {
-    const decoded = await fetchAndDecodeCoverage(
-      task.mapFile,
-      task.coverageId,
-      task.format,
-      layerTimeout
-    );
-    return { key: task.key, decoded };
-  });
+  // ── Stage 1B: Remaining 14 essential `Q0.5` layers (`sand`, `silt`, `clay`, `soc`, `phh2o`) ──
+  const remainingEssentialTasks = essentialTasks.slice(1);
+  const essentialResults = await runWithBoundedConcurrency(
+    remainingEssentialTasks,
+    essentialConcurrency,
+    async (task) => {
+      const decoded = await fetchCoverageWithStagePolicy(
+        task,
+        essentialLayerTimeout,
+        essentialDeadline
+      );
+      return { task, decoded };
+    }
+  );
 
-  for (const { key, decoded } of taskResults) {
-    decodedMap.set(key, decoded);
+  for (const { task, decoded } of essentialResults) {
+    decodedMap.set(task.key, decoded);
   }
+
+  // Validate all 15 essential layers at `(selectedRow, selectedCol)` BEFORE starting Stage 2
+  let essentialLayersSucceeded = 0;
+  for (const task of essentialTasks) {
+    const decoded = decodedMap.get(task.key) ?? null;
+    if (!decoded || !task.propertyId) continue;
+    const rawVal = extractPropertyAtSelectedPixel(decoded, task.propertyId);
+    if (rawVal !== null) {
+      essentialLayersSucceeded++;
+    } else {
+      layerEvents.push({
+        coverageId: task.coverageId,
+        stage: "essential",
+        attempt: 1,
+        reason: "nodata",
+        elapsedMs: 0,
+        remainingStageBudgetMs: Math.max(0, essentialDeadline - Date.now()),
+        remainingTotalBudgetMs: Math.max(0, totalDeadline - Date.now()),
+        retried: false,
+        detail: `NoData at selected pixel (${selectedRow},${selectedCol})`,
+      });
+    }
+  }
+  essentialElapsedMs = Date.now() - essentialStageStart;
+
+  if (essentialLayersSucceeded < essentialTasks.length) {
+    emitDiagnostics(false, false, essentialLayersSucceeded, 0);
+    return null;
+  }
+
+  // ── Stage 2: Optional enrichment layers (32 layers) ──
+  // Runs ONLY after all 15 essential layers have succeeded at `(selectedRow, selectedCol)`.
+  const optionalStageStart = Date.now();
+  const optionalDeadline = Math.min(
+    totalDeadline,
+    optionalStageStart + optionalBudget
+  );
+
+  const optionalResults = await runWithBoundedConcurrency(
+    optionalTasks,
+    optionalConcurrency,
+    async (task) => {
+      const decoded = await fetchCoverageWithStagePolicy(
+        task,
+        optionalLayerTimeout,
+        optionalDeadline
+      );
+      return { task, decoded };
+    }
+  );
+
+  let optionalLayersSucceeded = 0;
+  let optionalTransportFailures = 0;
+
+  for (const { task, decoded } of optionalResults) {
+    decodedMap.set(task.key, decoded);
+    if (!decoded) {
+      optionalTransportFailures++;
+      continue;
+    }
+    if (task.key === "wrb_MostProbable") {
+      const directWrb = decoded.grid[selectedRow]?.[selectedCol];
+      if (
+        directWrb !== undefined &&
+        directWrb >= 0 &&
+        directWrb < WRB_SOIL_GROUPS.length &&
+        (decoded.noDataValue === null || directWrb !== decoded.noDataValue)
+      ) {
+        optionalLayersSucceeded++;
+      } else {
+        layerEvents.push({
+          coverageId: task.coverageId,
+          stage: "optional",
+          attempt: 1,
+          reason: "nodata",
+          elapsedMs: 0,
+          remainingStageBudgetMs: Math.max(0, optionalDeadline - Date.now()),
+          remainingTotalBudgetMs: Math.max(0, totalDeadline - Date.now()),
+          retried: false,
+          detail: `NoData WRB code at selected pixel (${selectedRow},${selectedCol})`,
+        });
+      }
+    } else if (task.propertyId) {
+      const rawVal = extractPropertyAtSelectedPixel(decoded, task.propertyId);
+      if (rawVal !== null) {
+        optionalLayersSucceeded++;
+      } else {
+        layerEvents.push({
+          coverageId: task.coverageId,
+          stage: "optional",
+          attempt: 1,
+          reason: "nodata",
+          elapsedMs: 0,
+          remainingStageBudgetMs: Math.max(0, optionalDeadline - Date.now()),
+          remainingTotalBudgetMs: Math.max(0, totalDeadline - Date.now()),
+          retried: false,
+          detail: `NoData at selected pixel (${selectedRow},${selectedCol})`,
+        });
+      }
+    }
+  }
+  optionalElapsedMs = Date.now() - optionalStageStart;
 
   // ── Step 3: Assemble per-layer (0–5, 5–15, 15–30 cm) values with proper unit conversions ──
   const horizonsDetailed: SoilGridsLayerHorizon[] = [];
@@ -1260,6 +1834,7 @@ async function fetchSoilGridsWcsProfileUncached(
     phW.coveredDepthCm === 30 &&
     sandW.value + siltW.value + clayW.value > 0;
   if (!hasFullCoreDepthCoverage) {
+    emitDiagnostics(false, false, essentialLayersSucceeded, optionalLayersSucceeded);
     return null;
   }
 
@@ -1461,6 +2036,18 @@ async function fetchSoilGridsWcsProfileUncached(
     ? `ISRIC SoilGrids v2.0 (250 m) — ${wrbSoilGroup}`
     : "ISRIC SoilGrids v2.0 (250 m Coordinate Prediction)";
 
+  const optionalComplete = optionalTransportFailures === 0;
+  const enrichmentStatus: "complete" | "partial_optional" = optionalComplete
+    ? "complete"
+    : "partial_optional";
+
+  emitDiagnostics(
+    true,
+    optionalComplete,
+    essentialLayersSucceeded,
+    optionalLayersSucceeded
+  );
+
   const result: SoilGridsWcsProfileResult = {
     location: { lat, lon },
     dataTier: "soilgrids_wcs_250m",
@@ -1555,6 +2142,7 @@ async function fetchSoilGridsWcsProfileUncached(
       slope: null,
     },
     limitations,
+    enrichmentStatus,
   };
 
   return result;
@@ -1571,6 +2159,15 @@ const fetchSoilGridsWithNextCache = unstable_cache(
     if (!res) {
       // Throw inside unstable_cache so transient upstream WCS failures are not cached for 24h
       throw new Error("SOILGRIDS_WCS_UNAVAILABLE");
+    }
+    if (res.enrichmentStatus === "partial_optional") {
+      // Stash the valid essential profile briefly in scratch memory so the caller can return it,
+      // and throw so Next.js 24h persistent Data Cache does not lock in missing optional properties.
+      partialProfileScratch.set(
+        `${latRounded.toFixed(4)}_${lonRounded.toFixed(4)}`,
+        res
+      );
+      throw new Error("SOILGRIDS_WCS_PARTIAL_OPTIONAL");
     }
     return res;
   },
@@ -1596,23 +2193,50 @@ export async function fetchSoilGridsWcsProfile(
   // Cache key at 4 decimal places (~11 m, aligned with client coordinate precision)
   const cacheKey = `${lat.toFixed(4)}_${lon.toFixed(4)}`;
 
-  const useCache = !options?.bypassCache && !options?.fetchFn;
-  if (useCache) {
+  if (options?.bypassCache) {
+    evictCoordinateFromCaches(cacheKey);
+  }
+
+  const useMemoryCache = !options?.bypassCache;
+  const useNextDataCache = !options?.bypassCache && !options?.fetchFn;
+
+  if (useMemoryCache) {
     const memHit = memoryCache.get(cacheKey);
     if (memHit) {
+      if (options?.onDiagnostics) {
+        options.onDiagnostics({
+          lat,
+          lon,
+          essentialComplete: true,
+          optionalComplete: memHit.enrichmentStatus !== "partial_optional",
+          essentialLayersSucceeded: 15,
+          essentialLayersTotal: 15,
+          optionalLayersSucceeded: 32,
+          optionalLayersTotal: 32,
+          essentialElapsedMs: 0,
+          optionalElapsedMs: 0,
+          totalElapsedMs: 0,
+          remainingTotalBudgetMs: options?.totalBudgetMs ?? TOTAL_BUDGET_MS,
+          layerEvents: [],
+        });
+      }
       return {
         ...memHit,
         location: { lat, lon },
       };
     }
+  }
 
+  if (useNextDataCache && !options?.onDiagnostics) {
     try {
       const nextCached = await fetchSoilGridsWithNextCache(
         Number(lat.toFixed(4)),
         Number(lon.toFixed(4))
       );
       if (nextCached) {
-        memoryCache.set(cacheKey, nextCached);
+        if (nextCached.enrichmentStatus !== "partial_optional") {
+          memoryCache.set(cacheKey, nextCached);
+        }
         return {
           ...nextCached,
           location: { lat, lon },
@@ -1623,13 +2247,23 @@ export async function fetchSoilGridsWcsProfile(
       if (msg === "SOILGRIDS_WCS_UNAVAILABLE") {
         return null;
       }
+      if (msg === "SOILGRIDS_WCS_PARTIAL_OPTIONAL") {
+        const scratchHit = partialProfileScratch.get(cacheKey);
+        if (scratchHit) {
+          partialProfileScratch.delete(cacheKey);
+          return {
+            ...scratchHit,
+            location: { lat, lon },
+          };
+        }
+      }
       // If unstable_cache threw because we are outside Next.js incrementalCache runtime (e.g., npx tsx),
       // proceed to direct execution below.
     }
   }
 
   const fresh = await fetchSoilGridsWcsProfileUncached(lat, lon, options);
-  if (fresh && useCache) {
+  if (fresh && useMemoryCache && fresh.enrichmentStatus === "complete") {
     memoryCache.set(cacheKey, fresh);
   }
   return fresh;

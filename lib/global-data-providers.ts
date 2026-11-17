@@ -979,7 +979,9 @@ export function buildUnifiedFieldEvidenceProfile(
 
   const geography = resolveGeographicContext(lat, lon);
   const gaezIndicators = evaluateGaezV5Indicators(climate, geography);
-  const soilFallback = existingSoil ? null : resolveGlobalSoilFallback(lat, lon);
+  const isUsLocation = geography.countryCodeIso2 === "US";
+  const soilFallback =
+    existingSoil || isUsLocation ? null : resolveGlobalSoilFallback(lat, lon);
 
   const providerIds: DataProviderId[] = [
     "nasa_power",
@@ -1001,7 +1003,7 @@ export function buildUnifiedFieldEvidenceProfile(
     providerIds.push("usda_ssurgo");
   } else if (isLiveSoilGridsWcs) {
     providerIds.push("isric_soilgrids_wcs");
-  } else {
+  } else if (!isUsLocation) {
     providerIds.push("fao_hwsd_v22");
   }
 
