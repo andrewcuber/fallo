@@ -536,6 +536,140 @@ const SPECIFIC_ADMIN_RULES: SubRegionRule[] = [
 ];
 
 /**
+ * Determine whether a WGS84 coordinate lies within United States geographic coverage
+ * (Contiguous U.S., Alaska, Hawaii, Puerto Rico, U.S. Virgin Islands, Guam / CNMI,
+ * and American Samoa) where USDA NRCS SSURGO soil surveys are the primary authority.
+ *
+ * Uses piecewise border checks rather than a single coarse continental bounding box
+ * so Canadian provinces, Mexican states, Central America, and non-U.S. Caribbean
+ * islands are never misclassified as U.S. coordinates.
+ */
+export function isUnitedStatesCoordinate(
+  latInput: number,
+  lonInput: number
+): boolean {
+  const norm = normalizeCoordinates(latInput, lonInput);
+  if (!norm.valid) return false;
+  const lat = norm.lat;
+  const lon = norm.lon;
+
+  // 1. Contiguous United States (CONUS: ~24.45°N–49.39°N, ~124.85°W–66.93°W)
+  if (lat >= 24.45 && lat <= 49.39 && lon >= -124.85 && lon <= -66.93) {
+    // Southern boundary (excludes Mexico, Cuba, Bahamas, and open ocean south of Gulf/Atlantic coast)
+    let minUsLat = 24.45;
+    if (lon < -114.7) {
+      // California coast & Baja California border
+      minUsLat = 32.53;
+    } else if (lon < -111.0) {
+      // Arizona–Sonora diagonal border from Yuma (32.72°N, 114.7°W) to Nogales (31.33°N, 111.0°W)
+      minUsLat = 32.72 - ((lon + 114.7) / 3.7) * 1.39;
+    } else if (lon < -108.2) {
+      // Southern Arizona & New Mexico bootheel
+      minUsLat = 31.33;
+    } else if (lon < -106.4) {
+      // Southern New Mexico border west of El Paso
+      minUsLat = 31.78;
+    } else if (lon < -103.0) {
+      // West Texas / Big Bend Rio Grande border
+      minUsLat = 28.95;
+    } else if (lon < -99.0) {
+      // Del Rio / Eagle Pass / Laredo Rio Grande border
+      minUsLat = 27.5;
+    } else if (lon <= -96.8) {
+      // Lower Rio Grande Valley / Brownsville / South Padre Island
+      minUsLat = 25.84;
+    } else if (lon < -83.0) {
+      // Texas / Louisiana / Mississippi / Alabama / Florida Panhandle Gulf Coast
+      minUsLat = 28.85;
+    } else if (lon <= -80.0) {
+      // Florida Peninsula & Florida Keys (Cuba lies south of 23.3°N)
+      minUsLat = 24.45;
+    } else {
+      // Georgia / Carolinas / Mid-Atlantic coast (excludes Bahamas south of 27.3°N, east of 79.5°W)
+      minUsLat = 30.7;
+    }
+
+    // Northern boundary (excludes Canadian provinces: BC, AB, SK, MB, ON, QC, NB, NS)
+    let maxUsLat = 49.0;
+    if (lon < -123.2) {
+      // Olympic Peninsula, WA (excludes Vancouver Island, BC north of 48.5°N)
+      maxUsLat = 48.5;
+    } else if (lon <= -95.15) {
+      // 49th Parallel border across WA, ID, MT, ND, MN
+      maxUsLat = 49.01;
+    } else if (lon <= -94.8) {
+      // Northwest Angle, MN
+      maxUsLat = 49.39;
+    } else if (lon <= -89.0) {
+      // Northern MN / Rainy River / Pigeon River border
+      maxUsLat = 48.65;
+    } else if (lon <= -84.0) {
+      // Lake Superior / Upper Peninsula, MI
+      maxUsLat = 47.5;
+    } else if (lon <= -82.4) {
+      // Northern Lower MI / Lake Huron
+      maxUsLat = 45.85;
+    } else if (lon <= -78.9) {
+      // Lake Erie border: Ohio, NW Pennsylvania, and Western NY (excludes Southern Ontario peninsula > 42.95°N)
+      maxUsLat = 42.95;
+    } else if (lon <= -76.0) {
+      // Lake Ontario / Central & Northern NY (excludes Kingston & Ottawa, ON > 44.2°N)
+      maxUsLat = 44.2;
+    } else if (lon <= -71.5) {
+      // Northern NY, Vermont & New Hampshire 45th Parallel border (excludes Montreal & southern QC > 45.02°N)
+      maxUsLat = 45.02;
+    } else if (lon <= -67.78) {
+      // Maine up to Aroostook County
+      maxUsLat = 47.46;
+    } else {
+      // Downeast Maine (excludes New Brunswick > 46.0°N and Nova Scotia < 44.5°N)
+      if (lat < 44.5) return false;
+      maxUsLat = 46.0;
+    }
+
+    if (lat >= minUsLat && lat <= maxUsLat) {
+      return true;
+    }
+  }
+
+  // 2. Alaska (mainland, Southeast panhandle, Kodiak, and Aleutian chain; excludes Yukon & northern BC)
+  if (lat >= 54.6 && lat <= 71.4 && lon >= -168.5 && lon <= -130.0) {
+    const isCanadianYukonOrBc =
+      (lon > -141.0 && lat > 60.0) ||
+      (lon > -135.0 && lat > 59.5);
+    if (!isCanadianYukonOrBc) {
+      return true;
+    }
+  }
+  if (
+    (lat >= 51.2 && lat <= 59.0 && lon >= -180.0 && lon < -151.0) ||
+    (lat >= 51.2 && lat <= 53.5 && lon >= 172.0 && lon <= 180.0)
+  ) {
+    return true;
+  }
+
+  // 3. Hawaii
+  if (lat >= 18.85 && lat <= 22.35 && lon >= -160.6 && lon <= -154.7) {
+    return true;
+  }
+
+  // 4. Puerto Rico & U.S. Virgin Islands (USDA NRCS Caribbean Area SSURGO coverage)
+  if (lat >= 17.65 && lat <= 18.55 && lon >= -67.95 && lon <= -64.55) {
+    return true;
+  }
+
+  // 5. Guam & Northern Mariana Islands and American Samoa (USDA NRCS Pacific Basin SSURGO coverage)
+  if (lat >= 13.2 && lat <= 20.6 && lon >= 144.6 && lon <= 146.1) {
+    return true;
+  }
+  if (lat >= -14.6 && lat <= -14.1 && lon >= -171.1 && lon <= -169.4) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Resolve full geographic and administrative context for a coordinate pair,
  * automatically normalizing any wrapped longitude into [-180, 180).
  */
@@ -554,9 +688,13 @@ export function resolveGeographicContext(
   const boundarySource =
     "geoBoundaries Global Administrative Database v6.0 (William & Mary geoLab) & Natural Earth v5.1.2 1:50m Cultural Vectors";
   const boundaryLicense = "CC BY 4.0 (geoBoundaries) / Public Domain (Natural Earth)";
+  const insideUS = isUnitedStatesCoordinate(lat, lon);
 
   // 1. Check specific sub-region rules first
   for (const rule of SPECIFIC_ADMIN_RULES) {
+    if (rule.isoAlpha2 === "US" && !insideUS) {
+      continue;
+    }
     if (
       lat >= rule.latMin &&
       lat <= rule.latMax &&
@@ -589,6 +727,9 @@ export function resolveGeographicContext(
 
   // 2. Check broader macro-regions
   for (const r of REGIONS) {
+    if (r.isoAlpha2 === "US" && !insideUS) {
+      continue;
+    }
     if (
       lat >= r.box.latMin &&
       lat <= r.box.latMax &&
@@ -614,6 +755,137 @@ export function resolveGeographicContext(
         boundaryLicense,
       };
     }
+  }
+
+  // 2b. Additional U.S. states and territories outside the 5 primary CONUS region boxes
+  if (insideUS) {
+    // Puerto Rico & U.S. Virgin Islands
+    if (lat >= 17.65 && lat <= 18.55 && lon >= -67.95 && lon <= -64.55) {
+      return {
+        lat,
+        lon,
+        lonWasNormalized,
+        regionTag: "us_southeast",
+        regionLabel: "US Southeast & Caribbean",
+        countryName: "United States",
+        isoAlpha3: "USA",
+        isoAlpha2: "US",
+        countryCodeIso3: "USA",
+        countryCodeIso2: "US",
+        admin1Name: "Puerto Rico / U.S. Virgin Islands",
+        admin2Name: null,
+        hemisphere,
+        defaultWaterRegime: "rainfed",
+        boundarySource,
+        boundaryLicense,
+      };
+    }
+    // Hawaii
+    if (lat >= 18.85 && lat <= 22.35 && lon >= -160.6 && lon <= -154.7) {
+      return {
+        lat,
+        lon,
+        lonWasNormalized,
+        regionTag: "us_southwest",
+        regionLabel: "US Pacific (Hawaii)",
+        countryName: "United States",
+        isoAlpha3: "USA",
+        isoAlpha2: "US",
+        countryCodeIso3: "USA",
+        countryCodeIso2: "US",
+        admin1Name: "Hawaii",
+        admin2Name: null,
+        hemisphere,
+        defaultWaterRegime: "irrigated_or_rainfed",
+        boundarySource,
+        boundaryLicense,
+      };
+    }
+    // Alaska
+    if (lat >= 51.2) {
+      return {
+        lat,
+        lon,
+        lonWasNormalized,
+        regionTag: null,
+        regionLabel: "United States (Alaska)",
+        countryName: "United States",
+        isoAlpha3: "USA",
+        isoAlpha2: "US",
+        countryCodeIso3: "USA",
+        countryCodeIso2: "US",
+        admin1Name: "Alaska",
+        admin2Name: null,
+        hemisphere,
+        defaultWaterRegime: "rainfed",
+        boundarySource,
+        boundaryLicense,
+      };
+    }
+    // Pacific Basin U.S. territories (Guam, CNMI, American Samoa)
+    if (lon > 0 || lat < 0) {
+      return {
+        lat,
+        lon,
+        lonWasNormalized,
+        regionTag: null,
+        regionLabel: "United States (Pacific Territories)",
+        countryName: "United States",
+        isoAlpha3: "USA",
+        isoAlpha2: "US",
+        countryCodeIso3: "USA",
+        countryCodeIso2: "US",
+        admin1Name: lat < 0 ? "American Samoa" : "Guam / Northern Mariana Islands",
+        admin2Name: null,
+        hemisphere,
+        defaultWaterRegime: "rainfed",
+        boundarySource,
+        boundaryLicense,
+      };
+    }
+    // Western CONUS (California, Oregon, Washington, Idaho, Western Montana/Wyoming)
+    if (lon < -103.0) {
+      return {
+        lat,
+        lon,
+        lonWasNormalized,
+        regionTag: "us_southwest",
+        regionLabel: "US West & Pacific Northwest",
+        countryName: "United States",
+        isoAlpha3: "USA",
+        isoAlpha2: "US",
+        countryCodeIso3: "USA",
+        countryCodeIso2: "US",
+        admin1Name:
+          lat >= 42.0
+            ? "Pacific Northwest & Northern Rockies (WA / OR / ID / MT / WY)"
+            : "California & Western Valleys",
+        admin2Name: null,
+        defaultWaterRegime: "irrigated_or_rainfed",
+        hemisphere,
+        boundarySource,
+        boundaryLicense,
+      };
+    }
+    // South Texas & Western Gulf Coast (25.84°N–32.0°N, 105°W–92°W)
+    return {
+      lat,
+      lon,
+      lonWasNormalized,
+      regionTag: lon < -95.0 ? "us_great_plains" : "us_southeast",
+      regionLabel: lon < -95.0 ? "US Great Plains" : "US Southeast",
+      countryName: "United States",
+      isoAlpha3: "USA",
+      isoAlpha2: "US",
+      countryCodeIso3: "USA",
+      countryCodeIso2: "US",
+      admin1Name: "Texas / Gulf Coast",
+      admin2Name: null,
+      hemisphere,
+      defaultWaterRegime: "irrigated_or_rainfed",
+      boundarySource,
+      boundaryLicense,
+    };
   }
 
   // 3. Outside documented agricultural regions (e.g. open ocean, Antarctica, high Arctic)

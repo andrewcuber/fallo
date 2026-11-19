@@ -70,7 +70,7 @@ export default function DataSourcesPage() {
           </CardContent>
         </Card>
 
-        {/* Soil Architecture: USDA SSURGO + Regional Reference Profiles */}
+        {/* Soil Architecture: USDA SSURGO + ISRIC SoilGrids v2.0 WCS + Regional Reference Fallback */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-3">
@@ -78,32 +78,59 @@ export default function DataSourcesPage() {
                 <Database className="h-5 w-5 text-electric" />
               </div>
               <div>
-                <CardTitle>Dual-Tier Soil Architecture: USDA SSURGO Survey &amp; Global Regional Reference Profiles</CardTitle>
+                <CardTitle>Three-Tier Soil Architecture: USDA SSURGO, ISRIC SoilGrids v2.0 WCS &amp; Regional Fallback</CardTitle>
                 <CardDescription>
-                  Live US polygon survey extraction (USDA SSURGO) · Macro-regional 0–30 cm topsoil reference estimates outside SSURGO coverage (compiled from FAO HWSD v2.2 &amp; ISRIC SoilGrids v2.0)
+                  Live US polygon survey extraction (USDA SSURGO) · Live ~250 m global modeled coordinate extraction (ISRIC SoilGrids v2.0 OGC WCS) · Macro-regional 0–30 cm topsoil reference fallback
                 </CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              <strong>United States (live coordinate extraction):</strong> Inside the US, fallo queries USDA NRCS Soil Data Access (SSURGO) live at the field&apos;s coordinates for polygon map-unit components and depth-weighted 0–30 cm topsoil properties (sand, silt, clay, organic matter, pH, available water capacity, drainage, and slope).
+              <strong>United States (Tier 1 — USDA NRCS SSURGO survey):</strong> Inside the US, fallo queries USDA NRCS Soil Data Access (SSURGO) live at the field&apos;s coordinates for polygon map-unit components and depth-weighted 0–30 cm topsoil properties (sand, silt, clay, organic matter, pH, available water capacity, drainage, and slope).
             </p>
             <p className="text-sm text-muted-foreground">
-              <strong>Outside USDA SSURGO coverage (macro-regional reference estimates):</strong> Because ISRIC&apos;s public SoilGrids v2.0 REST API is paused, non-US locations do not perform live coordinate-specific raster or WCS queries. Instead, fallo resolves a representative 0–30 cm topsoil reference profile for the field&apos;s agroecological region compiled from published FAO/IIASA HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries (converting reference SOC % to OM % via the Van Bemmelen factor 1.724 and estimating AWC via Saxton &amp; Rawls 2006 pedotransfer equations).
+              <strong>
+                International (Tier 2 — ISRIC SoilGrids v2.0 OGC WCS ~250 m modeled predictions):
+              </strong>{" "}
+              Outside the US, fallo queries ISRIC&apos;s operational OGC Web Coverage Service (
+              <code>https://maps.isric.org/mapserv</code>) across the{" "}
+              <code>0–5 cm</code>, <code>5–15 cm</code>, and <code>15–30 cm</code>{" "}
+              standard depth intervals to compute a thickness-weighted{" "}
+              <code>0–30 cm</code> topsoil profile for sand, silt, clay, soil organic carbon (SOC), pH (H₂O), bulk density, coarse fragments, volumetric water retention at 33 and 1500 kPa (where available), and WRB Reference Soil Group, plus{" "}
+              <code>0–5 cm</code> surface prediction uncertainty intervals (
+              <code>Q0.05–Q0.95</code>). All properties, depth intervals, and statistics are extracted strictly from the same geographic pixel (never mixed across neighboring cells). In SoilGrids v2.0 (Poggio et al., 2021), particle-size fractions are transformed via the additive log-ratio transformation with clay as the denominator (
+              <code>ALR1 = ln(sand / clay)</code>,{" "}
+              <code>ALR2 = ln(silt / clay)</code>); quantiles (
+              <code>Q0.05</code>, <code>Q0.50</code>, <code>Q0.95</code>) are computed using Quantile Regression Forests after back-transforming individual tree predictions, whereas expected-value{" "}
+              <code>mean</code> predictions are computed using the default Random Forests algorithm. Because marginal medians (
+              <code>Q0.50</code>) do not necessarily sum to 100%, displayed fine-earth texture composition in both the main 0–30 cm card and depth breakdown uses ISRIC&apos;s expected-value{" "}
+              <code>mean</code> predictions (<code>sand_mean</code>,{" "}
+              <code>silt_mean</code>, and <code>clay_mean</code>, which are approximately compositionally closed within ±0.1 percentage points of integer{" "}
+              <code>g/kg</code> quantization) with a 100.0% display normalization adjustment (identified as a display adjustment rather than an improvement to prediction accuracy), while other soil properties and internal suitability calculations remain on{" "}
+              <code>Q0.50</code> median predictions. Organic matter is explicitly labeled as a derived estimate (
+              <code>SOC × 1.724</code>), and non-SoilGrids terrain attributes (drainage class, slope) are left{" "}
+              <code>null</code> rather than fabricated.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              <strong>Resilience Fallback (Tier 3 — Macro-regional reference estimates):</strong> If the live OGC WCS service times out, is unreachable, has incomplete core depth layers, or encounters masked pixels (<code>NoData = -32768</code> over urban centers or water bodies with no valid adjacent soil pixel within ≤ 250 m), fallo gracefully falls back to a clearly labeled 0–30 cm macro-regional topsoil reference profile compiled from published FAO/IIASA HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries.
             </p>
             <div className="flex flex-wrap gap-2">
               <span className="inline-flex items-center gap-1 rounded-full bg-electric/10 px-2.5 py-0.5 text-xs font-medium text-electric">
                 <CheckCircle2 className="h-3 w-3" />
                 USDA SSURGO (live US spatial query)
               </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
+              <span className="inline-flex items-center gap-1 rounded-full bg-electric/10 px-2.5 py-0.5 text-xs font-medium text-electric">
                 <Globe className="h-3 w-3" />
-                Non-US: Macro-regional reference estimates (not coordinate-extracted)
+                ISRIC SoilGrids v2.0 OGC WCS (~250 m live global raster extraction)
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
+                <AlertTriangle className="h-3 w-3" />
+                Macro-regional reference fallback (when WCS is masked &gt; 250 m or offline)
               </span>
             </div>
             <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground border border-border">
-              <strong>Important limitation:</strong> Global reference soil values represent typical topsoil characteristics for a broad agroecological zone, not a coordinate-specific spatial extraction or laboratory soil test. fallo labels regional reference profiles explicitly and never reports synthetic map-unit component percentages for non-SSURGO locations.
+              <strong>Important limitation:</strong> ISRIC SoilGrids v2.0 values are ~250 m global machine-learning predictions, not field measurements or laboratory soil tests. As documented by ISRIC, global digital soil mapping is designed for regional and screening context rather than farm-level management without local soil sampling; on-site soil testing is essential before making nutrient, lime, or field-management decisions. Single-layer prediction uncertainty intervals (<code>0–5 cm Q0.05–Q0.95</code>) are reported strictly for their respective depth interval and are never misrepresented as the uncertainty of an aggregated 0–30 cm profile.
             </div>
           </CardContent>
         </Card>

@@ -206,7 +206,7 @@ function SourcesAndMethodologySection({ result }: { result: StrategyResult }) {
       >
         <div className="flex items-center gap-2">
           <BookOpen className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-semibold text-foreground">Sources & Methodology</span>
+          <span className="text-sm font-semibold text-foreground">Data Sources &amp; Methodology</span>
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             {sources.length} {sources.length === 1 ? "source" : "sources"}
           </span>
@@ -232,7 +232,7 @@ function SourcesAndMethodologySection({ result }: { result: StrategyResult }) {
                 <strong>Climate inputs:</strong> NASA POWER Agroclimatology Daily API (0.5° grid, ~55 km regional context).
               </li>
               <li>
-                <strong>Soil inputs:</strong> USDA NRCS SSURGO depth-weighted 0–30 cm map-unit component averages (US) or macro-regional 0–30 cm topsoil reference estimates compiled from published FAO HWSD v2.2 &amp; ISRIC SoilGrids v2.0 regional summaries (outside SSURGO coverage).
+                <strong>Soil inputs:</strong> USDA NRCS SSURGO depth-weighted 0–30 cm map-unit component averages (US), ISRIC SoilGrids v2.0 OGC WCS ~250 m modeled 0–30 cm predictions (international coordinates with valid land pixels), or macro-regional 0–30 cm topsoil reference estimates (fallback when coordinate extraction is unavailable).
               </li>
               <li>
                 <strong>Data Coverage:</strong> Tracked separately from suitability fit so missing inputs never silently penalize or inflate scores.

@@ -47,6 +47,7 @@ import {
   SlidersHorizontal,
   ArrowRight,
   Info,
+  Database,
 } from "lucide-react";
 
 function fmt(val: number | null | undefined, decimals = 1): string {
@@ -461,28 +462,38 @@ export default function FieldCalendarPage() {
             </CardContent>
           </Card>
 
-          {/* 2. Legend for Timeline Grid */}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3.5 py-2 text-xs">
-            <span className="font-semibold text-foreground">
-              Timeline Stage Legend (Month-Level Estimates):
-            </span>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-electric text-white">
-                Plant: Est. Planting Month
+          {/* 2. Legend & Compact Timing Warning for Timeline Grid */}
+          <div className="rounded-lg border border-border bg-card px-3.5 py-2.5 text-xs space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-semibold text-foreground">
+                Timeline Stage Legend (Month-Level Estimates):
               </span>
-              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-sky-100 text-sky-900 border border-sky-300">
-                Grow: Cash Crop Active Growth
-              </span>
-              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-emerald-100 text-emerald-900 border border-emerald-300">
-                Cover: Living Cover Crop
-              </span>
-              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-amber-500 text-white">
-                Crit.: Sensitive Growth Stage
-              </span>
-              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-indigo-600 text-white">
-                Harv / Term: Harvest or Termination
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-electric text-white">
+                  Plant: Est. Planting Month
+                </span>
+                <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-sky-100 text-sky-900 border border-sky-300">
+                  Grow: Cash Crop Active Growth
+                </span>
+                <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-emerald-100 text-emerald-900 border border-emerald-300">
+                  Cover: Living Cover Crop
+                </span>
+                <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-amber-500 text-white">
+                  Crit.: Sensitive Growth Stage
+                </span>
+                <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium bg-indigo-600 text-white">
+                  Harv / Term: Harvest or Termination
+                </span>
+              </div>
             </div>
+            <p className="text-[11px] text-muted-foreground flex items-start gap-1.5 border-t border-border/60 pt-1.5">
+              <Info className="h-3.5 w-3.5 text-electric shrink-0 mt-0.5" />
+              <span>
+                <strong className="text-foreground">Approximate month-level windows:</strong>{" "}
+                Planting, critical growth stage, and harvest/termination windows are month-level regional estimates adapted to the{" "}
+                <span className="capitalize">{calendarModel.hemisphere}</span> Hemisphere—not exact calendar dates. Actual field entry depends on real-time topsoil temperature, soil moisture trafficability, and cultivar maturity group.
+              </span>
+            </p>
           </div>
 
           {/* 3. Year-by-Year Timeline Visualization + Crop Season Details */}
@@ -607,20 +618,50 @@ export default function FieldCalendarPage() {
             ))}
           </div>
 
-          {/* 4. Transparent Date & Climate Data Note */}
-          <div className="rounded-lg border border-border bg-muted/35 p-4 text-xs text-muted-foreground space-y-1">
-            <p className="font-semibold text-foreground flex items-center gap-1.5">
-              <Info className="h-4 w-4 text-electric shrink-0" />
-              About Planting &amp; Harvest Timing Estimates
-            </p>
-            <p className="leading-relaxed">
-              fallo never fabricates exact calendar dates. Scheduled planting and
-              harvest/termination periods are shown as month ranges and documented
-              regional extension / FAO windows adapted to your field&apos;s
-              hemisphere. Actual field entry dates depend on real-time topsoil
-              temperature, soil moisture trafficability, and cultivar maturity group.
-            </p>
-          </div>
+          {/* 4. Data Sources & Methodology */}
+          <details className="group rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+            <summary className="flex cursor-pointer items-center justify-between font-medium text-foreground/80 hover:text-foreground list-none">
+              <span className="flex items-center gap-2">
+                <Database className="h-3.5 w-3.5 text-muted-foreground" />
+                Data Sources &amp; Methodology
+              </span>
+              <span className="text-[11px] text-muted-foreground group-open:rotate-180 transition-transform">
+                ▼
+              </span>
+            </summary>
+            <div className="mt-3 space-y-2 border-t border-border/60 pt-3 leading-relaxed">
+              <p>
+                <strong className="text-foreground">Monthly Climate Conditions:</strong>{" "}
+                <a
+                  href="https://power.larc.nasa.gov/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-electric hover:underline"
+                >
+                  {activeClimate.source}
+                </a>{" "}
+                ({activeClimate.spatialResolution}) — 20-year monthly mean temperature (°C), monthly precipitation (mm), and daily solar radiation (MJ/m²/d)
+                {useScenarioClimate && hasActiveWhatIf && whatIfScenario
+                  ? `, adjusted by the active What-If scenario (${formatScenarioSummary(whatIfScenario)}).`
+                  : "."}
+              </p>
+              <p>
+                <strong className="text-foreground">Crop Phenology &amp; Growth Windows (Static Reference Data):</strong>{" "}
+                Documented planting windows, harvest/termination windows, and moisture- or heat-sensitive growth stages are sourced from curated agronomic records (<code>data/crops.json</code>) citing USDA ARS/NASS, FAO, and university extension publications.
+              </p>
+              <p>
+                <strong className="text-foreground">Derived Timeline &amp; Advisories:</strong>{" "}
+                <code>fallo</code> never fabricates exact calendar dates. Scheduled planting, active growth, critical stage, and harvest/termination bars are month-level estimates adapted to the{" "}
+                <span className="capitalize">{calendarModel.hemisphere}</span> Hemisphere, paired with deterministic checks for living soil cover duration, crop transition overlaps, cover-crop termination timing, legume residual nitrogen notes, and winter hardiness.{" "}
+                <Link
+                  href="/data-sources"
+                  className="text-electric hover:underline font-medium"
+                >
+                  View complete data sources catalog →
+                </Link>
+              </p>
+            </div>
+          </details>
         </>
       )}
     </div>
