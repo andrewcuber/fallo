@@ -132,7 +132,7 @@ export default function OverviewPage() {
                   <CloudSun className="h-5 w-5 text-electric" />
                 </div>
                 <CardTitle className="group-hover:text-electric transition-colors">
-                  Climate Fingerprint{dataCoverage.climate?.status !== "available" && <span className="text-red-500 font-bold ml-1" title="Incomplete or unavailable data">*</span>}
+                  Climate Fingerprint
                 </CardTitle>
                 <CardDescription>
                   See 20 years of temperature, rainfall, and growing-season trends
@@ -152,7 +152,7 @@ export default function OverviewPage() {
                   <Layers className="h-5 w-5 text-cyan" />
                 </div>
                 <CardTitle className="group-hover:text-cyan transition-colors">
-                  Soil Profile{dataCoverage.soil?.status !== "available" && <span className="text-red-500 font-bold ml-1" title="Incomplete or unavailable data">*</span>}
+                  Soil Profile
                 </CardTitle>
                 <CardDescription>
                   Review topsoil texture, water-holding capacity, drainage, and
@@ -172,7 +172,7 @@ export default function OverviewPage() {
                   <RefreshCw className="h-5 w-5 text-accent-red" />
                 </div>
                 <CardTitle className="group-hover:text-accent-red transition-colors">
-                  Crop Rotation Lab{dataCoverage.rotations?.status !== "available" && <span className="text-red-500 font-bold ml-1" title="Incomplete or unavailable data">*</span>}
+                  Crop Rotation Lab
                 </CardTitle>
                 <CardDescription>
                   Generate and compare Super Intelligence (SI)-assisted 3-year
@@ -192,7 +192,7 @@ export default function OverviewPage() {
                   <SlidersHorizontal className="h-5 w-5 text-amber-600" />
                 </div>
                 <CardTitle className="group-hover:text-amber-700 transition-colors">
-                  What-If Simulator{dataCoverage.simulator?.status !== "available" && <span className="text-red-500 font-bold ml-1" title="Incomplete or unavailable data">*</span>}
+                  What-If Simulator
                 </CardTitle>
                 <CardDescription>
                   Explore how hypothetical changes in rainfall and temperature
@@ -212,7 +212,7 @@ export default function OverviewPage() {
                   <CalendarDays className="h-5 w-5 text-emerald-600" />
                 </div>
                 <CardTitle className="group-hover:text-emerald-700 transition-colors">
-                  Field Calendar{dataCoverage.calendar?.status !== "available" && <span className="text-red-500 font-bold ml-1" title="Incomplete or unavailable data">*</span>}
+                  Field Calendar
                 </CardTitle>
                 <CardDescription>
                   View crop sequences, planting and harvesting periods, and
@@ -244,32 +244,7 @@ export default function OverviewPage() {
 
         </div>
 
-        {activeField && Object.values(dataCoverage).some(c => c.status !== "available") && (
-          <div className="mt-8 text-sm text-muted-foreground bg-muted/50 p-4 rounded-lg border border-border">
-            <p className="font-medium flex items-center gap-1.5 text-foreground">
-              <span className="text-red-500 font-bold">*</span> Some features have limited data availability for this location:
-            </p>
-            <ul className="mt-2 space-y-1 ml-4 list-disc marker:text-muted-foreground/50">
-              {Object.entries(dataCoverage).filter(([_, c]) => c.status !== "available").map(([key, c]) => {
-                const labels = {
-                  climate: "Climate Fingerprint",
-                  soil: "Soil Profile",
-                  rotations: "Crop Rotation Lab",
-                  simulator: "What-If Simulator",
-                  calendar: "Field Calendar",
-                  analogues: "Historical Climate Analogues"
-                };
-                return (
-                  <li key={key}>
-                    <span className="font-medium">{labels[key as keyof typeof labels]}:</span>{" "}
-                    {c.missingProperties.length > 0 && <span>Missing {c.missingProperties.join(", ")}. </span>}
-                    {c.reasons.join(" ")}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
+
       </section>
 
     </div>
