@@ -3,7 +3,8 @@
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useEffect } from "react";
-import { useField } from "@/components/providers";
+import { useField, useFieldEnvironmentalData } from "@/components/providers";
+import { computeFieldDataCoverage } from "@/lib/data-coverage";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,8 @@ export default function FieldLayout({
   const { fields, activeField, setActiveField, isLoaded } = useField();
 
   const field = fields.find((f) => f.id === id) ?? null;
+  const { climateRaw, soilRaw } = useFieldEnvironmentalData(field);
+  const dataCoverage = computeFieldDataCoverage(climateRaw, soilRaw);
 
   // Automatically activate the URL field when loaded
   useEffect(() => {
@@ -37,24 +40,12 @@ export default function FieldLayout({
   }, [field, activeField, setActiveField]);
 
   const tabs = [
-    { label: "Climate", href: `/field/${id}/climate`, icon: CloudSun },
-    { label: "Soil", href: `/field/${id}/soil`, icon: Layers },
-    {
-      label: "Crop Rotation Lab",
-      href: `/field/${id}/rotations`,
-      icon: RefreshCw,
-    },
-    {
-      label: "What-If Simulator",
-      href: `/field/${id}/simulator`,
-      icon: SlidersHorizontal,
-    },
-    { label: "Field Calendar", href: `/field/${id}/calendar`, icon: CalendarDays },
-    {
-      label: "Climate Analogues",
-      href: `/field/${id}/analogues`,
-      icon: GitCompare,
-    },
+    { label: "Climate", href: `/field/${id}/climate`, icon: CloudSun, id: "climate" as const },
+    { label: "Soil", href: `/field/${id}/soil`, icon: Layers, id: "soil" as const },
+    { label: "Crop Rotation Lab", href: `/field/${id}/rotations`, icon: RefreshCw, id: "rotations" as const },
+    { label: "What-If Simulator", href: `/field/${id}/simulator`, icon: SlidersHorizontal, id: "simulator" as const },
+    { label: "Field Calendar", href: `/field/${id}/calendar`, icon: CalendarDays, id: "calendar" as const },
+    { label: "Climate Analogues", href: `/field/${id}/analogues`, icon: GitCompare, id: "analogues" as const },
   ];
 
   if (!isLoaded) {
@@ -128,6 +119,7 @@ export default function FieldLayout({
             >
               <Icon className="h-4 w-4 shrink-0" />
               <span>{tab.label}</span>
+              {dataCoverage[tab.id as keyof typeof dataCoverage]?.status !== "available" && <span className="text-red-500 font-bold ml-0.5" title="Incomplete or unavailable data">*</span>}
             </Link>
           );
         })}

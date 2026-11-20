@@ -482,75 +482,98 @@ export default function SoilPage() {
           )}
 
           {/* Conditionally Rendered Aggregated Metric Cards (Only Available Properties) */}
-          {(displayModel.texture.valid ||
-            displayModel.availableMetrics.length > 0) && (
-            <div className={gridLayout.gridClass}>
-              {displayModel.texture.valid &&
-                displayModel.texture.sand !== null &&
-                displayModel.texture.silt !== null &&
-                displayModel.texture.clay !== null && (
-                  <Card
-                    className={`h-full ${gridLayout.textureColSpanClass}`.trim()}
-                  >
-                    <CardHeader className="pb-2">
-                      <div className="flex items-center gap-2">
-                        <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-electric/10">
-                          <Mountain className="h-5 w-5 text-electric" />
-                        </div>
-                        <CardTitle className="text-sm font-medium text-muted-foreground">
-                          Texture (0–30 cm)
-                        </CardTitle>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="pt-0 space-y-3">
-                      <TextureBar
-                        sand={displayModel.texture.sand}
-                        silt={displayModel.texture.silt}
-                        clay={displayModel.texture.clay}
-                      />
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">
-                          Sand{" "}
-                          <span className="font-medium text-foreground tabular-nums">
-                            {displayModel.texture.sand.toFixed(1)}%
-                          </span>
-                        </span>
-                        <span className="text-muted-foreground">
-                          Silt{" "}
-                          <span className="font-medium text-foreground tabular-nums">
-                            {displayModel.texture.silt.toFixed(1)}%
-                          </span>
-                        </span>
-                        <span className="text-muted-foreground">
-                          Clay{" "}
-                          <span className="font-medium text-foreground tabular-nums">
-                            {displayModel.texture.clay.toFixed(1)}%
-                          </span>
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
 
-              {displayModel.availableMetrics.map((metric, idx) => {
-                const isLast =
-                  idx === displayModel.availableMetrics.length - 1;
-                const extraColSpan = isLast
-                  ? gridLayout.lastMetricColSpanClass
-                  : "";
-                return (
-                  <MetricCard
-                    key={metric.key}
-                    icon={getMetricIcon(metric.key)}
-                    label={metric.label}
-                    formattedValue={metric.formattedValue}
-                    unit={metric.unit}
-                    className={extraColSpan}
-                  />
-                );
+          <div className={gridLayout?.gridClass || "grid gap-4 md:grid-cols-2 lg:grid-cols-3"}>
+              {displayModel.propertyStatuses.texture === 'available' ? (
+                <Card className={gridLayout?.textureColSpanClass || "md:col-span-2 lg:col-span-2"}>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center gap-3">
+                      <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-space/10">
+                        <Mountain className="h-5 w-5 text-space" />
+                      </div>
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        Texture Class
+                      </CardTitle>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-0 space-y-3">
+                    <TextureBar
+                      sand={displayModel.texture.sand || 0}
+                      silt={displayModel.texture.silt || 0}
+                      clay={displayModel.texture.clay || 0}
+                    />
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">
+                        Sand{" "}
+                        <span className="font-medium text-foreground tabular-nums">
+                          {displayModel.texture.sand?.toFixed(1)}%
+                        </span>
+                      </span>
+                      <span className="text-muted-foreground">
+                        Silt{" "}
+                        <span className="font-medium text-foreground tabular-nums">
+                          {displayModel.texture.silt?.toFixed(1)}%
+                        </span>
+                      </span>
+                      <span className="text-muted-foreground">
+                        Clay{" "}
+                        <span className="font-medium text-foreground tabular-nums">
+                          {displayModel.texture.clay?.toFixed(1)}%
+                        </span>
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <MissingMetricCard
+                  label="Texture Class"
+                  icon={<Mountain className="h-5 w-5 text-muted-foreground" />}
+                  status={displayModel.propertyStatuses.texture}
+                  isFallback={displayModel.dataTier === "regional_reference_fallback"}
+                  className={gridLayout?.textureColSpanClass || "md:col-span-2 lg:col-span-2"}
+                />
+              )}
+
+              {[
+                { key: "om", label: "Organic Matter" },
+                { key: "ph", label: "pH" },
+                { key: "awc", label: "AWC" },
+                { key: "slope", label: "Slope" },
+                { key: "drainage", label: "Drainage" }
+              ].map(({ key, label }, idx) => {
+                const status = displayModel.propertyStatuses[key as keyof typeof displayModel.propertyStatuses];
+
+                // We fake the isLast for grid classes to maintain the original look
+                const isLast = idx === 4;
+                const extraColSpan = isLast && gridLayout ? gridLayout.lastMetricColSpanClass : "";
+
+                if (status === "available") {
+                  const metric = displayModel.availableMetrics.find(m => m.key === key);
+                  if (!metric) return null;
+                  return (
+                    <MetricCard
+                      key={metric.key}
+                      icon={getMetricIcon(metric.key as any)}
+                      label={metric.label}
+                      formattedValue={metric.formattedValue}
+                      unit={metric.unit}
+                      className={extraColSpan}
+                    />
+                  );
+                } else {
+                  return (
+                    <MissingMetricCard
+                      key={key}
+                      label={label}
+                      icon={getMetricIcon(key as any)}
+                      status={status}
+                      isFallback={displayModel.dataTier === "regional_reference_fallback"}
+                      className={extraColSpan}
+                    />
+                  );
+                }
               })}
-            </div>
-          )}
+          </div>
 
           {/* Soil Profile / Component Breakdown (Omitted when no component records exist) */}
           {displayModel.componentTable.visible && (
@@ -1028,6 +1051,45 @@ export default function SoilPage() {
         </>
       )}
     </div>
+  );
+}
+
+
+function MissingMetricCard({
+  icon,
+  label,
+  status,
+  isFallback,
+  className = "",
+}: {
+  icon: React.ReactNode;
+  label: string;
+  status: string;
+  isFallback?: boolean;
+  className?: string;
+}) {
+  let reason = "Unavailable";
+  if (status === "missing_at_location") reason = "No data at this location";
+  else if (status === "provider_unsupported" && isFallback) reason = "Not in regional fallback";
+  else if (status === "provider_unsupported") reason = "Not supported by provider";
+
+  return (
+    <Card className={`h-full bg-muted/30 border-dashed ${className}`.trim()}>
+      <CardHeader className="pb-2 opacity-50">
+        <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-muted-foreground/10 grayscale">
+          {icon}
+        </div>
+        <CardTitle className="text-sm font-medium text-muted-foreground mt-2">
+          {label}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
+          <Info className="h-4 w-4 shrink-0" />
+          <span className="leading-tight">{reason}</span>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

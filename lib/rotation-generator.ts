@@ -257,6 +257,7 @@ export interface AIProviderClient {
 
 export { DEFAULT_AI_TIMEOUT_MS };
 export const DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 3500;
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
 export const DEFAULT_GEMINI_ENTERPRISE_MODEL = "gemini-4-argon";
 export const DEFAULT_GOOGLE_CLOUD_LOCATION = "global";
 
@@ -339,6 +340,7 @@ export function sanitizeGenerationErrorMessage(
   const trimmed = (rawMessage ?? "").trim();
   if (!trimmed) return fallback;
   return trimmed
+    .replace(/AIza[0-9A-Za-z-_]{35}/g, "[REDACTED_API_KEY]")
     .replace(/ya29\.[A-Za-z0-9._-]+/g, "[REDACTED_TOKEN]")
     .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_OIDC_TOKEN]")
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
@@ -359,7 +361,7 @@ export function describeMissingAIProviderReason(
 ): string {
   const aiEnabledRaw = env.FALLO_AI_ENABLED?.trim().toLowerCase();
   if (aiEnabledRaw === "false" || aiEnabledRaw === "0") {
-    return "SI rotation generation is disabled because FALLO_AI_ENABLED is set to false. Set FALLO_AI_ENABLED=true and configure FALLO_AI_PROVIDER / GOOGLE_CLOUD_PROJECT to enable AI-assisted rotation generation.";
+    return "SI rotation generation is disabled because FALLO_AI_ENABLED is set to false. Set FALLO_AI_ENABLED=true and configure GEMINI_API_KEY / FALLO_AI_PROVIDER / GOOGLE_CLOUD_PROJECT to enable AI-assisted rotation generation.";
   }
 
   const vercelEnv = env.VERCEL_ENV?.trim().toLowerCase();
@@ -369,7 +371,7 @@ export function describeMissingAIProviderReason(
       missingWif.length > 0
         ? ` (missing in Preview: ${missingWif.join(", ")})`
         : "";
-    return `SI rotation generation is not enabled on Vercel Preview deployments because Google Cloud Workload Identity Federation and Gemini Enterprise credentials (FALLO_AI_PROVIDER, GOOGLE_CLOUD_PROJECT, GCP_*) are scoped to the Production environment${missingNote} and local development (via Google Cloud ADC). Use Preview deployments to verify UI, Climate, Soil, What-If Simulator, Field Calendar, and Climate Analogues, and run live SI rotation generation on localhost or Vercel Production.`;
+    return `SI rotation generation is not enabled on Vercel Preview deployments because Google Cloud Workload Identity Federation and Gemini Enterprise credentials (FALLO_AI_PROVIDER, GOOGLE_CLOUD_PROJECT, GCP_*) are scoped to the Production environment${missingNote} and local development (via Google Cloud ADC). To run on Preview deployments, configure GEMINI_API_KEY, or use Preview deployments to verify UI, Climate, Soil, What-If Simulator, Field Calendar, and Climate Analogues, and run live SI rotation generation on localhost or Vercel Production.`;
   }
 
   if (isVercelDeploymentEnvironment(env)) {
@@ -384,10 +386,10 @@ export function describeMissingAIProviderReason(
       missingVars.length > 0
         ? ` Missing Vercel OIDC Workload Identity Federation environment variables: ${missingVars.join(", ")}.`
         : "";
-    return `No runtime AI provider is configured for this Vercel deployment. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and FALLO_AI_PROVIDER=gemini-enterprise along with Vercel OIDC Workload Identity Federation variables.${missingSuffix}`;
+    return `No runtime AI provider is configured for this Vercel deployment. Set GEMINI_API_KEY in your Vercel Project Environment Variables, or set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and FALLO_AI_PROVIDER=gemini-enterprise along with Vercel OIDC Workload Identity Federation variables.${missingSuffix}`;
   }
 
-  return "No runtime AI provider is configured. Set GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials via `gcloud auth application-default login`), or set FALLO_AI_PROVIDER, to enable AI-assisted rotation generation.";
+  return "No runtime AI provider is configured. Set GEMINI_API_KEY in your .env.local file, or configure GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_PROJECT, and GOOGLE_CLOUD_LOCATION (with Application Default Credentials via `gcloud auth application-default login`), or set FALLO_AI_PROVIDER, to enable AI-assisted rotation generation.";
 }
 
 /**
@@ -523,13 +525,242 @@ export interface GeminiGenerateContentResponse {
 
 export interface GeminiClientLike {
   models: {
-    generateContent(params: GeminiGenerateContentRequest): Promise<GeminiGenerateContentResponse>;
+    generateContent: (params: any) => Promise<any>;
+  };
+  interactions?: {
+    create: (params: any, options?: any) => Promise<any>;
   };
 }
 
 export type GeminiClientFactory = (
   options: GoogleGenAIOptions
 ) => GeminiClientLike | Promise<GeminiClientLike>;
+
+/**
+ * Official `@google/genai` provider for Google's Gemini Developer API.
+ *
+ * Authenticates directly with the Gemini Developer API via `process.env.GEMINI_API_KEY`.
+ * - No Google Cloud project, IAM, Workload Identity Federation, or billing account required.
+ * - Free-tier friendly with standard Gemini Developer API limits.
+ * - Configurable model via `GEMINI_MODEL` (defaults to "gemini-2.5-flash").
+ * - Surfaces clear quota-exceeded (429 / RESOURCE_EXHAUSTED) and authentication errors.
+ * - Redacts Google API keys (`AIza...`) and OAuth tokens from all error messages.
+ * - Disables SDK automatic retries (`retryOptions: { attempts: 1 }`) to maintain responsive timeouts.
+ * - Propagates `AbortSignal` and timeout (default 120,000 ms) to the underlying request.
+ */
+export class GeminiDeveloperProvider implements AIProviderClient {
+  providerName: string;
+  modelName: string;
+  lastUsageMetadata?: AIUsageMetadata;
+  readonly apiKey: string;
+  readonly model: string;
+  private defaultTimeoutMs: number;
+  private clientFactory: GeminiClientFactory;
+
+  constructor(opts: {
+    providerName?: string;
+    apiKey: string;
+    model?: string;
+    timeoutMs?: number;
+    clientFactory?: GeminiClientFactory;
+  }) {
+    const trimmedApiKey = opts.apiKey?.trim();
+    if (!trimmedApiKey) {
+      throw new Error(
+        "GeminiDeveloperProvider requires a non-empty Gemini API key (GEMINI_API_KEY)."
+      );
+    }
+    this.providerName = opts.providerName ?? "gemini";
+    this.apiKey = trimmedApiKey;
+    this.model = opts.model?.trim() || DEFAULT_GEMINI_MODEL;
+    this.modelName = this.model;
+    this.defaultTimeoutMs = opts.timeoutMs ?? DEFAULT_AI_TIMEOUT_MS;
+    this.clientFactory =
+      opts.clientFactory ??
+      (async (sdkOptions: GoogleGenAIOptions) => {
+        const { GoogleGenAI } = await import("@google/genai");
+        return new GoogleGenAI(sdkOptions);
+      });
+  }
+
+  private sanitizeErrorMessage(raw: string): string {
+    return raw
+      .replace(/AIza[0-9A-Za-z-_]{35}/g, "[REDACTED_API_KEY]")
+      .replace(/ya29\.[A-Za-z0-9._-]+/g, "[REDACTED_TOKEN]")
+      .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_OIDC_TOKEN]")
+      .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+  }
+
+  private isQuotaOrRateLimitError(msg: string): boolean {
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes("429") ||
+      lower.includes("resource_exhausted") ||
+      lower.includes("quota exceeded") ||
+      lower.includes("rate limit") ||
+      lower.includes("too many requests") ||
+      lower.includes("queries per minute") ||
+      lower.includes("tokens per minute") ||
+      lower.includes("exceeded your current quota")
+    );
+  }
+
+  private isAuthError(msg: string): boolean {
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes("api_key_invalid") ||
+      lower.includes("api key not valid") ||
+      lower.includes("invalid api key") ||
+      lower.includes("unauthenticated") ||
+      lower.includes("permission_denied") ||
+      lower.includes("status: 401") ||
+      lower.includes("code: 401") ||
+      lower.includes("status: 403") ||
+      lower.includes("code: 403")
+    );
+  }
+
+  private extractUsageMetadata(raw?: GeminiUsageMetadata | any): AIUsageMetadata | undefined {
+    if (!raw) return undefined;
+
+    const promptCount = raw.promptTokenCount ?? raw.total_input_tokens;
+    const candidatesCount = raw.candidatesTokenCount ?? raw.total_output_tokens;
+    const totalCount = raw.totalTokenCount ?? raw.total_tokens;
+    const thoughtsCount = raw.thoughtsTokenCount ?? raw.total_thought_tokens;
+
+    const hasAnyCount =
+      typeof promptCount === "number" ||
+      typeof candidatesCount === "number" ||
+      typeof thoughtsCount === "number" ||
+      typeof totalCount === "number";
+
+    if (!hasAnyCount) return undefined;
+    return {
+      promptTokenCount: promptCount,
+      candidatesTokenCount: candidatesCount,
+      thoughtsTokenCount: thoughtsCount,
+      totalTokenCount: totalCount,
+      estimatedCostUsd: null,
+    };
+  }
+
+  async generate({
+    prompt,
+    maxTokens = DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+    signal,
+    timeoutMs = this.defaultTimeoutMs,
+  }: {
+    prompt: string;
+    maxTokens?: number;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): Promise<string> {
+    this.lastUsageMetadata = undefined;
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        const err = new Error("Timeout");
+        err.name = "TimeoutError";
+        reject(err);
+      }, timeoutMs);
+    });
+
+    const onExternalAbort = () => {
+      controller.abort();
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        if (timer) clearTimeout(timer);
+        throw new Error(`AI provider (${this.providerName}) request was aborted.`);
+      }
+      signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+
+    const httpOptions = {
+      timeout: timeoutMs,
+      retryOptions: {
+        attempts: 1,
+      },
+    };
+
+    try {
+      const sdkOptions: GoogleGenAIOptions = {
+        apiKey: this.apiKey,
+        // Explicitly disable Vertex AI flags so the SDK routes to generativelanguage.googleapis.com
+        // even when GOOGLE_GENAI_USE_ENTERPRISE=true or GOOGLE_GENAI_USE_VERTEXAI=true is present
+        // in the environment (e.g. from a legacy .env.local or ADC configuration).
+        enterprise: false,
+        vertexai: false,
+        httpOptions,
+      };
+      const client = await this.clientFactory(sdkOptions);
+
+      const response = (await Promise.race([
+        client.interactions!.create(
+          {
+            model: this.model,
+            input:
+              "Generate 3 field-specific 3-year crop rotation strategies (soil_health, water_resilience, crop_diversity) as JSON matching the required schema.",
+            system_instruction: prompt,
+            response_format: { type: "object" },
+            generation_config: {
+              max_output_tokens: maxTokens,
+            },
+          },
+          {
+            signal: controller.signal,
+            httpOptions,
+          }
+        ),
+        timeoutPromise,
+      ])) as any;
+
+      this.lastUsageMetadata = this.extractUsageMetadata(response?.usage);
+
+      const content = response?.output_text?.trim();
+      if (!content) {
+        throw new Error("Empty response from Gemini Developer API provider.");
+      }
+      return content;
+    } catch (err) {
+      if (timedOut || (err instanceof Error && err.name === "TimeoutError")) {
+        throw new Error(
+          `AI provider (${this.providerName}) request timed out after ${timeoutMs}ms.`
+        );
+      }
+      if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+        throw new Error(`AI provider (${this.providerName}) request was aborted.`);
+      }
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const safeMessage = this.sanitizeErrorMessage(rawMessage);
+
+      if (this.isQuotaOrRateLimitError(safeMessage)) {
+        throw new Error(
+          `Gemini API quota or rate limit exceeded for model "${this.model}". If you are on the free tier, please wait a minute before generating again, or check your quota in Google AI Studio.`
+        );
+      }
+
+      if (this.isAuthError(safeMessage)) {
+        throw new Error(
+          `Gemini API authentication failed for model "${this.model}": ${safeMessage}. Please check that GEMINI_API_KEY is valid in your environment variables (.env.local or Vercel).`
+        );
+      }
+
+      throw new Error(safeMessage);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (signal) {
+        signal.removeEventListener("abort", onExternalAbort);
+      }
+    }
+  }
+}
 
 /**
  * Official `@google/genai` provider for Google Cloud's Gemini Enterprise Agent Platform.
@@ -657,19 +888,26 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
     );
   }
 
-  private extractUsageMetadata(raw?: GeminiUsageMetadata): AIUsageMetadata | undefined {
+  private extractUsageMetadata(raw?: GeminiUsageMetadata | any): AIUsageMetadata | undefined {
     if (!raw) return undefined;
+
+    const promptCount = raw.promptTokenCount ?? raw.total_input_tokens;
+    const candidatesCount = raw.candidatesTokenCount ?? raw.total_output_tokens;
+    const totalCount = raw.totalTokenCount ?? raw.total_tokens;
+    const thoughtsCount = raw.thoughtsTokenCount ?? raw.total_thought_tokens;
+
     const hasAnyCount =
-      typeof raw.promptTokenCount === "number" ||
-      typeof raw.candidatesTokenCount === "number" ||
-      typeof raw.thoughtsTokenCount === "number" ||
-      typeof raw.totalTokenCount === "number";
+      typeof promptCount === "number" ||
+      typeof candidatesCount === "number" ||
+      typeof thoughtsCount === "number" ||
+      typeof totalCount === "number";
+
     if (!hasAnyCount) return undefined;
     return {
-      promptTokenCount: raw.promptTokenCount,
-      candidatesTokenCount: raw.candidatesTokenCount,
-      thoughtsTokenCount: raw.thoughtsTokenCount,
-      totalTokenCount: raw.totalTokenCount,
+      promptTokenCount: promptCount,
+      candidatesTokenCount: candidatesCount,
+      thoughtsTokenCount: thoughtsCount,
+      totalTokenCount: totalCount,
       estimatedCostUsd: null,
     };
   }
@@ -814,19 +1052,14 @@ export interface ResolveRuntimeAIProviderOptions {
 /**
  * Resolve the configured runtime AI provider from environment variables.
  *
- * Primary provider: Google Cloud Gemini Enterprise Agent Platform (`@google/genai`)
- * - In local development: Authenticated via Application Default Credentials (ADC).
- * - In deployed Vercel environments (`VERCEL=1` or `VERCEL_ENV=production|preview`):
- *   Authenticated via Vercel OIDC (`getVercelOidcToken`) and Google Cloud Workload Identity
- *   Federation (`GCP_PROJECT_NUMBER`, `GCP_SERVICE_ACCOUNT_EMAIL`,
- *   `GCP_WORKLOAD_IDENTITY_POOL_ID`, `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID`).
- *   If running on Vercel and any WIF variable is missing, returns `null` so production SI
- *   generation is not enabled before authentication is configured.
+ * Primary provider: Google Gemini Developer API (`@google/genai`)
+ * - Reads API key exclusively from `process.env.GEMINI_API_KEY` on the server.
+ * - Configurable model via `process.env.GEMINI_MODEL` (defaults to "gemini-2.5-flash").
+ * - Does not require Google Cloud project IDs, IAM roles, or Workload Identity Federation.
  *
- * Activated when:
- * - `FALLO_AI_ENABLED` is not `"false"`
- * - `GOOGLE_GENAI_USE_ENTERPRISE=true` (or `FALLO_AI_PROVIDER` is `"gemini-enterprise"` / `"google-genai"` / `"vertex"` / unset)
- * - AND `GOOGLE_CLOUD_PROJECT` is set (plus the 4 `GCP_*` WIF variables when deployed on Vercel).
+ * Legacy fallback: Google Cloud Gemini Enterprise Agent Platform (`@google/genai`)
+ * - In local development: Authenticated via Application Default Credentials (ADC).
+ * - In deployed Vercel environments: Authenticated via Vercel OIDC + WIF.
  *
  * Optional fallback: `OpenAICompatibleProvider` when `FALLO_AI_PROVIDER` is set to
  * an OpenAI-compatible provider name and `FALLO_AI_API_KEY` is provided.
@@ -849,11 +1082,13 @@ export function resolveRuntimeAIProvider(
       ? geminiClientFactoryOrOptions.oidcTokenSupplier
       : undefined;
 
+  const geminiApiKey = env.GEMINI_API_KEY?.trim();
   const providerPref = env.FALLO_AI_PROVIDER?.trim().toLowerCase();
   const useEnterpriseRaw = env.GOOGLE_GENAI_USE_ENTERPRISE?.trim().toLowerCase();
   const gcpProject = env.GOOGLE_CLOUD_PROJECT?.trim();
   const gcpLocation = env.GOOGLE_CLOUD_LOCATION?.trim() || DEFAULT_GOOGLE_CLOUD_LOCATION;
-  const configuredModel = env.FALLO_AI_MODEL?.trim() || env.GOOGLE_GENAI_MODEL?.trim();
+  const configuredModel =
+    env.GEMINI_MODEL?.trim() || env.FALLO_AI_MODEL?.trim() || env.GOOGLE_GENAI_MODEL?.trim();
   const apiKey = env.FALLO_AI_API_KEY?.trim();
 
   const parsedTimeout = Number(env.FALLO_AI_TIMEOUT_MS);
@@ -867,9 +1102,21 @@ export function resolveRuntimeAIProvider(
     providerPref === "gemini-enterprise" ||
     providerPref === "google-genai" ||
     providerPref === "vertex" ||
-    providerPref === "gemini";
+    providerPref === "gemini" ||
+    providerPref === "gemini-developer";
 
-  // 1. Explicit OpenAI-compatible provider when requested and API key is present
+  // 1. Primary: Google Gemini Developer API via @google/genai and GEMINI_API_KEY
+  if (geminiApiKey) {
+    return new GeminiDeveloperProvider({
+      providerName: "gemini",
+      apiKey: geminiApiKey,
+      model: configuredModel || DEFAULT_GEMINI_MODEL,
+      timeoutMs,
+      clientFactory: geminiClientFactory,
+    });
+  }
+
+  // 2. Explicit OpenAI-compatible provider when requested and API key is present
   if (providerPref && !isGeminiProviderPref) {
     if (!apiKey) return null;
     return new OpenAICompatibleProvider({
@@ -881,7 +1128,7 @@ export function resolveRuntimeAIProvider(
     });
   }
 
-  // 2. Google Cloud Gemini Enterprise Agent Platform via ADC (local) or Vercel OIDC WIF (deployed Vercel)
+  // 3. Fallback: Google Cloud Gemini Enterprise Agent Platform via ADC (local) or Vercel OIDC WIF (deployed Vercel)
   const enterpriseEnabled = useEnterpriseRaw !== "false";
   if (isGeminiProviderPref && enterpriseEnabled && gcpProject) {
     const onVercelDeployment = isVercelDeploymentEnvironment(env);

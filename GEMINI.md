@@ -28,10 +28,11 @@
 - **Agroecological Classification (`lib/agro-classifier.ts`):** Classifies fields across 13 global agroecological zones (`temperate_humid`, `semi_arid_temperate`, `subtropical_humid`, `temperate_mediterranean`, `tropical_humid`, `tropical_subhumid`, `tropical_savanna`, `tropical_monsoon`, `tropical_semi_arid`, `arid_irrigated`, `continental_cool`, `boreal_subarctic`, `highland_montane`, `unknown`) along with moisture zone, estimated Length of Growing Period (LGP), and water regime.
 - **Separation of Concerns:** Keep agroecological similarity (`applicableGroups`) distinct from geographic/regional crop availability (`supportedRegions` + `lib/region.ts`).
 - **Authoritative Deterministic Validation (`lib/rotation-validator.ts`):** SI-assisted proposals (`lib/rotation-generator.ts`, `/api/rotations/generate`) may only arrange verified catalog crops for the field's group and region. Every proposal must pass `validateProposal()` (backed by `ROTATION_COMPATIBILITY_RULES`) before being scored, displayed, or persisted.
-- **Runtime SI Provider (`GeminiEnterpriseProvider` in `lib/rotation-generator.ts`):**
-  - Uses Google's official `@google/genai` SDK (`new GoogleGenAI({ enterprise: true, project, location, googleAuthOptions, httpOptions })`) on the Node.js server runtime (`export const runtime = "nodejs"; export const maxDuration = 120;` in `app/api/rotations/generate/route.ts`).
-  - **Production / Vercel Authentication:** Uses `@vercel/oidc` (`getVercelOidcToken`) and `google-auth-library` (`ExternalAccountClient.fromJSON`) for Google Cloud Workload Identity Federation (`GCP_PROJECT_NUMBER`, `GCP_SERVICE_ACCOUNT_EMAIL`, `GCP_WORKLOAD_IDENTITY_POOL_ID`, `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID`).
-  - **Local Development Authentication:** Uses Google Cloud Application Default Credentials (ADC) when `VERCEL_ENV` is unset or `"development"`.
+- **Runtime SI Provider (`GeminiDeveloperProvider` in `lib/rotation-generator.ts`):**
+  - Uses Google's official `@google/genai` SDK (`new GoogleGenAI({ apiKey, httpOptions })`) on the Node.js server runtime (`export const runtime = "nodejs"; export const maxDuration = 120;` in `app/api/rotations/generate/route.ts`).
+  - Reads API key exclusively from `process.env.GEMINI_API_KEY` on the server (no Google Cloud billing or Vertex AI required).
+  - Configurable model via `process.env.GEMINI_MODEL` (defaults to `gemini-2.5-flash`).
+  - Enforces timeouts, AbortSignal forwarding, and clear quota-exceeded / rate limit handling with API key redaction.
 - **No Predefined Static Rotations in Farmer UI:** Farmer-facing pages never display static predefined 3-year rotations as field recommendations. Before generation, the Crop Rotation Lab displays the field profile, Farmer Priority Weights, the **Generate Field-Specific Plans** action, and the three Planning Objectives (*Soil Health Building*, *Water Resilience*, *Crop Diversity & Pest Break*).
 
 ## Stack Versions (Locked)
@@ -40,7 +41,7 @@
 - React 19
 - TypeScript 5.7
 - Tailwind CSS 3.4 + shadcn/ui primitives
-- `@google/genai` 3.3.x + `@vercel/oidc` + `google-auth-library`
+- `@google/genai` 3.3.x
 - Recharts 3.x
 - Leaflet 1.9 + React Leaflet 5.x
 - Zod 3.x

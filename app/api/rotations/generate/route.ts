@@ -13,8 +13,7 @@ import {
 } from "@/lib/rotation-generator";
 
 /**
- * Node.js runtime is required so `@google/genai`, `@vercel/oidc`, and `google-auth-library`
- * can resolve Vercel OIDC Workload Identity Federation credentials or local ADC on the server.
+ * Node.js runtime is required for server-side `@google/genai` execution.
  */
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -22,13 +21,10 @@ export const maxDuration = 120;
 /**
  * Secure server-side route for AI-assisted rotation generation.
  *
- * - NEVER exposes AI credentials, OIDC tokens, or ADC tokens to the client.
- * - Uses Google Cloud's Gemini Enterprise Agent Platform (`@google/genai` with
- *   `enterprise: true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`) authenticated via:
- *   - Vercel OIDC + Google Cloud Workload Identity Federation (`ExternalAccountClient.fromJSON`)
- *     on deployed Vercel environments (`GCP_PROJECT_NUMBER`, `GCP_SERVICE_ACCOUNT_EMAIL`,
- *     `GCP_WORKLOAD_IDENTITY_POOL_ID`, `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID`).
- *   - Application Default Credentials (ADC) in local development.
+ * - NEVER exposes AI credentials or GEMINI_API_KEY to the client.
+ * - Uses Google's official `@google/genai` SDK with the Gemini Developer API.
+ * - Reads API key exclusively from process.env.GEMINI_API_KEY on the server.
+ * - Model is configurable via GEMINI_MODEL (defaults to "gemini-2.5-flash").
  * - Validates input strictly with GenerationRequestSchema (Zod).
  * - Always runs deterministic classification and available-crop filtering,
  *   even when no runtime AI provider is configured (returning 503 with classification).

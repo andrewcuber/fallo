@@ -38,6 +38,8 @@ import {
   getAvailableCropsForContext,
   GenerationRequestSchema,
   OpenAICompatibleProvider,
+  GeminiDeveloperProvider,
+  DEFAULT_GEMINI_MODEL,
   GeminiEnterpriseProvider,
   resolveRuntimeAIProvider,
   parseGeminiThinkingLevel,
@@ -1386,6 +1388,319 @@ test("isReferenceStrategyApplicable and getAvailableCropsForContext gate regiona
   }
 });
 
+
+// ─── 6B. Gemini Developer API (@google/genai) Provider Tests ─────────
+
+section("Gemini Developer API (@google/genai) Provider");
+
+test("resolveRuntimeAIProvider prioritizes GEMINI_API_KEY and initializes GeminiDeveloperProvider with default gemini-3.8-flash", () => {
+  const provider = resolveRuntimeAIProvider({
+    GEMINI_API_KEY: "AIzaSyTestDeveloperApiKey1234567890",
+  });
+
+  assert.ok(provider instanceof GeminiDeveloperProvider);
+  const gemini = provider as GeminiDeveloperProvider;
+  assert.equal(gemini.providerName, "gemini");
+  assert.equal(gemini.apiKey, "AIzaSyTestDeveloperApiKey1234567890");
+  assert.equal(gemini.model, DEFAULT_GEMINI_MODEL);
+  assert.equal(gemini.model, "gemini-3.8-flash");
+
+  // Configurable model via GEMINI_MODEL
+  const customModelProvider = resolveRuntimeAIProvider({
+    GEMINI_API_KEY: "AIzaSyTestDeveloperApiKey1234567890",
+    GEMINI_MODEL: "gemini-2.0-flash",
+  }) as GeminiDeveloperProvider;
+  assert.ok(customModelProvider instanceof GeminiDeveloperProvider);
+  assert.equal(customModelProvider.model, "gemini-2.0-flash");
+
+  // Throws on empty or whitespace apiKey
+  assert.throws(
+    () => new GeminiDeveloperProvider({ apiKey: "   " }),
+    /requires a non-empty Gemini API key/
+  );
+});
+
+test("GeminiDeveloperProvider initializes @google/genai with { apiKey, httpOptions }, default timeout, and extracts real usage", async () => {
+  let capturedSdkOptions = null;
+  let capturedModel: any = null;
+  let capturedConfig: any = undefined;
+
+  const s1 = makeValidStrategy("soil_health_field", "Soil Health Plan");
+  s1.archetype = "soil_health";
+  const s2 = makeValidStrategy("water_resilience_field", "Water Resilience Plan");
+  s2.archetype = "water_resilience";
+  const s3 = makeValidStrategy("crop_diversity_field", "Crop Diversity Plan");
+  s3.archetype = "crop_diversity";
+
+  const devProvider = new GeminiDeveloperProvider({
+    apiKey: "AIzaSyTestDeveloperApiKey1234567890",
+    model: "gemini-3.8-flash",
+    clientFactory: (opts: any) => {
+      capturedSdkOptions = opts;
+      return {
+        models: { generateContent: async (params: any) => ({}) },
+        interactions: {
+          create: async (params, options) => {
+            capturedModel = params.model;
+            capturedConfig = params.generation_config;
+            return {
+              output_text: JSON.stringify({
+                strategies: [s1, s2, s3],
+                rationale: "Generated 3 field-specific strategies via Gemini Developer API (gemini-3.8-flash).",
+              }),
+              usage: {
+                promptTokenCount: 850,
+                candidatesTokenCount: 620,
+                thoughtsTokenCount: 95,
+                totalTokenCount: 1565,
+              },
+            };
+          },
+        },
+      };
+    },
+  });
+
+  const result = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    devProvider
+  );
+
+  assert.deepEqual(capturedSdkOptions, {
+    apiKey: "AIzaSyTestDeveloperApiKey1234567890",
+    enterprise: false,
+    vertexai: false,
+    httpOptions: {
+      timeout: 120_000,
+      retryOptions: {
+        attempts: 1,
+      },
+    },
+  });
+  assert.equal(capturedModel, "gemini-3.8-flash");
+  assert.equal(capturedConfig?.max_output_tokens, 3500);
+  assert.equal(result.proposals.length, 3);
+  assert.equal(result.supportStatus, "supported");
+  assert.equal(result.aiUnavailableReason, undefined);
+  assert.equal(devProvider.lastUsageMetadata?.totalTokenCount, 1565);
+});
+
+test("GeminiDeveloperProvider handles malformed responses, unsupported crops, and invalid crop sequences safely", async () => {
+  const malformedGemini = new GeminiDeveloperProvider({
+    apiKey: "AIzaSyTestDeveloperApiKey1234567890",
+    clientFactory: () => ({
+        models: { generateContent: async (params: any) => ({}) },
+        interactions: {
+        create: async () => ({ output_text: "Not valid JSON output" }),
+      },
+    }),
+  });
+
+  const malformedRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    malformedGemini
+  );
+
+  assert.equal(malformedRes.proposals.length, 0);
+  assert.equal(malformedRes.supportStatus, "unavailable");
+  assert.ok(malformedRes.aiUnavailableReason?.toLowerCase().includes("json"));
+});
+
+test("GeminiDeveloperProvider surfaces clear Developer authentication/quota errors and redacts API keys", async () => {
+  const secretApiKey = "AIzaSySUPERSECRETKEY1234567890123456789";
+
+  // 1. Quota error
+  const quotaFailGemini = new GeminiDeveloperProvider({
+    apiKey: secretApiKey,
+    model: "gemini-3.8-flash",
+    clientFactory: () => ({
+        models: { generateContent: async (params: any) => ({}) },
+        interactions: {
+        create: async () => {
+          throw new Error(
+            `Resource has been exhausted (e.g. check quota). status: 429 RESOURCE_EXHAUSTED for key ${secretApiKey}`
+          );
+        },
+      },
+    }),
+  });
+
+  const quotaRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    quotaFailGemini
+  );
+
+  assert.equal(quotaRes.proposals.length, 0);
+  assert.equal(quotaRes.supportStatus, "unavailable");
+  assert.ok(quotaRes.aiUnavailableReason?.includes("quota or rate limit exceeded"));
+  assert.ok(quotaRes.aiUnavailableReason?.includes("Google AI Studio"));
+  assert.ok(!quotaRes.aiUnavailableReason?.includes(secretApiKey));
+
+  // 2. Authentication error
+  const authFailGemini = new GeminiDeveloperProvider({
+    apiKey: secretApiKey,
+    model: "gemini-3.8-flash",
+    clientFactory: () => ({
+        models: { generateContent: async (params: any) => ({}) },
+        interactions: {
+        create: async () => {
+          throw new Error(
+            `API key not valid. Please pass a valid API key. (key: ${secretApiKey}) code: 400 API_KEY_INVALID`
+          );
+        },
+      },
+    }),
+  });
+
+  const authRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    authFailGemini
+  );
+
+  assert.equal(authRes.proposals.length, 0);
+  assert.equal(authRes.supportStatus, "unavailable");
+  assert.ok(authRes.aiUnavailableReason?.includes("Gemini API authentication failed"));
+  assert.ok(!authRes.aiUnavailableReason?.includes(secretApiKey));
+  assert.ok(authRes.aiUnavailableReason?.includes("[REDACTED_API_KEY]"));
+});
+
+test("GeminiDeveloperProvider enforces timeouts and propagates AbortSignal", async () => {
+  let sdkAbortSignalTriggered = false;
+  const hangingGemini = new GeminiDeveloperProvider({
+    apiKey: "AIzaSyTestDeveloperApiKey1234567890",
+    timeoutMs: 40,
+    clientFactory: () => ({
+        models: { generateContent: async (params: any) => ({}) },
+        interactions: {
+        create: (params, options) => {
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => {
+              sdkAbortSignalTriggered = true;
+              const abortErr = new Error("Aborted");
+              abortErr.name = "AbortError";
+              reject(abortErr);
+            });
+          });
+        },
+      },
+    }),
+  });
+
+  const timeoutRes = await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    hangingGemini
+  );
+
+  assert.equal(timeoutRes.proposals.length, 0);
+  assert.equal(timeoutRes.supportStatus, "unavailable");
+  assert.ok(timeoutRes.aiUnavailableReason?.includes("timed out after 40ms"));
+  assert.ok(sdkAbortSignalTriggered, "AbortSignal must propagate to SDK");
+});
+
+test("GeminiDeveloperProvider explicitly sets enterprise: false and vertexai: false to prevent silent Vertex AI fallback", async () => {
+  let capturedRegressionOptions: any = null;
+
+  const regressionProvider = new GeminiDeveloperProvider({
+    apiKey: "AIzaSyTestRegressionKey1234567890123456",
+    model: "gemini-3.8-flash",
+    clientFactory: (opts: any) => {
+      capturedRegressionOptions = opts;
+      return {
+        models: { generateContent: async (params: any) => ({}) },
+        interactions: {
+          create: async () => ({
+            output_text: JSON.stringify({ strategies: [], rationale: "regression test" }),
+          }),
+        },
+      };
+    },
+  });
+
+  await generateRotations(
+    {
+      fieldId: "f1",
+      fieldName: "Rowan Field",
+      lat: 35.67,
+      lon: -80.47,
+      climate: makeClimate(),
+      soil: makeSoil(),
+      priorities: DEFAULT_PRIORITIES,
+      regionTag: "us_southeast",
+    },
+    regressionProvider
+  );
+
+  assert.ok(capturedRegressionOptions);
+  assert.equal(
+    capturedRegressionOptions.enterprise,
+    false,
+    "enterprise must be strictly false to disable Vertex AI fallback"
+  );
+  assert.equal(
+    capturedRegressionOptions.vertexai,
+    false,
+    "vertexai must be strictly false to disable Vertex AI fallback"
+  );
+  assert.ok(
+    capturedRegressionOptions.apiKey,
+    "apiKey must be present in SDK options for Developer API authentication"
+  );
+  assert.ok(
+    !capturedRegressionOptions.project,
+    "project must NOT be set"
+  );
+  assert.ok(
+    !capturedRegressionOptions.location,
+    "location must NOT be set"
+  );
+});
+
+
 // ─── 7. Gemini Enterprise Agent Platform (ADC) Provider Tests ─────────
 
 section("Gemini Enterprise Agent Platform (ADC) Provider");
@@ -1477,7 +1792,7 @@ test("GeminiEnterpriseProvider initializes @google/genai with enterprise: true, 
     project: "triangle-hackathon-claude-code",
     location: "global",
     model: "gemini-4-argon",
-    clientFactory: (opts) => {
+    clientFactory: (opts: any) => {
       capturedSdkOptions = opts as Record<string, unknown>;
       return {
         models: {
