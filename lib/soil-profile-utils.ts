@@ -1774,7 +1774,7 @@ export async function resolveSoilProfileForCoordinate(
       }
     }
 
-    if (ssurgoResult.status === "ok") {
+    if (ssurgoResult.status === "ok" && !lacksTexture) {
       return {
         ok: true,
         httpStatus: 200,
@@ -1783,6 +1783,10 @@ export async function resolveSoilProfileForCoordinate(
         usSsurgoStatus: "ok",
       };
     }
+
+    const fallbackSsurgoStatus = ssurgoResult.status === "ok" ? "no_usable_soil_data" : ssurgoResult.status;
+    const fallbackSsurgoMessage = ssurgoResult.status === "ok" ? "USDA NRCS SSURGO returned incomplete mapped soil properties (No component horizon data)." : ssurgoResult.message;
+    const fallbackSsurgoErrorMessage = ssurgoResult.status === "request_error" ? ssurgoResult.errorMessage : undefined;
 
     // SSURGO was unavailable (`request_error`, `no_map_unit`, or `no_usable_soil_data`).
     // Attempt live coordinate-specific ISRIC SoilGrids v2.0 WCS (~250 m) fallback.
@@ -1795,18 +1799,18 @@ export async function resolveSoilProfileForCoordinate(
 
     if (sgProfile) {
       const fallbackExplanation =
-        ssurgoResult.status === "request_error"
-          ? `Live USDA NRCS SSURGO service was unreachable or returned an error (${ssurgoResult.errorMessage}). Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`
-          : ssurgoResult.status === "no_map_unit"
+        fallbackSsurgoStatus === "request_error"
+          ? `Live USDA NRCS SSURGO service was unreachable or returned an error (${fallbackSsurgoErrorMessage}). Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`
+          : fallbackSsurgoStatus === "no_map_unit"
           ? "USDA NRCS SSURGO returned no surveyed soil map unit polygon at this coordinate. Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them."
-          : `${ssurgoResult.message} Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`;
+          : `${fallbackSsurgoMessage} Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`;
 
       const response: SoilApiResponsePayload = {
         location: locationMeta,
         dataTier: "soilgrids_wcs_250m",
         source: sgProfile.source,
         coverage:
-          ssurgoResult.status === "request_error"
+          fallbackSsurgoStatus === "request_error"
             ? "United States coordinate — live ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate (used while USDA NRCS SSURGO service was unreachable)."
             : "United States coordinate — live ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate (used where USDA NRCS SSURGO lacked field-level data).",
         wrbSoilGroup: sgProfile.wrbSoilGroup,
@@ -1824,8 +1828,8 @@ export async function resolveSoilProfileForCoordinate(
           ? { enrichmentStatus: sgProfile.enrichmentStatus }
           : {}),
         usSsurgoFallback: {
-          reason: ssurgoResult.status,
-          detail: ssurgoResult.message,
+          reason: fallbackSsurgoStatus,
+          detail: fallbackSsurgoMessage,
         },
       };
 
@@ -1834,18 +1838,18 @@ export async function resolveSoilProfileForCoordinate(
         httpStatus: 200,
         response,
         cachePolicy:
-          ssurgoResult.status === "request_error"
+          fallbackSsurgoStatus === "request_error"
             ? "us_outage_soilgrids_fallback"
             : "us_unmapped_soilgrids_fallback",
-        usSsurgoStatus: ssurgoResult.status,
+        usSsurgoStatus: fallbackSsurgoStatus,
       };
     }
 
     // Neither live USDA SSURGO nor live ISRIC SoilGrids WCS returned usable data.
     // Never fall back to the generic macro-regional Cambisols/Luvisols reference profile for a U.S. coordinate.
-    const httpStatus = ssurgoResult.status === "request_error" ? 503 : 404;
+    const httpStatus = fallbackSsurgoStatus === "request_error" ? 503 : 404;
     const error =
-      ssurgoResult.status === "request_error"
+      fallbackSsurgoStatus === "request_error"
         ? "Live USDA NRCS SSURGO soil service is temporarily unavailable, and the live ISRIC SoilGrids v2.0 WCS fallback could not retrieve coordinate-specific data for this U.S. location. Please retry shortly."
         : "No coordinate-specific soil profile data available at this U.S. location from either USDA NRCS SSURGO or live ISRIC SoilGrids v2.0 WCS.";
 
@@ -1853,8 +1857,8 @@ export async function resolveSoilProfileForCoordinate(
       ok: false,
       httpStatus,
       error,
-      detail: ssurgoResult.message,
-      usSsurgoStatus: ssurgoResult.status,
+      detail: fallbackSsurgoMessage,
+      usSsurgoStatus: fallbackSsurgoStatus,
     };
   }
 
