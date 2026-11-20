@@ -686,7 +686,7 @@ export class GeminiDeveloperProvider implements AIProviderClient {
     const httpOptions = {
       timeout: timeoutMs,
       retryOptions: {
-        attempts: 1,
+        attempts: 1, // Let our custom loop handle retries
       },
     };
 
@@ -702,25 +702,72 @@ export class GeminiDeveloperProvider implements AIProviderClient {
       };
       const client = await this.clientFactory(sdkOptions);
 
-      const response = (await Promise.race([
-        client.interactions!.create(
-          {
-            model: this.model,
-            input:
-              "Generate 3 field-specific 3-year crop rotation strategies (soil_health, water_resilience, crop_diversity) as JSON matching the required schema.",
-            system_instruction: prompt,
-            response_format: { type: "object" },
-            generation_config: {
-              max_output_tokens: maxTokens,
-            },
-          },
-          {
-            signal: controller.signal,
-            httpOptions,
+      let response: any;
+      let lastErr: unknown;
+      let baseDelayMs = 1000;
+      const maxAttempts = 4;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (signal?.aborted) {
+          throw new Error(`AI provider (${this.providerName}) request was aborted.`);
+        }
+        
+        try {
+          response = (await Promise.race([
+            client.interactions!.create(
+              {
+                model: this.model,
+                input:
+                  "Generate 3 field-specific 3-year crop rotation strategies (soil_health, water_resilience, crop_diversity) as JSON matching the required schema.",
+                system_instruction: prompt,
+                response_format: { type: "object" },
+                generation_config: {
+                  max_output_tokens: maxTokens,
+                },
+              },
+              {
+                signal: controller.signal,
+                httpOptions,
+              }
+            ),
+            timeoutPromise,
+          ])) as any;
+          
+          lastErr = null;
+          break; // Success
+        } catch (err) {
+          lastErr = err;
+          const msg = err instanceof Error ? err.message : String(err);
+          const statusMatch = msg.match(/(?:status|code):?\s*(\d+)/i) || msg.match(/HTTP\s*(\d+)/i) || err instanceof Error && (err as any).status;
+          const status = statusMatch && typeof statusMatch !== 'number' ? parseInt(statusMatch[1] as string, 10) : typeof statusMatch === 'number' ? statusMatch : undefined;
+          
+          // Retry ONLY on transient errors: 503 (Service Unavailable / Overloaded), 500 (Internal), 502, 504, or generic transient network fails
+          const isTransient5xx = status && status >= 500 && status <= 599;
+          const isFetchFailed = msg.includes("fetch failed") || msg.includes("ECONNRESET") || msg.includes("ETIMEDOUT");
+          
+          if ((isTransient5xx || isFetchFailed) && attempt < maxAttempts && !timedOut && !signal?.aborted) {
+            // Extract Retry-After if present
+            let retryAfterS = 0;
+            if (err instanceof Error && 'headers' in err) {
+              const headers = (err as any).headers;
+              if (headers && typeof headers.get === 'function') {
+                const ra = headers.get("retry-after");
+                if (ra) retryAfterS = parseInt(ra, 10);
+              }
+            }
+            
+            const delayMs = retryAfterS > 0 ? retryAfterS * 1000 : baseDelayMs + Math.random() * 500;
+            await new Promise(res => setTimeout(res, delayMs));
+            baseDelayMs *= 2;
+            continue;
           }
-        ),
-        timeoutPromise,
-      ])) as any;
+          break; // Don't retry auth, 429 quota, or unhandled errors
+        }
+      }
+
+      if (lastErr) {
+        throw lastErr;
+      }
 
       this.lastUsageMetadata = this.extractUsageMetadata(response?.usage);
 
