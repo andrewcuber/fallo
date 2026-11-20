@@ -1,0 +1,1 @@
+import { resolveCachedSoilProfileForCoordinate } from './lib/soil-profile-utils'; import { fetchSoilGridsWcsProfile } from './lib/soilgrids-wcs'; resolveCachedSoilProfileForCoordinate(35.9963, -78.9112, {soilGridsWcsFetcher: fetchSoilGridsWcsProfile}).then(r => console.log(JSON.stringify(r, null, 2))).catch(console.error);

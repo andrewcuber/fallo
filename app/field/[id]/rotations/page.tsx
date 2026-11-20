@@ -189,6 +189,7 @@ export default function RotationsPage() {
 
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [remainingGenerations, setRemainingGenerations] = useState<number | null>(null);
   const inFlightFieldRef = useRef<string | null>(null);
 
   const fieldId = typeof params.id === "string" ? params.id : undefined;
@@ -594,7 +595,7 @@ export default function RotationsPage() {
                   <Button
                     size="sm"
                     onClick={handleGenerate}
-                    disabled={generating || availableCropIds.length === 0}
+                    disabled={generating || availableCropIds.length === 0 || remainingGenerations === 0}
                     className={
                       hasGeneratedPlans
                         ? "bg-purple-600 hover:bg-purple-700 text-white"
@@ -633,6 +634,25 @@ export default function RotationsPage() {
                   )}
                 </div>
               </div>
+
+              {remainingGenerations !== null && !generating && (
+                <div className={`rounded-md px-3 py-2.5 text-xs border flex items-center justify-between ${
+                  remainingGenerations > 0 
+                    ? "bg-muted/30 text-muted-foreground border-border/50" 
+                    : "bg-destructive/10 text-destructive border-destructive/20"
+                }`}>
+                  <span>
+                    {remainingGenerations > 0 ? (
+                      <>You have <strong className="text-foreground">{remainingGenerations}</strong> free generation{remainingGenerations !== 1 ? "s" : ""} remaining today.</>
+                    ) : (
+                      <span className="font-medium flex items-center gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        Daily generation limit reached. Please try again tomorrow.
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
 
               {generating && (
                 <div
