@@ -1108,98 +1108,126 @@ export async function queryUsdaSda<T = string | null>(
 ): Promise<T[][]> {
   const fetchImpl = options?.fetchFn ?? fetch;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_SDA_TIMEOUT_MS;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const maxAttempts = 3;
+  const baseDelayMs = 250;
+  
+  const overallController = new AbortController();
+  const timeout = setTimeout(() => overallController.abort(), timeoutMs);
 
   try {
-    let res: Response;
-    try {
-      res = await fetchImpl(USDA_SDA_REST_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ query, format: "JSON" }),
-        signal: controller.signal,
-      });
-    } catch (err: unknown) {
-      if (
-        err instanceof Error &&
-        (err.name === "AbortError" ||
-          err.message.toLowerCase().includes("aborted"))
-      ) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (overallController.signal.aborted) {
+        throw new SsurgoRequestError(`USDA Soil Data Access request timed out after ${timeoutMs} ms`);
+      }
+
+      let res: Response;
+      try {
+        res = await fetchImpl(USDA_SDA_REST_ENDPOINT, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ query, format: "JSON" }),
+          signal: overallController.signal,
+        });
+      } catch (err: unknown) {
+        if (
+          err instanceof Error &&
+          (err.name === "AbortError" ||
+            err.message.toLowerCase().includes("aborted"))
+        ) {
+          throw new SsurgoRequestError(
+            `USDA Soil Data Access request timed out after ${timeoutMs} ms`
+          );
+        }
+        
+        // Retry on network errors (fetch failed, ECONNRESET, ENOTFOUND, etc.)
+        if (attempt < maxAttempts && !overallController.signal.aborted) {
+          const delay = baseDelayMs * Math.pow(2, attempt - 1);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        const msg = err instanceof Error ? err.message : String(err);
+        const causeCode = err instanceof Error && 'cause' in err && err.cause && typeof (err.cause as any).code === 'string' ? (err.cause as any).code : undefined;
+        const causeMsg = causeCode ? ` (cause: ${causeCode})` : "";
         throw new SsurgoRequestError(
-          `USDA Soil Data Access request timed out after ${timeoutMs} ms`
+          `USDA Soil Data Access network request failed: ${msg}${causeMsg}`
         );
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new SsurgoRequestError(
-        `USDA Soil Data Access network request failed: ${msg}`
-      );
-    }
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new SsurgoRequestError(
-        `USDA Soil Data Access API returned ${sanitizeSdaErrorBody(text, res.status)}`,
-        res.status
-      );
-    }
-
-    const rawText = await res.text();
-    const trimmed = rawText.trim();
-    if (!trimmed) {
-      throw new SsurgoRequestError(
-        "USDA Soil Data Access API returned an empty response body"
-      );
-    }
-
-    let json: unknown;
-    try {
-      json = JSON.parse(trimmed);
-    } catch {
-      throw new SsurgoRequestError(
-        "USDA Soil Data Access API returned non-JSON response"
-      );
-    }
-
-    if (json && typeof json === "object" && !Array.isArray(json)) {
-      const record = json as Record<string, unknown>;
-      if ("Table" in record) {
-        if (Array.isArray(record.Table)) {
-          return record.Table as T[][];
+      if (!res.ok) {
+        // Retry on 5xx server errors and 429 Too Many Requests
+        if ((res.status >= 500 || res.status === 429) && attempt < maxAttempts && !overallController.signal.aborted) {
+          await res.text().catch(() => "");
+          const delay = baseDelayMs * Math.pow(2, attempt - 1);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
         }
-        if (record.Table === null || record.Table === undefined) {
+
+        const text = await res.text().catch(() => "");
+        throw new SsurgoRequestError(
+          `USDA Soil Data Access API returned ${sanitizeSdaErrorBody(text, res.status)}`,
+          res.status
+        );
+      }
+
+      const rawText = await res.text();
+      const trimmed = rawText.trim();
+      if (!trimmed) {
+        throw new SsurgoRequestError(
+          "USDA Soil Data Access API returned an empty response body"
+        );
+      }
+
+      let json: unknown;
+      try {
+        json = JSON.parse(trimmed);
+      } catch {
+        throw new SsurgoRequestError(
+          "USDA Soil Data Access API returned non-JSON response"
+        );
+      }
+
+      if (json && typeof json === "object" && !Array.isArray(json)) {
+        const record = json as Record<string, unknown>;
+        if ("Table" in record) {
+          if (Array.isArray(record.Table)) {
+            return record.Table as T[][];
+          }
+          if (record.Table === null || record.Table === undefined) {
+            return [];
+          }
+          throw new SsurgoRequestError(
+            "Unexpected USDA Soil Data Access Table format"
+          );
+        }
+
+        const keys = Object.keys(record);
+        if (keys.length === 0) {
+          // USDA SDA returns `{}` when a spatial or tabular query matches zero rows
           return [];
         }
+
+        // Non-empty object without `Table` indicates an SDA SQL/service error payload
+        const errDetail =
+          record.Error ??
+          record.error ??
+          record.Message ??
+          record.message ??
+          record.ExceptionMessage ??
+          JSON.stringify(record).slice(0, 200);
         throw new SsurgoRequestError(
-          "Unexpected USDA Soil Data Access Table format"
+          `USDA Soil Data Access query error: ${String(errDetail)}`
         );
       }
 
-      const keys = Object.keys(record);
-      if (keys.length === 0) {
-        // USDA SDA returns `{}` when a spatial or tabular query matches zero rows
-        return [];
-      }
-
-      // Non-empty object without `Table` indicates an SDA SQL/service error payload
-      const errDetail =
-        record.Error ??
-        record.error ??
-        record.Message ??
-        record.message ??
-        record.ExceptionMessage ??
-        JSON.stringify(record).slice(0, 200);
       throw new SsurgoRequestError(
-        `USDA Soil Data Access query error: ${String(errDetail)}`
+        "Unexpected USDA Soil Data Access response format"
       );
     }
-
-    throw new SsurgoRequestError(
-      "Unexpected USDA Soil Data Access response format"
-    );
+    throw new SsurgoRequestError("Unexpected code path in USDA SDA retries");
   } finally {
     clearTimeout(timeout);
   }

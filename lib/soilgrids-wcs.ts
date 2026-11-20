@@ -1404,83 +1404,79 @@ async function fetchSoilGridsWcsProfileUncached(
       }
     }
 
-    const attempt1 = await fetchAndDecodeSingleAttempt(
-      task,
-      timeoutMs,
-      stageDeadline
-    );
-    if (attempt1.decoded) {
-      if (useCoverageCache) {
-        coverageCache.set(covCacheKey, attempt1.decoded);
+    const maxAttempts = task.stage === "essential" ? 3 : 1;
+    let baseDelayMs = retryDelayMs || 150;
+    
+    let lastEvent: SoilGridsLayerDiagnostic | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const attemptRes = await fetchAndDecodeSingleAttempt(
+        task,
+        timeoutMs,
+        stageDeadline
+      );
+
+      if (attemptRes.decoded) {
+        if (lastEvent) {
+          lastEvent.recoveredOnRetry = true;
+        }
+        if (useCoverageCache) {
+          coverageCache.set(covCacheKey, attemptRes.decoded);
+        }
+        return attemptRes.decoded;
       }
-      return attempt1.decoded;
-    }
 
-    const remainingStageAfter1 = Math.max(0, stageDeadline - Date.now());
-    const remainingTotalAfter1 = Math.max(0, totalDeadline - Date.now());
-    const minRemainingAfter1 = Math.min(
-      remainingStageAfter1,
-      remainingTotalAfter1
-    );
+      const remainingStageAfter = Math.max(0, stageDeadline - Date.now());
+      const remainingTotalAfter = Math.max(0, totalDeadline - Date.now());
+      const minRemainingAfter = Math.min(
+        remainingStageAfter,
+        remainingTotalAfter
+      );
 
-    const canRetry =
-      task.stage === "essential" &&
-      attempt1.reason !== "budget_exhausted" &&
-      minRemainingAfter1 > retryDelayMs + 100;
+      // Only retry for network_error, timeout, or 5xx/429 HTTP errors
+      const isTransient = 
+        attemptRes.reason === "network_error" || 
+        attemptRes.reason === "timeout" || 
+        (attemptRes.reason === "http_error" && (attemptRes.httpStatus === 429 || (attemptRes.httpStatus !== undefined && attemptRes.httpStatus >= 500)));
 
-    const event1: SoilGridsLayerDiagnostic = {
-      coverageId: task.coverageId,
-      stage: task.stage,
-      attempt: 1,
-      reason: attempt1.reason ?? "network_error",
-      ...(attempt1.httpStatus !== undefined
-        ? { httpStatus: attempt1.httpStatus }
-        : {}),
-      elapsedMs: attempt1.elapsedMs,
-      remainingStageBudgetMs: remainingStageAfter1,
-      remainingTotalBudgetMs: remainingTotalAfter1,
-      retried: canRetry,
-      ...(attempt1.detail ? { detail: attempt1.detail } : {}),
-    };
-    layerEvents.push(event1);
+      const canRetry =
+        attempt < maxAttempts &&
+        attemptRes.reason !== "budget_exhausted" &&
+        isTransient &&
+        minRemainingAfter > baseDelayMs + 50;
 
-    if (!canRetry) {
-      return null;
-    }
-
-    if (retryDelayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
-
-    const attempt2 = await fetchAndDecodeSingleAttempt(
-      task,
-      timeoutMs,
-      stageDeadline
-    );
-    if (attempt2.decoded) {
-      event1.recoveredOnRetry = true;
-      if (useCoverageCache) {
-        coverageCache.set(covCacheKey, attempt2.decoded);
+      const event: SoilGridsLayerDiagnostic = {
+        coverageId: task.coverageId,
+        stage: task.stage,
+        attempt,
+        reason: attemptRes.reason ?? "network_error",
+        ...(attemptRes.httpStatus !== undefined
+          ? { httpStatus: attemptRes.httpStatus }
+          : {}),
+        elapsedMs: attemptRes.elapsedMs,
+        remainingStageBudgetMs: remainingStageAfter,
+        remainingTotalBudgetMs: remainingTotalAfter,
+        retried: canRetry,
+        ...(attemptRes.detail ? { detail: attemptRes.detail } : {}),
+      };
+      
+      if (lastEvent && !lastEvent.recoveredOnRetry) {
+        lastEvent.recoveredOnRetry = false;
       }
-      return attempt2.decoded;
+      layerEvents.push(event);
+      lastEvent = event;
+
+      if (!canRetry) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs));
+      baseDelayMs *= 2; // exponential backoff
     }
 
-    event1.recoveredOnRetry = false;
-    layerEvents.push({
-      coverageId: task.coverageId,
-      stage: task.stage,
-      attempt: 2,
-      reason: attempt2.reason ?? "network_error",
-      ...(attempt2.httpStatus !== undefined
-        ? { httpStatus: attempt2.httpStatus }
-        : {}),
-      elapsedMs: attempt2.elapsedMs,
-      remainingStageBudgetMs: Math.max(0, stageDeadline - Date.now()),
-      remainingTotalBudgetMs: Math.max(0, totalDeadline - Date.now()),
-      retried: false,
-      ...(attempt2.detail ? { detail: attempt2.detail } : {}),
-    });
-
+    if (lastEvent) {
+      lastEvent.recoveredOnRetry = false;
+    }
     return null;
   }
 
