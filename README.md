@@ -16,7 +16,7 @@
 - **3. Crop Rotation Lab (`/field/[id]/rotations`):**
   - Summarizes the field's agroecological climate zone, growing-period moisture regime, topsoil properties, and locally verified crops across 15 global agricultural regions.
   - Lets farmers set relative priority weights across five suitability factors (**Water Suitability**, **Nitrogen Contribution**, **Soil Coverage**, **Diversity / Pest Break**, and **Climate Risk Resilience**) and generate field-specific 3-year crop rotation plans.
-  - Uses **Super Intelligence (SI)-assisted generation** powered by **Gemini Enterprise** (`@google/genai`) paired with deterministic agronomic validation (botanical family rotation, disease-host interval enforcement, seasonal calendar checks, and regional crop eligibility) to propose and score three 3-year plans: *Soil Health Building*, *Water Resilience*, and *Crop Diversity & Pest Break*.
+  - Uses **Super Intelligence (SI)-assisted generation** powered by the **Gemini Developer API** (`@google/genai`) paired with deterministic agronomic validation (botanical family rotation, disease-host interval enforcement, seasonal calendar checks, and regional crop eligibility) to propose and score three 3-year plans: *Soil Health Building*, *Water Resilience*, and *Crop Diversity & Pest Break*.
 - **4. What-If Climate Simulator (`/field/[id]/simulator`):**
   - Lets users test hypothetical shifts in temperature (`°C`) and precipitation (`%` or `mm/yr`) or select quick climate presets without overwriting observed baseline climate data or saved rotation plans.
   - Recalculates agroecological classification, 5-factor rotation suitability scores, and crop-by-crop climate suitability side by side with crop-specific agronomic explanations.
@@ -32,9 +32,9 @@
 
 ## Runtime SI Architecture & Authentication
 
-- **Provider:** Google Cloud **Gemini Enterprise Agent Platform** via `@google/genai` (`GeminiEnterpriseProvider` in `lib/rotation-generator.ts`, server route `app/api/rotations/generate/route.ts`).
-- **Local Development:** Authenticates via Google Cloud Application Default Credentials (`gcloud auth application-default login`).
-- **Vercel Production:** Authenticates via **Vercel OIDC** (`@vercel/oidc`) and **Google Cloud Workload Identity Federation** (`google-auth-library` `ExternalAccountClient`) without long-lived service account keys.
+- **Provider:** Google **Gemini Developer API** via `@google/genai` (`GeminiDeveloperProvider` in `lib/rotation-generator.ts`, server route `app/api/rotations/generate/route.ts`).
+- **Configuration:** Reads `GEMINI_API_KEY` from server-side environment variables (.env.local or Vercel). Configurable model ID via `GEMINI_MODEL` (defaults to `gemini-2.5-flash`).
+- **Cost & Quotas:** Runs seamlessly on Google AI Studio's free tier without requiring Google Cloud billing or Vertex AI projects.
 - **Deterministic Safeguards:** Every SI-generated rotation proposal is validated deterministically against `data/crops.json` and `lib/rotation-validator.ts` before scoring or display.
 
 ---
