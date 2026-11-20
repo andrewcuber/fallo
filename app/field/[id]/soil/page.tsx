@@ -365,31 +365,44 @@ export default function SoilPage() {
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div className="space-y-1">
-        <h2 className="text-2xl font-serif font-bold text-foreground">
-          Soil Profile
-        </h2>
-        <p className="text-muted-foreground max-w-2xl">
-          Topsoil properties (0–30 cm) for {field.name}
-          {displayModel?.subtitlePropertiesLabel
-            ? ` — ${displayModel.subtitlePropertiesLabel}.`
-            : "."}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Coordinates: {field.lat.toFixed(4)}, {field.lon.toFixed(4)}
-          {data?.mapUnit &&
-            ` · ${
-              isSsurgoSurvey
-                ? "Map unit"
-                : isSoilGridsWcs
-                ? "Soil unit"
-                : "Reference soil group"
-            }: ${formatSoilDisplayName(
-              data.mapUnit.name,
-              isSoilGridsWcs,
-              data.wrbSoilGroup
-            )}`}
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div className="space-y-1">
+          <h2 className="text-2xl font-serif font-bold text-foreground">
+            Soil Profile
+          </h2>
+          <p className="text-muted-foreground max-w-2xl">
+            Topsoil properties (0–30 cm) for {field.name}
+            {displayModel?.subtitlePropertiesLabel
+              ? ` — ${displayModel.subtitlePropertiesLabel}.`
+              : "."}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Coordinates: {field.lat.toFixed(4)}, {field.lon.toFixed(4)}
+            {data?.mapUnit &&
+              ` · ${
+                isSsurgoSurvey
+                  ? "Map unit"
+                  : isSoilGridsWcs
+                  ? "Soil unit"
+                  : "Reference soil group"
+              }: ${formatSoilDisplayName(
+                data.mapUnit.name,
+                isSoilGridsWcs,
+                data.wrbSoilGroup
+              )}`}
+          </p>
+        </div>
+        
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={fetchSoil}
+          disabled={loading}
+          className="shrink-0"
+        >
+          <RotateCcw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          Refresh Data
+        </Button>
       </div>
 
       {/* Loading */}
