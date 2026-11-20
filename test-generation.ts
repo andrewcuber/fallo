@@ -59,8 +59,6 @@ import {
   DEFAULT_GEMINI_THINKING_LEVEL,
   DEFAULT_GEMINI_ENTERPRISE_MODEL,
   DEFAULT_GOOGLE_CLOUD_LOCATION,
-  checkGenerationRateLimit,
-  resetGenerationRateLimiterForTests,
   GENERATION_RATE_LIMIT_MAX_REQUESTS,
   type AIProviderClient,
 } from "@/lib/rotation-generator";
@@ -3135,29 +3133,7 @@ test("Climate Analogues ranks historical years by standardized similarity, stric
   assert.ok(insufficientRes.insufficientReason && insufficientRes.insufficientReason.length > 0);
 });
 
-test("Generation sliding-window rate limiter enforces per-key quota and resets cleanly", () => {
-  resetGenerationRateLimiterForTests();
-  const key = "test-client-ip-1";
-  const t0 = 1_700_000_000_000;
 
-  for (let i = 0; i < GENERATION_RATE_LIMIT_MAX_REQUESTS; i++) {
-    const check = checkGenerationRateLimit(key, t0 + i * 100);
-    assert.equal(check.allowed, true);
-    assert.equal(check.remaining, GENERATION_RATE_LIMIT_MAX_REQUESTS - 1 - i);
-  }
-
-  // 9th request within the 10-minute window is blocked with retryAfterSeconds > 0
-  const blocked = checkGenerationRateLimit(key, t0 + 1000);
-  assert.equal(blocked.allowed, false);
-  assert.equal(blocked.remaining, 0);
-  assert.ok(blocked.retryAfterSeconds > 0);
-
-  // Different client IP is unaffected
-  const otherClient = checkGenerationRateLimit("test-client-ip-2", t0 + 1000);
-  assert.equal(otherClient.allowed, true);
-
-  resetGenerationRateLimiterForTests();
-});
 
 test("What-If Simulator humanizes enums/crop IDs and produces distinct crop-specific explanations", () => {
   assert.equal(formatEnumLabel("moderate_to_high"), "Moderate to high");

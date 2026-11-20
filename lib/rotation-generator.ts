@@ -241,6 +241,7 @@ export interface GenerationResult {
   generatedAt?: string;
   usageMetadata?: AIUsageMetadata;
   retryCount?: number;
+  remainingGenerations?: number;
 }
 
 export interface AIProviderClient {
@@ -1607,48 +1608,6 @@ export function isFieldGenerationInFlight(fieldId: string): boolean {
 
 export function getInFlightGenerationCount(): number {
   return inFlightFieldGenerations.size;
-}
-
-export function checkGenerationRateLimit(
-  clientKey: string,
-  nowMs: number = Date.now(),
-  maxRequests: number = GENERATION_RATE_LIMIT_MAX_REQUESTS,
-  windowMs: number = GENERATION_RATE_LIMIT_WINDOW_MS
-): { allowed: boolean; remaining: number; retryAfterSeconds: number } {
-  const key = (clientKey || "anonymous").trim() || "anonymous";
-  const cutoff = nowMs - windowMs;
-  const existing = (clientRateWindowMap.get(key) ?? []).filter((ts) => ts > cutoff);
-
-  if (existing.length >= maxRequests) {
-    const oldestInWindow = existing[0] ?? nowMs;
-    const retryAfterSeconds = Math.max(
-      1,
-      Math.ceil((oldestInWindow + windowMs - nowMs) / 1000)
-    );
-    clientRateWindowMap.set(key, existing);
-    return { allowed: false, remaining: 0, retryAfterSeconds };
-  }
-
-  existing.push(nowMs);
-  clientRateWindowMap.set(key, existing);
-
-  // Opportunistic cleanup to bound memory
-  if (clientRateWindowMap.size > 500) {
-    for (const [k, timestamps] of Array.from(clientRateWindowMap.entries())) {
-      const active = timestamps.filter((ts) => ts > cutoff);
-      if (active.length === 0) {
-        clientRateWindowMap.delete(k);
-      } else {
-        clientRateWindowMap.set(k, active);
-      }
-    }
-  }
-
-  return {
-    allowed: true,
-    remaining: Math.max(0, maxRequests - existing.length),
-    retryAfterSeconds: 0,
-  };
 }
 
 export function resetGenerationRateLimiterForTests(): void {
