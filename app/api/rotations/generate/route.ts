@@ -42,9 +42,22 @@ export async function POST(req: NextRequest) {
     newCookieStr = `fallo_visitor_id=${visitorId}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=31536000`;
   }
 
-  // 2. Atomically Reserve Usage in Redis
+  const usageLimitsEnabled = process.env.FALLO_AI_USAGE_LIMITS_ENABLED === "true";
+
+  // 2. Atomically Reserve Usage in Redis (if enabled)
   const expectedModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-  const reservation = await reserveUsage(visitorId, clientIp, expectedModel);
+
+  let reservation: any = {
+    allowed: true,
+    reason: undefined,
+    remainingGenerations: null,
+    reservationId: undefined,
+    retryAfterSeconds: 0
+  };
+
+  if (usageLimitsEnabled) {
+    reservation = await reserveUsage(visitorId, clientIp, expectedModel);
+  }
 
   if (!reservation.allowed) {
     const res = NextResponse.json(

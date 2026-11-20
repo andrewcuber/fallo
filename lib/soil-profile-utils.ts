@@ -1599,6 +1599,81 @@ export type ResolvedSoilRouteResult =
       usSsurgoStatus: Exclude<UsdaSsurgoFetchResult["status"], "ok">;
     };
 
+export async function fetchNearbySsurgoMapUnit(lat: number, lon: number, options?: { sdaFetchFn?: typeof fetch; sdaTimeoutMs?: number }) {
+  const distanceMeters = 150;
+  const latOffset = distanceMeters / 111320;
+  const lonOffset = distanceMeters / (111320 * Math.cos(lat * Math.PI / 180));
+  const minLon = (lon - lonOffset).toFixed(6);
+  const maxLon = (lon + lonOffset).toFixed(6);
+  const minLat = (lat - latOffset).toFixed(6);
+  const maxLat = (lat + latOffset).toFixed(6);
+  const wkt = `POLYGON((${minLon} ${minLat}, ${maxLon} ${minLat}, ${maxLon} ${maxLat}, ${minLon} ${maxLat}, ${minLon} ${minLat}))`;
+
+  try {
+    const mukeyRows = await queryUsdaSda<string>(
+      `SELECT mukey FROM SDA_Get_Mukey_from_intersection_with_WktWgs84('${wkt}')`,
+      { fetchFn: options?.sdaFetchFn, timeoutMs: options?.sdaTimeoutMs }
+    );
+    const dataMukeyRows = mukeyRows.filter(r => Array.isArray(r) && r.length > 0 && String(r[0]).trim().toLowerCase() !== "mukey");
+    if (dataMukeyRows.length === 0) return null;
+
+    const mukeys = dataMukeyRows.map(r => parseSdaString(r[0])).filter((m): m is string => m !== null && /^[A-Za-z0-9_-]+$/.test(m));
+    if (mukeys.length === 0) return null;
+
+    for (const mukey of mukeys) {
+      const muRows = await queryUsdaSda<string>(`SELECT muname FROM mapunit WHERE mukey = '${mukey}'`, { fetchFn: options?.sdaFetchFn, timeoutMs: options?.sdaTimeoutMs });
+      const mapUnitName = muRows.length > 1 ? parseSdaString(muRows[1][0]) : null;
+
+      const rows = await queryUsdaSda<string | null>(
+        `SELECT co.cokey, co.comppct_r, co.compname, co.drainagecl, co.slope_r, co.compkind, co.majcompflag,
+          hz.hzdept_r, hz.hzdepb_r, hz.sandtotal_r, hz.silttotal_r, hz.claytotal_r, hz.om_r, hz.ph1to1h2o_r, hz.awc_r
+         FROM component co
+         LEFT JOIN chorizon hz ON co.cokey = hz.cokey AND hz.hzdept_r < 30
+         WHERE co.mukey = '${mukey}'
+         ORDER BY co.comppct_r DESC, co.cokey, hz.hzdept_r`,
+        { fetchFn: options?.sdaFetchFn, timeoutMs: options?.sdaTimeoutMs }
+      );
+
+      const compMap = new Map<string, SoilComponentInput>();
+      for (const row of rows) {
+        if (!Array.isArray(row)) continue;
+        const cokey = parseSdaString(row[0]);
+        if (!cokey || cokey.toLowerCase() === "cokey") continue;
+        if (!compMap.has(cokey)) {
+          compMap.set(cokey, { cokey, name: parseSdaString(row[2]) ?? "Unknown", percent: parseSdaNumber(row[1]) ?? 0, kind: parseSdaString(row[5]) ?? "Unknown", majcompflag: parseSdaString(row[6]), drainage: parseSdaString(row[3]), slope: parseSdaNumber(row[4]), horizons: [] });
+        }
+        const hzdept = parseSdaNumber(row[7]);
+        const hzdepb = parseSdaNumber(row[8]);
+        if (hzdept !== null && hzdepb !== null) {
+          compMap.get(cokey)!.horizons.push({ depthTop: hzdept, depthBottom: hzdepb, sand: parseSdaNumber(row[9]), silt: parseSdaNumber(row[10]), clay: parseSdaNumber(row[11]), om: parseSdaNumber(row[12]), ph: parseSdaNumber(row[13]), awc: parseSdaNumber(row[14]) });
+        }
+      }
+
+      const components = Array.from(compMap.values());
+      if (components.length === 0) continue;
+      const { aggregated, dataCoverage } = aggregateComponents(components);
+      if (hasUsableSsurgoProperties(aggregated) && aggregated.depth0_30cm.sand !== null) {
+        const totalComponentPercent = components.reduce((s, c) => s + c.percent, 0);
+        const limitations: string[] = [`Components account for ${totalComponentPercent}% of the map unit.`];
+        const ssurgoPropertySources: Record<string, string> = {};
+        if (aggregated.depth0_30cm.sand !== null) ssurgoPropertySources.sand = "USDA NRCS SSURGO (depth-weighted 0-30 cm)";
+        if (aggregated.depth0_30cm.om !== null) ssurgoPropertySources.om = "USDA NRCS SSURGO (depth-weighted 0-30 cm)";
+
+        const response: SoilApiResponsePayload = {
+          location: { lat, lon },
+          dataTier: "usda_ssurgo",
+          source: "USDA NRCS Soil Survey Geographic Database (SSURGO). https://sdmdataaccess.sc.egov.usda.gov",
+          coverage: "United States (USDA SSURGO primary survey).",
+          mapUnit: { mukey, name: mapUnitName ?? "Unknown map unit" },
+          totalComponentPercent, components, aggregated, propertySources: ssurgoPropertySources, dataCoverage, limitations
+        };
+        return response;
+      }
+    }
+  } catch (e) { }
+  return null;
+}
+
 /**
  * Resolve the authoritative soil profile for any coordinate (`(lat, lon)`):
  *
@@ -1652,6 +1727,25 @@ export async function resolveSoilProfileForCoordinate(
       timeoutMs: options?.sdaTimeoutMs,
     });
 
+    const lacksTexture = ssurgoResult.status === "ok" && ssurgoResult.response.aggregated.depth0_30cm.sand === null;
+
+    if (ssurgoResult.status === "no_map_unit" || ssurgoResult.status === "no_usable_soil_data" || lacksTexture) {
+      const nearbyProfile = await fetchNearbySsurgoMapUnit(lat, lon, { sdaFetchFn: options?.sdaFetchFn, sdaTimeoutMs: options?.sdaTimeoutMs });
+      if (nearbyProfile) {
+        nearbyProfile.limitations = [
+          `Estimated from available mapped soil data located approximately within 150 meters. The exact requested coordinate lacked mapped soil properties (${ssurgoResult.status === "ok" ? "No component horizon data" : ssurgoResult.message}).`,
+          ...nearbyProfile.limitations
+        ];
+        return {
+          ok: true,
+          httpStatus: 200,
+          response: nearbyProfile,
+          cachePolicy: "ssurgo_primary",
+          usSsurgoStatus: "ok"
+        };
+      }
+    }
+
     if (ssurgoResult.status === "ok") {
       return {
         ok: true,
@@ -1674,10 +1768,10 @@ export async function resolveSoilProfileForCoordinate(
     if (sgProfile) {
       const fallbackExplanation =
         ssurgoResult.status === "request_error"
-          ? `Live USDA NRCS SSURGO service was unreachable or returned an error (${ssurgoResult.errorMessage}). Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0–30 cm topsoil predictions instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`
+          ? `Live USDA NRCS SSURGO service was unreachable or returned an error (${ssurgoResult.errorMessage}). Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`
           : ssurgoResult.status === "no_map_unit"
-          ? "USDA NRCS SSURGO returned no surveyed soil map unit polygon at this coordinate. Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0–30 cm topsoil predictions instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them."
-          : `${ssurgoResult.message} Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0–30 cm topsoil predictions instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`;
+          ? "USDA NRCS SSURGO returned no surveyed soil map unit polygon at this coordinate. Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them."
+          : `${ssurgoResult.message} Displaying coordinate-specific ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate instead; terrain slope and categorical drainage class are omitted because SoilGrids does not publish them.`;
 
       const response: SoilApiResponsePayload = {
         location: locationMeta,
@@ -1685,8 +1779,8 @@ export async function resolveSoilProfileForCoordinate(
         source: sgProfile.source,
         coverage:
           ssurgoResult.status === "request_error"
-            ? "United States coordinate — live ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0–30 cm topsoil fallback (used while USDA NRCS SSURGO service was unreachable)."
-            : "United States coordinate — live ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0–30 cm topsoil fallback (used where USDA NRCS SSURGO had no surveyed soil component).",
+            ? "United States coordinate — live ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate (used while USDA NRCS SSURGO service was unreachable)."
+            : "United States coordinate — live ISRIC SoilGrids v2.0 (~250 m OGC WCS) modeled 0-30 cm topsoil estimate (used where USDA NRCS SSURGO lacked field-level data).",
         wrbSoilGroup: sgProfile.wrbSoilGroup,
         mapUnit: sgProfile.mapUnit,
         totalComponentPercent: sgProfile.totalComponentPercent,

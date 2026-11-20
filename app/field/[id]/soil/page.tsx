@@ -432,7 +432,7 @@ export default function SoilPage() {
                 <p className="leading-relaxed">
                   <strong>
                     {data.usSsurgoFallback
-                      ? "ISRIC SoilGrids v2.0 (~250 m grid) — U.S. Coordinate Fallback:"
+                      ? "ISRIC SoilGrids v2.0 (~250 m grid) — Additional Soil Reference Information:"
                       : "Modeled topsoil estimate (~250 m grid):"}
                   </strong>{" "}
                   {data.usSsurgoFallback ? (
@@ -862,7 +862,7 @@ export default function SoilPage() {
                     , ~250 m / 0.00225° WGS84 grid).
                   </>
                 ) : (
-                  <>{data.source} (macro-regional reference fallback).</>
+                  <>{data.source} (additional soil reference information).</>
                 )}
               </p>
               <p>
@@ -1070,7 +1070,7 @@ function MissingMetricCard({
 }) {
   let reason = "Unavailable";
   if (status === "missing_at_location") reason = "No data at this location";
-  else if (status === "provider_unsupported" && isFallback) reason = "Not in regional fallback";
+  else if (status === "provider_unsupported" && isFallback) reason = "Not in reference estimate";
   else if (status === "provider_unsupported") reason = "Not supported by provider";
 
   return (

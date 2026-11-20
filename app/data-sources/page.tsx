@@ -70,7 +70,7 @@ export default function DataSourcesPage() {
           </CardContent>
         </Card>
 
-        {/* Soil Architecture: USDA SSURGO + ISRIC SoilGrids v2.0 WCS + Regional Reference Fallback */}
+        {/* Soil Architecture: USDA SSURGO + ISRIC SoilGrids v2.0 WCS + Regional Reference */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-3">
@@ -78,9 +78,9 @@ export default function DataSourcesPage() {
                 <Database className="h-5 w-5 text-electric" />
               </div>
               <div>
-                <CardTitle>Three-Tier Soil Architecture: USDA SSURGO, ISRIC SoilGrids v2.0 WCS &amp; Regional Fallback</CardTitle>
+                <CardTitle>Three-Tier Soil Architecture: USDA SSURGO, ISRIC SoilGrids v2.0 WCS &amp; Regional Reference</CardTitle>
                 <CardDescription>
-                  Live US polygon survey extraction (USDA SSURGO) · Live ~250 m global modeled coordinate extraction (ISRIC SoilGrids v2.0 OGC WCS) · Macro-regional 0–30 cm topsoil reference fallback
+                  Live US polygon survey extraction (USDA SSURGO) · Live ~250 m global modeled coordinate extraction (ISRIC SoilGrids v2.0 OGC WCS) · Macro-regional 0–30 cm topsoil reference estimate
                 </CardDescription>
               </div>
             </div>
@@ -113,7 +113,7 @@ export default function DataSourcesPage() {
               <code>null</code> rather than fabricated.
             </p>
             <p className="text-sm text-muted-foreground">
-              <strong>Resilience Fallback (Tier 3 — Macro-regional reference estimates):</strong> If the live OGC WCS service times out, is unreachable, has incomplete core depth layers, or encounters masked pixels (<code>NoData = -32768</code> over urban centers or water bodies with no valid adjacent soil pixel within ≤ 250 m), fallo gracefully falls back to a clearly labeled 0–30 cm macro-regional topsoil reference profile compiled from published FAO/IIASA HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries.
+              <strong>Additional Reference Estimates (Tier 3 — Macro-regional reference estimates):</strong> If the live OGC WCS service times out, is unreachable, has incomplete core depth layers, or encounters masked pixels (<code>NoData = -32768</code> over urban centers or water bodies with no valid adjacent soil pixel within ≤ 250 m), fallo provides a clearly labeled 0–30 cm macro-regional topsoil reference profile compiled from published FAO/IIASA HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries.
             </p>
             <div className="flex flex-wrap gap-2">
               <span className="inline-flex items-center gap-1 rounded-full bg-electric/10 px-2.5 py-0.5 text-xs font-medium text-electric">
@@ -126,7 +126,7 @@ export default function DataSourcesPage() {
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
                 <AlertTriangle className="h-3 w-3" />
-                Macro-regional reference fallback (when WCS is masked &gt; 250 m or offline)
+                Macro-regional reference estimate (when WCS is masked &gt; 250 m or offline)
               </span>
             </div>
             <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground border border-border">
