@@ -2,70 +2,204 @@
 
 **Understand your land. Explore its future.**
 
-**fallo** is an agricultural decision-support application that helps farmers and extension advisors explore 3-year crop rotation strategies adapted to local climate patterns, topsoil properties, and farm priorities.
+fallo is an agricultural decision-support application for exploring 3-year crop rotation strategies using local climate patterns, topsoil characteristics, regional crop availability, and farmer priorities.
 
----
+> **Decision-support only:** Scores and schedules are transparent heuristics, not calibrated yield predictions, economic forecasts, or field-specific agronomic prescriptions.
 
-## Six-Feature Field Workflow
+## Features
 
-- **Field Management & Global Coordinate Normalization (`/fields`, `/fields/new`):** Create and manage fields anywhere in the world via interactive map selection, address geocoding, or manual coordinates. Wrapped world-map longitudes (such as `-250°` when panning across the Pacific) are automatically normalized into canonical `[-180°, 180°)` range.
-- **1. Climate Fingerprint (`/field/[id]/climate`):** Queries 20 years of daily temperature, precipitation, solar radiation, and root-zone wetness from the **NASA POWER Agroclimatology Daily API** (`~55 km` regional reanalysis grid), comparing baseline vs. recent 5-year trends, annual precipitation variability, and summer drought/heat stress metrics.
-- **2. Soil Profile (`/field/[id]/soil`):**
-  - **United States (Live Coordinate Extraction):** Queries **USDA NRCS Soil Data Access (SSURGO)** live via spatial point-in-polygon and tabular queries to compute depth-weighted `0–30 cm` topsoil properties (`sand`, `silt`, `clay`, `organic matter`, `pH`, `available water capacity`, `drainage`, and `slope`) across mapped soil components.
-  - **Outside USDA SSURGO Coverage (Regional Topsoil Estimates):** Resolves a clearly labeled **macro-regional `0–30 cm` topsoil reference estimate** compiled from published **FAO/IIASA HWSD v2.2** and **ISRIC SoilGrids v2.0** regional summaries for the field's agroecological zone (not a coordinate-specific spatial extraction or laboratory soil test).
-- **3. Crop Rotation Lab (`/field/[id]/rotations`):**
-  - Summarizes the field's agroecological climate zone, growing-period moisture regime, topsoil properties, and locally verified crops across 15 global agricultural regions.
-  - Lets farmers set relative priority weights across five suitability factors (**Water Suitability**, **Nitrogen Contribution**, **Soil Coverage**, **Diversity / Pest Break**, and **Climate Risk Resilience**) and generate field-specific 3-year crop rotation plans.
-  - Uses **Super Intelligence (SI)-assisted generation** powered by the **Gemini Developer API** (`@google/genai`) paired with deterministic agronomic validation (botanical family rotation, disease-host interval enforcement, seasonal calendar checks, and regional crop eligibility) to propose and score three 3-year plans: *Soil Health Building*, *Water Resilience*, and *Crop Diversity & Pest Break*.
-- **4. What-If Climate Simulator (`/field/[id]/simulator`):**
-  - Lets users test hypothetical shifts in temperature (`°C`) and precipitation (`%` or `mm/yr`) or select quick climate presets without overwriting observed baseline climate data or saved rotation plans.
-  - Recalculates agroecological classification, 5-factor rotation suitability scores, and crop-by-crop climate suitability side by side with crop-specific agronomic explanations.
-  - Supports explicit user-triggered SI rotation generation tailored to a selected hypothetical climate scenario.
-- **5. Field Calendar (`/field/[id]/calendar`):**
-  - Renders a hemisphere-aware 3-year × 12-month timeline for any generated rotation strategy, highlighting estimated planting months, active growth, documented sensitive growth stages, and harvest or cover-crop termination windows.
-  - Displays growing-period mean temperature, temperature range, cumulative rainfall, solar radiation, water demand, drought tolerance, and nitrogen behavior for each scheduled crop season.
-- **6. Historical Climate Analogues (`/field/[id]/analogues`):**
-  - Compares recent field conditions, a specific historical year, or an active What-If climate scenario against the field's 20-year annual and monthly climate archive.
-  - Ranks the closest historical growing seasons using a standardized multi-metric similarity score (combining annual temperature, annual rainfall, growing-season temperature/rainfall, and 12-month seasonal curve trajectory) and overlays monthly comparison curves.
+### Field management
 
----
+- Create fields by map selection, address search, or manual coordinates
+- Validate and normalize coordinates worldwide
+- Save fields in browser local storage
+- Switch, review, and manage saved fields
 
-## Runtime SI Architecture & Authentication
+### Climate fingerprint
 
-- **Provider:** Google **Gemini Developer API** via `@google/genai` (`GeminiDeveloperProvider` in `lib/rotation-generator.ts`, server route `app/api/rotations/generate/route.ts`).
-- **Configuration:** Reads `GEMINI_API_KEY` from server-side environment variables (.env.local or Vercel). Configurable model ID via `GEMINI_MODEL` (defaults to `gemini-2.5-flash`).
-- **Cost & Quotas:** Runs seamlessly on Google AI Studio's free tier without requiring Google Cloud billing or Vertex AI projects.
-- **Deterministic Safeguards:** Every SI-generated rotation proposal is validated deterministically against `data/crops.json` and `lib/rotation-validator.ts` before scoring or display.
+The `/field/[id]/climate` view summarizes approximately 20 years of NASA POWER data:
 
----
+- Temperature and precipitation profiles
+- Annual variability and recent-period comparisons
+- Growing-season conditions
+- Solar radiation and modeled root-zone moisture
+- Summer heat and dry-spell stress indicators
 
-## Data Transparency & Scientific Honesty
+NASA POWER values provide regional climate context rather than on-farm measurements.
 
-- **Live Coordinate Queries vs. Regional Reference Baselines:**
-  - **Climate (`/api/climate`):** Live coordinate-specific extraction from NASA POWER (`0.5° × 0.625°` MERRA-2 grid), including per-year historical records for Climate Analogues.
-  - **US Soil (`/api/soil`):** Live coordinate-specific polygon and horizon extraction from USDA NRCS SSURGO.
-  - **Non-US Soil (`/api/soil`):** Representative macro-regional topsoil reference profiles compiled from published FAO HWSD v2.2 and ISRIC SoilGrids v2.0 regional summaries, explicitly labeled as regional estimates rather than coordinate-extracted measurements.
-- **Decision-Support Heuristics:** Suitability scores (`0–100`) and month-level planting/harvest windows are transparent decision-support heuristics, not calibrated yield predictions or exact field-entry dates.
+### Soil profile
 
----
+The `/field/[id]/soil` view reports depth-weighted 0–30 cm topsoil properties:
 
-## Development & Verification
+- Sand, silt, and clay
+- Organic matter and pH
+- Available water capacity
+- Drainage and slope where available
+
+For United States coordinates, fallo queries USDA NRCS SSURGO and can use nearby mapped soil data when the exact point lacks usable properties. For other locations, it uses live ISRIC SoilGrids v2.0 data where available, followed by clearly labeled macro-regional reference estimates where necessary.
+
+### Crop rotation lab
+
+The `/field/[id]/rotations` view:
+
+- Summarizes the field's agroecological context
+- Identifies locally supported crops
+- Allows priority weights across five suitability factors
+- Generates and compares three 3-year planning objectives
+- Links each ranking to an understandable factor breakdown
+- Provides a dedicated detail view for each strategy
+
+AI-assisted proposals are checked deterministically for botanical-family rotation, disease-host intervals, seasonal fit, crop eligibility, and other agronomic constraints before display.
+
+### What-if climate simulator
+
+The `/field/[id]/simulator` view lets users test hypothetical changes in temperature and precipitation without modifying observed baseline data or saved rotations.
+
+It recalculates:
+
+- Agroecological climate classification
+- Five-factor rotation suitability
+- Crop-level climate fit
+- Crop-specific agronomic explanations
+- User-triggered SI-assisted rotation proposals
+
+### Field calendar
+
+The `/field/[id]/calendar` view presents a hemisphere-aware, 3-year × 12-month schedule with:
+
+- Estimated planting periods
+- Active growth periods
+- Sensitive growth stages
+- Harvest or cover-crop termination windows
+- Crop-season temperature, rainfall, solar, and drought context
+
+### Historical climate analogues
+
+The `/field/[id]/analogues` view compares:
+
+- Recent field conditions
+- A selected historical year
+- An active What-If scenario
+
+against the field's annual and monthly climate archive. The closest historical growing seasons are ranked using standardized temperature, rainfall, seasonality, and growing-period metrics.
+
+## How it works
+
+```text
+Field location
+      │
+      ├── NASA POWER climate archive
+      ├── USDA SSURGO or international soil source
+      └── Regional and crop-trait data
+      │
+      ▼
+Field-specific agroecological context
+      │
+      ├── Priority weights
+      ├── Deterministic agronomic validation
+      └── Optional Gemini-assisted generation
+      │
+      ▼
+Transparent, scored 3-year rotation options
+```
+
+## AI-assisted rotations
+
+fallo uses Google's **Gemini Developer API** through `@google/genai`.
+
+Every AI-generated proposal passes deterministic validation against the crop catalog and `lib/rotation-validator.ts`. Invalid proposals are rejected or repaired where safe; documented agronomic warnings are preserved for review.
+
+Configure AI generation with server-side environment variables:
+
+```dotenv
+GEMINI_API_KEY=your_api_key
+GEMINI_MODEL=gemini-2.5-flash
+FALLO_AI_ENABLED=true
+FALLO_AI_TIMEOUT_MS=120000
+```
+
+See `.env.example` for optional provider and usage-limit settings.
+
+## Data sources
+
+| Source | Usage |
+|---|---|
+| NASA POWER Daily / Agroclimatology | Coordinate-specific climate observations and 20-year archive |
+| USDA NRCS SSURGO | Live mapped soil polygons and horizons within the United States |
+| ISRIC SoilGrids v2.0 | Live ~250 m modeled soil estimates where available |
+| FAO / IIASA HWSD v2.2 | Macro-regional soil reference estimates |
+| Crop and rotation catalog | Documented crop traits, regional eligibility, and rotation safeguards |
+
+## Scientific limitations
+
+- NASA POWER is a regional climate dataset, not a replacement for an on-farm weather station.
+- SSURGO values represent map units and components rather than field soil samples.
+- SoilGrids values are modeled predictions with uncertainty.
+- Macro-regional soil estimates are references, not coordinate-level measurements.
+- Suitability scores are heuristic rankings derived from climate, soil, and crop traits.
+- Planting and harvest windows are planning estimates, not exact local dates.
+- falle does not currently model irrigation scheduling, tillage, real-time pests, yield, or market economics.
+
+## Tech stack
+
+- Next.js 15 App Router
+- TypeScript
+- Tailwind CSS
+- shadcn/ui and Radix UI
+- React Leaflet
+- Recharts
+- React Context and browser local storage
+- Google Gemini Developer API
+- Server-side LRU caching
+- Vercel deployment
+
+## Getting started
+
+### Requirements
+
+- Node.js 18 or newer
+- npm
+- A Gemini API key for AI-assisted rotation generation
+
+### Installation
 
 ```bash
-# Install dependencies
 npm install
-
-# Run development server
+cp .env.example .env.local
 npm run dev
+```
 
-# Run deterministic scoring & generation test suites
+Open `http://localhost:3000`.
+
+The Gemini API key is optional for climate and soil features, but required to generate AI-assisted rotation plans.
+
+## Verification
+
+```bash
 npx tsx test-scoring.ts
 npx tsx test-generation.ts
-
-# Run TypeScript & ESLint checks
+npx tsx test-soil.ts
+npx tsx test-mukey.ts
+npx tsx test-polygon.ts
 npx tsc --noEmit
 npm run lint
-
-# Build for production
 npm run build
 ```
+
+## Project structure
+
+```text
+app/        Next.js routes and API handlers
+components/ Shared UI and visualization components
+data/       Crop, region, and rotation data
+lib/        Climate, soil, scoring, and validation utilities
+docs/       Project documentation and implementation records
+public/     Static assets
+```
+
+## Documentation
+
+- [Project brief](docs/PROJECT_BRIEF.md)
+- [Development roadmap](docs/ROADMAP.md)
+- [Phase 3 handoff](docs/PHASE3_HANDOFF.md)
+- [Data sources](app/data-sources)
