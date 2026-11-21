@@ -14,7 +14,19 @@ import crypto from "crypto";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+const GENERATION_TOTAL_TIMEOUT_MS = 115_000;
+
 export async function POST(req: NextRequest) {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  const clientIp =
+    forwardedFor?.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip")?.trim() ||
+    "local-client";
+
+  const requestStartTime = Date.now();
+  const requestId = crypto.randomUUID().slice(0, 8);
+  console.log(`[Rotations API] [Req: ${requestId}] Request started`);
+
   const contentLengthHeader = req.headers.get("content-length");
   if (contentLengthHeader) {
     const byteLength = Number(contentLengthHeader);
@@ -25,12 +37,6 @@ export async function POST(req: NextRequest) {
       );
     }
   }
-
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  const clientIp =
-    forwardedFor?.split(",")[0]?.trim() ||
-    req.headers.get("x-real-ip")?.trim() ||
-    "local-client";
 
   // 1. Resolve Anonymous Visitor ID
   let visitorId = req.cookies.get("fallo_visitor_id")?.value;
@@ -135,8 +141,11 @@ export async function POST(req: NextRequest) {
   const actualModel = provider?.modelName || expectedModel;
 
   try {
+    console.log(`[Rotations API] [Req: ${requestId}] Calling generateRotations for field ${context.fieldId}`);
     const result = await generateRotations(context, provider, {
       signal: req.signal,
+      timeoutDeadlineMs: requestStartTime + GENERATION_TOTAL_TIMEOUT_MS,
+      requestId,
     });
 
     // Extract actual usage metadata to reconcile
@@ -153,6 +162,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!provider) {
+      console.log(`[Rotations API] [Req: ${requestId}] Request unavailable for field ${context.fieldId} after ${Date.now() - requestStartTime}ms`);
       const unavailableMessage = sanitizeGenerationErrorMessage(
         result.aiUnavailableReason || describeMissingAIProviderReason(process.env)
       );
@@ -173,6 +183,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!success) {
+      console.log(`[Rotations API] [Req: ${requestId}] Request returned no proposals for field ${context.fieldId} after ${Date.now() - requestStartTime}ms`);
       const failureMessage = sanitizeGenerationErrorMessage(
         result.aiUnavailableReason,
         "SI rotation generation could not complete. Please verify your provider configuration and try again."
@@ -190,6 +201,7 @@ export async function POST(req: NextRequest) {
       return res;
     }
 
+    console.log(`[Rotations API] [Req: ${requestId}] Request completed successfully for field ${context.fieldId} in ${Date.now() - requestStartTime}ms`);
     const res = NextResponse.json({
        ...result,
        remainingGenerations: reservation.remainingGenerations,
@@ -197,6 +209,8 @@ export async function POST(req: NextRequest) {
     if (newCookieStr) res.headers.set("Set-Cookie", newCookieStr);
     return res;
   } catch (err) {
+    const safeErrorMsg = sanitizeGenerationErrorMessage(err instanceof Error ? err.message : String(err));
+    console.error(`[Rotations API] [Req: ${requestId}] Execution threw error for field ${context.fieldId} after ${Date.now() - requestStartTime}ms: ${safeErrorMsg}`);
     if (reservation.reservationId) {
       await reconcileUsage(visitorId, reservation.reservationId, 0, 0, actualModel, false);
     }

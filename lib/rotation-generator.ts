@@ -250,6 +250,7 @@ export interface AIProviderClient {
     maxTokens?: number;
     signal?: AbortSignal;
     timeoutMs?: number;
+    requestId?: string;
   }): Promise<string>;
   providerName: string;
   modelName?: string;
@@ -650,12 +651,15 @@ export class GeminiDeveloperProvider implements AIProviderClient {
     maxTokens = DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
     signal,
     timeoutMs = this.defaultTimeoutMs,
+    requestId,
   }: {
     prompt: string;
     maxTokens?: number;
     signal?: AbortSignal;
     timeoutMs?: number;
+    requestId?: string;
   }): Promise<string> {
+    const reqIdStr = requestId ? ` [Req: ${requestId}]` : "";
     this.lastUsageMetadata = undefined;
     const controller = new AbortController();
     let timedOut = false;
@@ -711,6 +715,8 @@ export class GeminiDeveloperProvider implements AIProviderClient {
         if (signal?.aborted) {
           throw new Error(`AI provider (${this.providerName}) request was aborted.`);
         }
+        const attemptStart = Date.now();
+        console.log(`[Rotations API]${reqIdStr} Gemini request attempt ${attempt}/${maxAttempts} started`);
         
         try {
           response = (await Promise.race([
@@ -786,6 +792,7 @@ export class GeminiDeveloperProvider implements AIProviderClient {
             timeoutPromise,
           ])) as any;
           
+          console.log(`[Rotations API]${reqIdStr} Gemini request attempt ${attempt} succeeded in ${Date.now() - attemptStart}ms`);
           lastErr = null;
           break; // Success
         } catch (err) {
@@ -794,6 +801,7 @@ export class GeminiDeveloperProvider implements AIProviderClient {
           const statusMatch = msg.match(/(?:status|code):?\s*(\d+)/i) || msg.match(/HTTP\s*(\d+)/i) || err instanceof Error && (err as any).status;
           const status = statusMatch && typeof statusMatch !== 'number' ? parseInt(statusMatch[1] as string, 10) : typeof statusMatch === 'number' ? statusMatch : undefined;
           
+          console.log(`[Rotations API]${reqIdStr} Gemini request attempt ${attempt} failed in ${Date.now() - attemptStart}ms. Status: ${status ?? 'unknown'}. Error: ${this.sanitizeErrorMessage(msg)}`);
           // Retry ONLY on transient errors: 503 (Service Unavailable / Overloaded), 500 (Internal), 502, 504, or generic transient network fails
           const isTransient5xx = status && status >= 500 && status <= 599;
           const isFetchFailed = msg.includes("fetch failed") || msg.includes("ECONNRESET") || msg.includes("ETIMEDOUT");
@@ -810,7 +818,14 @@ export class GeminiDeveloperProvider implements AIProviderClient {
             }
             
             const delayMs = retryAfterS > 0 ? retryAfterS * 1000 : baseDelayMs + Math.random() * 500;
-            await new Promise(res => setTimeout(res, delayMs));
+            console.log(`[Rotations API]${reqIdStr} Retrying Gemini request in ${delayMs.toFixed(0)}ms...`);
+            const sleepPromise = new Promise<void>((res) => {
+              const sleepTimer = setTimeout(res, delayMs);
+              const onAbort = () => { clearTimeout(sleepTimer); res(); };
+              signal?.addEventListener("abort", onAbort, { once: true });
+              controller.signal.addEventListener("abort", onAbort, { once: true });
+            });
+            await Promise.race([sleepPromise, timeoutPromise]);
             baseDelayMs *= 2;
             continue;
           }
@@ -1018,12 +1033,15 @@ export class GeminiEnterpriseProvider implements AIProviderClient {
     maxTokens = DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
     signal,
     timeoutMs = this.defaultTimeoutMs,
+    requestId,
   }: {
     prompt: string;
     maxTokens?: number;
     signal?: AbortSignal;
     timeoutMs?: number;
+    requestId?: string;
   }): Promise<string> {
+    const reqIdStr = requestId ? ` [Req: ${requestId}]` : "";
     this.lastUsageMetadata = undefined;
     const controller = new AbortController();
     let timedOut = false;
@@ -1310,11 +1328,13 @@ export class OpenAICompatibleProvider implements AIProviderClient {
     maxTokens = 4000,
     signal,
     timeoutMs = this.defaultTimeoutMs,
+    requestId,
   }: {
     prompt: string;
     maxTokens?: number;
     signal?: AbortSignal;
     timeoutMs?: number;
+    requestId?: string;
   }): Promise<string> {
     const controller = new AbortController();
     let timedOut = false;
@@ -1744,8 +1764,12 @@ export function releaseFieldGenerationLock(fieldId: string): void {
 export async function generateRotations(
   context: GenerationContext,
   aiProvider: AIProviderClient | null,
-  options?: { signal?: AbortSignal; timeoutMs?: number }
+  options?: { signal?: AbortSignal; timeoutDeadlineMs?: number; requestId?: string }
 ): Promise<GenerationResult> {
+  const overallStart = Date.now();
+  const reqIdStr = options?.requestId ? ` [Req: ${options.requestId}]` : "";
+  const timeoutDeadlineMs = options?.timeoutDeadlineMs;
+  const overallTimeoutMs = timeoutDeadlineMs ? timeoutDeadlineMs - overallStart : 115000;
   const normLon = normalizeLongitude(context.lon) ?? context.lon;
   const geo = resolveGeographicContext(context.lat, normLon);
   const effectiveRegionTag = context.regionTag ?? geo.regionTag;
@@ -1860,6 +1884,7 @@ export async function generateRotations(
     }
 
     // 3. Build prompt with real classification and call AI (with bounded validation retry)
+    console.log(`[Rotations API]${reqIdStr} Prep time (classification/filtering): ${Date.now() - overallStart}ms`);
     const basePrompt = buildSystemPrompt(normalizedContext, classification, availableCrops);
     const validationCtx: ValidationContext = {
       agGroup: classification.group,
@@ -1883,14 +1908,35 @@ export async function generateRotations(
         currentPrompt = buildRetrySystemPrompt(basePrompt, rejectedProposals, availableCrops);
       }
 
+      const remainingTimeout = timeoutDeadlineMs ? timeoutDeadlineMs - Date.now() : overallTimeoutMs - (Date.now() - overallStart);
+      if (remainingTimeout <= 0) {
+        console.log(`[Rotations API]${reqIdStr} Overall timeout (${overallTimeoutMs}ms) reached before validation attempt ${attempt}. Returning unavailable.`);
+        return {
+          classification: classificationSummary,
+          geography: geo,
+          evidenceLevel: evidence.level,
+          evidenceSummary: evidence.summary,
+          availableCrops,
+          proposals: [],
+          supportStatus: "unavailable",
+          aiUnavailableReason: `Rotation generation timed out globally after ${overallTimeoutMs}ms limit.`,
+          aiProvider: aiProvider.providerName,
+          aiModel: aiProvider.modelName,
+          retryCount,
+        };
+      }
+
       let rawAiText: string;
       try {
+        const geminiWaitStart = Date.now();
         rawAiText = await aiProvider.generate({
           prompt: currentPrompt,
           maxTokens: DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
           signal: options?.signal,
-          timeoutMs: options?.timeoutMs,
+          timeoutMs: remainingTimeout,
+          requestId: options?.requestId,
         });
+        console.log(`[Rotations API]${reqIdStr} Validation attempt ${attempt}, Gemini wait time: ${Date.now() - geminiWaitStart}ms`);
         accumulatedUsage = mergeUsageMetadata(accumulatedUsage, aiProvider.lastUsageMetadata);
       } catch (err) {
         if (attempt > 0 && rejectedProposals.length > 0) {
@@ -1919,9 +1965,11 @@ export async function generateRotations(
       // 4. Parse with Zod
       let parsed: AIProposal;
       try {
+        const parsingStart = Date.now();
         const cleaned = extractJsonString(rawAiText);
         const json = JSON.parse(cleaned);
         parsed = AIProposalSchema.parse(json);
+        console.log(`[Rotations API]${reqIdStr} Validation attempt ${attempt}, Parsing time: ${Date.now() - parsingStart}ms`);
       } catch (err) {
         if (attempt > 0 && rejectedProposals.length > 0) {
           break;
