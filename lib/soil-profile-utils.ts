@@ -28,9 +28,12 @@ import type {
   SoilGridsLayerUncertainty,
 } from "@/lib/soilgrids-wcs";
 
+import { fetchOpenLandMapProfile } from "@/lib/openlandmap-cog";
+
 export type SoilDataTier =
   | "usda_ssurgo"
   | "soilgrids_wcs_250m"
+  | "openlandmap_cog"
   | "regional_reference_fallback";
 
 export type SoilPropertyKey =
@@ -106,6 +109,14 @@ export const SOIL_PROVIDER_CAPABILITIES: Record<
       "wrbSoilGroup",
     ],
     unsupportedProperties: ["slope", "drainage"],
+  },
+  openlandmap_cog: {
+    tier: "openlandmap_cog",
+    label: "OpenLandMap COG (120 m)",
+    coverageSummary:
+      "Global 120 m predictions across 0-30 cm. Modeled soil estimate used where higher-priority soil sources did not provide usable data.",
+    supportedProperties: ["texture", "om", "ph"],
+    unsupportedProperties: ["awc", "slope", "drainage", "bulkDensity", "coarseFragments", "wrbSoilGroup"],
   },
   regional_reference_fallback: {
     tier: "regional_reference_fallback",
@@ -1845,6 +1856,32 @@ export async function resolveSoilProfileForCoordinate(
       };
     }
 
+    const olm = await fetchOpenLandMapProfile(lat, lon);
+    if (olm) {
+      return {
+        ok: true,
+        httpStatus: 200,
+        response: {
+          location: locationMeta,
+          dataTier: "openlandmap_cog",
+          source: "OpenLandMap (OpenGeoHub STAC)",
+          coverage: "Global 120 m predictions across 0-30 cm.",
+          mapUnit: null,
+          totalComponentPercent: 0,
+          components: [],
+          aggregated: {
+            depth0_30cm: { sand: olm.sand, silt: olm.silt, clay: olm.clay, om: olm.om, ph: olm.ph, awc: null },
+            drainage: null,
+            slope: null,
+          },
+          dataCoverage: { depth0_30cm: { sand: null, silt: null, clay: null, om: null, ph: null, awc: null }, drainage: null, slope: null },
+          limitations: ["Modeled 120m OpenLandMap soil estimate used where higher-priority soil sources did not provide usable data. Organic matter is approximated from modeled organic carbon using a 1.724 conversion factor. Values represent a synthesized 0-30 cm soil estimate, not a complete measured taxonomic profile."],
+        },
+        cachePolicy: "international_regional_fallback",
+        usSsurgoStatus: fallbackSsurgoStatus,
+      };
+    }
+
     // Neither live USDA SSURGO nor live ISRIC SoilGrids WCS returned usable data.
     // Never fall back to the generic macro-regional Cambisols/Luvisols reference profile for a U.S. coordinate.
     const httpStatus = fallbackSsurgoStatus === "request_error" ? 503 : 404;
@@ -1899,6 +1936,31 @@ export async function resolveSoilProfileForCoordinate(
       response,
       cachePolicy: "soilgrids_primary",
     };
+  }
+
+  const olmIntl = await fetchOpenLandMapProfile(lat, lon);
+  if (olmIntl) {
+      return {
+        ok: true,
+        httpStatus: 200,
+        response: {
+          location: locationMeta,
+          dataTier: "openlandmap_cog",
+          source: "OpenLandMap (OpenGeoHub STAC)",
+          coverage: "Global 120 m predictions across 0-30 cm.",
+          mapUnit: null,
+          totalComponentPercent: 0,
+          components: [],
+          aggregated: {
+            depth0_30cm: { sand: olmIntl.sand, silt: olmIntl.silt, clay: olmIntl.clay, om: olmIntl.om, ph: olmIntl.ph, awc: null },
+            drainage: null,
+            slope: null,
+          },
+          dataCoverage: { depth0_30cm: { sand: null, silt: null, clay: null, om: null, ph: null, awc: null }, drainage: null, slope: null },
+          limitations: ["Modeled 120m OpenLandMap soil estimate used where higher-priority soil sources did not provide usable data. Organic matter is approximated from modeled organic carbon using a 1.724 conversion factor. Values represent a synthesized 0-30 cm soil estimate, not a complete measured taxonomic profile."],
+        },
+        cachePolicy: "international_regional_fallback",
+      };
   }
 
   const fb = resolveGlobalSoilFallback(lat, lon);
