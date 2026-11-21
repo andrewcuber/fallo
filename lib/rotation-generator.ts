@@ -720,7 +720,60 @@ export class GeminiDeveloperProvider implements AIProviderClient {
                 input:
                   "Generate 3 field-specific 3-year crop rotation strategies (soil_health, water_resilience, crop_diversity) as JSON matching the required schema.",
                 system_instruction: prompt,
-                response_format: { type: "object" },
+                response_format: {
+                  type: "object",
+                  properties: {
+                    strategies: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          id: { type: "string" },
+                          name: { type: "string" },
+                          archetype: { type: "string" },
+                          description: { type: "string" },
+                          regionExample: { type: "string" },
+                          years: {
+                            type: "array",
+                            items: {
+                              type: "object",
+                              properties: {
+                                year: { type: "integer" },
+                                seasons: {
+                                  type: "array",
+                                  items: {
+                                    type: "object",
+                                    properties: {
+                                      season: { type: "string" },
+                                      crop: { type: "string" },
+                                      activity: { type: "string" },
+                                      months: { type: "array", items: { type: "integer" } }
+                                    },
+                                    required: ["season", "crop", "activity", "months"]
+                                  }
+                                }
+                              },
+                              required: ["year", "seasons"]
+                            }
+                          },
+                          tradeoffs: {
+                            type: "object",
+                            properties: {
+                              advantages: { type: "array", items: { type: "string" } },
+                              disadvantages: { type: "array", items: { type: "string" } },
+                              operational: { type: "array", items: { type: "string" } },
+                              warnings: { type: "array", items: { type: "string" } }
+                            },
+                            required: ["advantages", "disadvantages", "operational", "warnings"]
+                          }
+                        },
+                        required: ["id", "name", "archetype", "description", "years", "tradeoffs"]
+                      }
+                    },
+                    rationale: { type: "string" }
+                  },
+                  required: ["strategies", "rationale"]
+                },
                 generation_config: {
                   max_output_tokens: maxTokens,
                 },
