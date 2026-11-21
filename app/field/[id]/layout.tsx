@@ -119,7 +119,7 @@ export default function FieldLayout({
             >
               <Icon className="h-4 w-4 shrink-0" />
               <span>{tab.label}</span>
-              {dataCoverage[tab.id as keyof typeof dataCoverage]?.status !== "available" && <span className="text-red-500 font-bold ml-0.5" title="Incomplete or unavailable data">*</span>}
+              
             </Link>
           );
         })}
